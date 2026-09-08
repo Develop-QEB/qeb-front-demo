@@ -1,0 +1,2613 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Users, Mail, Briefcase, Building, Shield, Loader2, Search, Pencil, X, Trash2, Plus, Network, UserPlus, Check, Crown, Ticket, Send, Image, AlertTriangle, Clock, CheckCircle2, KeyRound, DoorOpen, Filter, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { Header } from '../../components/layout/Header';
+import { usuariosService, UsuarioAdmin, UpdateUsuarioInput, CreateUsuarioInput, AssignmentsData, Reassignment } from '../../services/usuarios.service';
+import { equiposService, Equipo, CreateEquipoInput, MiembroEquipo } from '../../services/equipos.service';
+import { ticketsService, Ticket as TicketType, CreateTicketInput } from '../../services/tickets.service';
+import { UserAvatar } from '../../components/ui/user-avatar';
+import { useSocketEquipos } from '../../hooks/useSocket';
+import { useThemeStore } from '../../store/themeStore';
+import { useAuthStore } from '../../store/authStore';
+import { getPermissions } from '../../lib/permissions';
+import { uploadsService } from '../../services/uploads.service';
+
+type TabType = 'usuarios' | 'equipos';
+
+const EMAILS_CON_PERMISO_ELIMINAR = [
+  'contacto@qeb.mx',
+  'mario.salcido@deepia.dev',
+  'akary.lopez@datistic.mx',
+];
+
+const getInputClasses = (isDark: boolean) =>
+  `w-full px-4 py-3 rounded-xl ${isDark ? 'bg-zinc-800/80' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'text-white' : 'text-gray-900'} ${isDark ? 'placeholder:text-zinc-500' : 'placeholder:text-gray-400'} focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500/50 transition-all hover:border-purple-500/40`;
+const getLabelClasses = (isDark: boolean) => `block text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} mb-2`;
+
+const AREAS_DISPONIBLES = [
+  'Direccion General',
+  'Comercial',
+  'Direccion Comercial Aeropuerto',
+  'Departamento de Trafico',
+  'Direccion de Mercadotecnia',
+  'Compras',
+  'Operaciones',
+  'Facturacion',
+  'Mejora Continua',
+  'TI',
+  'Desarrollo',
+];
+
+// Mapeo de puestos por area
+const PUESTOS_POR_AREA: Record<string, string[]> = {
+  'Direccion General': [
+    'Director General',
+    'Director General Adjunto',
+    'Director Desarrollo de Nuevos Negocios',
+  ],
+  'Comercial': [
+    'Director Comercial',
+    'Gerente Comercial',
+    'Gerente Comercial Vía Pública',
+    'Gerente Comercial Plazas',
+    'Asesor Comercial',
+    'Asesor Analista',
+    'Analista de Servicio al Cliente',
+    'Jefe Digital Comercial',
+    'Especialista de BI',
+    'Jefe de BI',
+  ],
+  'Direccion Comercial Aeropuerto': [
+    'Director Comercial Aeropuerto',
+    'Gerente Comercial Aeropuerto',
+    'Asesor Comercial (Aeropuerto)',
+    'Analista de Aeropuerto',
+  ],
+  'Departamento de Trafico': [
+    'Gerente de Trafico',
+    'Coordinador de trafico',
+    'Especialista de trafico',
+    'Auxiliar de trafico',
+    // Rol mixto BI + Tráfico (2026-07-23, ej: Miguel Blancas)
+    'Bi Trafico',
+  ],
+  'Direccion de Mercadotecnia': [
+    'Coordinador de Diseno',
+    'Disenadores',
+  ],
+  'Compras': [
+    'Compradores',
+  ],
+  'Operaciones': [
+    'Call Center (CON)',
+    'Director de Operaciones',
+    'Gerente de Operaciones CON',
+    'Gerentes de Operaciones Plazas (GDL y MTY)',
+    'Jefes de Operaciones Plazas',
+    'Gerente Digital (Operaciones)',
+    'Jefe de Operaciones Digital',
+    // Nuevos roles operativos (Matriz 2026-01-28) — granularidad por plaza
+    'Gerente de Operaciones GDL',
+    'Gerente de Operaciones MTY',
+    'Gerente Regional de Plazas',
+    'Jefe Regional de Plazas',
+    'Técnico en logística digital',
+    'Jefe de Operaciones Oaxaca',
+    'Jefe de Operaciones Acapulco',
+    'Jefe de Operaciones Toluca',
+    'Jefe de Operaciones Veracruz',
+    'Jefe de Operaciones Pto. Vallarta',
+    'Jefe de Operaciones Puebla',
+    'Jefe de Operaciones Culiacán',
+    'Jefe de Operaciones Mazatlán',
+    'Jefe de Operaciones León',
+    'Jefe de Operaciones Tijuana',
+    'Jefe de Operaciones Mérida',
+  ],
+  'Facturacion': [
+    'Coordinador de Facturacion y Cobranza',
+    'Mesa de Control',
+    'Analista de Facturacion y Cobranza',
+  ],
+  'Mejora Continua': [
+    'Mejora Continua',
+    'Jefe de Mejora Continua',
+    'Analista de Mejora Continua',
+  ],
+  'TI': [
+    'TI',
+    'Gerente de TI',
+    'Especialista de TI',
+    'Analista de TI',
+  ],
+  'Desarrollo': [
+    'Lider de Desarrollo',
+    'Desarrollador Full Stack',
+    'Desarrollador Frontend',
+    'Desarrollador Backend',
+    'Ingeniero DevOps',
+  ],
+};
+
+// Funcion para obtener puestos segun area
+const getPuestosPorArea = (area: string): string[] => {
+  return PUESTOS_POR_AREA[area] || [];
+};
+
+// Funcion para obtener roles segun area (puestos del area + Administrador)
+// El rol DEV NO se ofrece NUNCA desde este selector — absolutamente nadie
+// puede asignarlo desde el screen de usuarios. Los DEV se gestionan por DB
+// directamente.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const getRolesPorArea = (area: string, _currentUserRol?: string): string[] => {
+  const puestos = PUESTOS_POR_AREA[area] || [];
+  if (area === 'Desarrollo') return [];
+  return [...puestos, 'Administrador'];
+};
+
+// Todos los puestos (para compatibilidad)
+const PUESTOS_DISPONIBLES = Object.values(PUESTOS_POR_AREA).flat();
+
+const ROLES_DISPONIBLES = [...PUESTOS_DISPONIBLES, 'Administrador'];
+
+// Modal de Creacion
+function CreateModal({
+  onClose,
+  onSubmit,
+  loading,
+  error,
+}: {
+  onClose: () => void;
+  onSubmit: (data: CreateUsuarioInput) => void;
+  loading: boolean;
+  error: string | null;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const currentUser = useAuthStore((s) => s.user);
+  const inputClasses = getInputClasses(isDark);
+  const labelClasses = getLabelClasses(isDark);
+  const [form, setForm] = useState<CreateUsuarioInput>({
+    nombre: '',
+    correo_electronico: '',
+    password: '',
+    area: '',
+    puesto: '',
+    rol: '',
+    foto_perfil: '',
+  });
+
+  // Puestos y roles filtrados segun area seleccionada
+  const puestosDisponibles = form.area ? getPuestosPorArea(form.area) : [];
+  const rolesDisponibles = form.area ? getRolesPorArea(form.area, currentUser?.rol) : [];
+
+  // Cuando cambia el area, resetear puesto y rol
+  const handleAreaChange = (newArea: string) => {
+    setForm({ ...form, area: newArea, puesto: '', rol: '' });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-lg ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'} sticky top-0 z-10`}>
+          <div className="flex items-center gap-4">
+            <div className={`p-3 rounded-xl ${isDark ? 'bg-purple-500/20' : 'bg-purple-100'}`}>
+              <Plus className={`h-6 w-6 ${isDark ? 'text-purple-300' : 'text-purple-600'}`} />
+            </div>
+            <div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Nuevo Usuario</h2>
+              <p className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>Completa todos los campos</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2">
+              <label className={labelClasses}>Nombre completo *</label>
+              <input
+                type="text"
+                value={form.nombre}
+                onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+                className={inputClasses}
+                placeholder="Ej: Juan Perez"
+                required
+              />
+            </div>
+
+            <div>
+              <label className={labelClasses}>Correo electronico *</label>
+              <input
+                type="email"
+                value={form.correo_electronico}
+                onChange={(e) => setForm({ ...form, correo_electronico: e.target.value })}
+                className={inputClasses}
+                placeholder="correo@ejemplo.com"
+                required
+              />
+            </div>
+
+            <div>
+              <label className={labelClasses}>Contrasena *</label>
+              <input
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                className={inputClasses}
+                placeholder="--------"
+                required
+                minLength={6}
+              />
+            </div>
+
+            <div>
+              <label className={labelClasses}>Area *</label>
+              <select
+                value={form.area}
+                onChange={(e) => handleAreaChange(e.target.value)}
+                className={inputClasses}
+                required
+              >
+                <option value="">Seleccionar area...</option>
+                {AREAS_DISPONIBLES.map((area) => (
+                  <option key={area} value={area}>
+                    {area}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className={labelClasses}>Puesto *</label>
+              <select
+                value={form.puesto}
+                onChange={(e) => setForm({ ...form, puesto: e.target.value })}
+                className={inputClasses}
+                required
+                disabled={!form.area || puestosDisponibles.length === 0}
+              >
+                <option value="">{!form.area ? 'Primero selecciona un area...' : puestosDisponibles.length === 0 ? 'Sin puestos disponibles' : 'Seleccionar puesto...'}</option>
+                {puestosDisponibles.map((puesto) => (
+                  <option key={puesto} value={puesto}>
+                    {puesto}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className={labelClasses}>Rol *</label>
+              <select
+                value={form.rol}
+                onChange={(e) => setForm({ ...form, rol: e.target.value })}
+                className={inputClasses}
+                required
+                disabled={!form.area}
+              >
+                <option value="">{!form.area ? 'Primero selecciona un area...' : 'Seleccionar rol...'}</option>
+                {rolesDisponibles.map((rol) => (
+                  <option key={rol} value={rol}>
+                    {rol}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className={labelClasses}>URL foto de perfil (opcional)</label>
+              <input
+                type="url"
+                value={form.foto_perfil}
+                onChange={(e) => setForm({ ...form, foto_perfil: e.target.value })}
+                className={inputClasses}
+                placeholder="https://ejemplo.com/foto.jpg"
+              />
+            </div>
+          </div>
+
+          {/* Error message */}
+          {error && (
+            <div className={`p-4 rounded-xl bg-red-500/10 border border-red-500/30 ${isDark ? 'text-red-300' : 'text-red-700'} text-sm`}>
+              {error}
+            </div>
+          )}
+
+          <div className={`flex justify-end gap-3 pt-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-5 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} hover:border-purple-500/40 transition-all`}
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all flex items-center gap-2"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Creando...' : 'Crear Usuario'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Modal de Edicion
+function EditModal({
+  usuario,
+  onClose,
+  onSubmit,
+  loading,
+}: {
+  usuario: UsuarioAdmin;
+  onClose: () => void;
+  onSubmit: (data: UpdateUsuarioInput) => void;
+  loading: boolean;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const currentUser = useAuthStore((s) => s.user);
+  const inputClasses = getInputClasses(isDark);
+  const labelClasses = getLabelClasses(isDark);
+  const [form, setForm] = useState<UpdateUsuarioInput>({
+    nombre: usuario.nombre,
+    correo_electronico: usuario.email,
+    area: usuario.area || '',
+    puesto: usuario.puesto || '',
+    rol: usuario.rol,
+  });
+
+  // Puestos y roles filtrados segun area seleccionada
+  const puestosDisponibles = form.area ? getPuestosPorArea(form.area) : [];
+  const rolesDisponibles = form.area ? getRolesPorArea(form.area, currentUser?.rol) : [];
+
+  // Cuando cambia el area, resetear puesto y rol
+  const handleAreaChange = (newArea: string) => {
+    setForm({ ...form, area: newArea, puesto: '', rol: '' });
+  };
+
+  useEffect(() => {
+    setForm({
+      nombre: usuario.nombre,
+      correo_electronico: usuario.email,
+      area: usuario.area || '',
+      puesto: usuario.puesto || '',
+      rol: usuario.rol,
+    });
+  }, [usuario]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-md ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'}`}>
+          <div className="flex items-center gap-4">
+            <UserAvatar nombre={usuario.nombre} foto_perfil={usuario.foto_perfil} size="lg" />
+            <div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Editar Usuario</h2>
+              <p className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>{usuario.email}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className={labelClasses}>Nombre</label>
+            <input
+              type="text"
+              value={form.nombre}
+              onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+              className={inputClasses}
+              required
+            />
+          </div>
+
+          <div>
+            <label className={labelClasses}>Correo electronico</label>
+            <div className="relative">
+              <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-purple-400/50" />
+              <input
+                type="email"
+                value={form.correo_electronico}
+                onChange={(e) => setForm({ ...form, correo_electronico: e.target.value })}
+                className={`${inputClasses} pl-11`}
+                placeholder="correo@ejemplo.com"
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className={labelClasses}>Area</label>
+            <select
+              value={form.area}
+              onChange={(e) => handleAreaChange(e.target.value)}
+              className={inputClasses}
+            >
+              <option value="">Seleccionar area...</option>
+              {AREAS_DISPONIBLES.map((area) => (
+                <option key={area} value={area}>
+                  {area}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className={labelClasses}>Puesto</label>
+            <select
+              value={form.puesto}
+              onChange={(e) => setForm({ ...form, puesto: e.target.value })}
+              className={inputClasses}
+              disabled={!form.area || puestosDisponibles.length === 0}
+            >
+              <option value="">{!form.area ? 'Primero selecciona un area...' : puestosDisponibles.length === 0 ? 'Sin puestos disponibles' : 'Seleccionar puesto...'}</option>
+              {puestosDisponibles.map((puesto) => (
+                <option key={puesto} value={puesto}>
+                  {puesto}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className={labelClasses}>Rol</label>
+            <select
+              value={form.rol}
+              onChange={(e) => setForm({ ...form, rol: e.target.value })}
+              className={inputClasses}
+              disabled={!form.area}
+            >
+              <option value="">{!form.area ? 'Primero selecciona un area...' : 'Seleccionar rol...'}</option>
+              {rolesDisponibles.map((rol) => (
+                <option key={rol} value={rol}>
+                  {rol}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className={`flex justify-end gap-3 pt-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-5 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} hover:border-purple-500/40 transition-all`}
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all flex items-center gap-2"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Guardando...' : 'Guardar'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Modal de Confirmacion de Eliminacion
+function DeleteConfirmModal({
+  count,
+  onClose,
+  onConfirm,
+  loading,
+  title = 'Eliminar Usuarios',
+  message,
+}: {
+  count: number;
+  onClose: () => void;
+  onConfirm: () => void;
+  loading: boolean;
+  title?: string;
+  message?: string;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-md ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border border-red-500/30 rounded-2xl shadow-2xl shadow-red-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200`}>
+        <div className="p-6 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-500/20 mb-4">
+            <Trash2 className="h-8 w-8 text-red-400" />
+          </div>
+          <h3 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} mb-2`}>{title}</h3>
+          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-6`}>
+            {message || (
+              <>
+                Estas seguro de eliminar <span className={`${isDark ? 'text-white' : 'text-gray-900'} font-semibold`}>{count} usuario(s)</span>? Esta accion
+                no se puede deshacer.
+              </>
+            )}
+          </p>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={onClose}
+              disabled={loading}
+              className={`px-6 py-3 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} hover:border-purple-500/40 transition-all disabled:opacity-50`}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={loading}
+              className="px-6 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/25 transition-all flex items-center gap-2"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Eliminando...' : 'Eliminar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal de confirmacion para eliminar un usuario individual
+function DeleteSingleUserModal({
+  usuario,
+  onClose,
+  onConfirm,
+  loading,
+}: {
+  usuario: UsuarioAdmin;
+  onClose: () => void;
+  onConfirm: () => void;
+  loading: boolean;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-md ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border border-red-500/30 rounded-2xl shadow-2xl shadow-red-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200`}>
+        <div className="p-6 text-center">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-500/20 mb-4">
+            <Trash2 className="h-8 w-8 text-red-400" />
+          </div>
+          <h3 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} mb-4`}>Eliminar Usuario</h3>
+          <div className={`p-4 rounded-xl ${isDark ? 'bg-zinc-800/80' : 'bg-gray-50'} border ${isDark ? 'border-red-500/20' : 'border-red-200'} mb-4 text-left space-y-2`}>
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-red-400/70" />
+              <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{usuario.nombre}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Mail className="h-4 w-4 text-red-400/70" />
+              <span className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-600'}`}>{usuario.email}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Building className="h-4 w-4 text-red-400/70" />
+              <span className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{usuario.area || '-'}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Briefcase className="h-4 w-4 text-red-400/70" />
+              <span className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{usuario.puesto || '-'}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Shield className="h-4 w-4 text-red-400/70" />
+              <span className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{usuario.rol}</span>
+            </div>
+          </div>
+          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm mb-6`}>
+            Esta seguro de eliminar este usuario? Esta accion no se puede deshacer.
+          </p>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={onClose}
+              disabled={loading}
+              className={`px-6 py-3 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} hover:border-purple-500/40 transition-all disabled:opacity-50`}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={loading}
+              className="px-6 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-red-500/25 transition-all flex items-center gap-2"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Eliminando...' : 'Eliminar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal de reasignación
+function ReassignmentModal({
+  userId,
+  userName,
+  userRol,
+  assignments,
+  allUsuarios,
+  onComplete,
+  onClose,
+}: {
+  userId: number;
+  userName: string;
+  userRol: string;
+  assignments: AssignmentsData;
+  allUsuarios: UsuarioAdmin[];
+  onComplete: (reassignments: Reassignment[]) => void;
+  onClose: () => void;
+}) {
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+  const [selections, setSelections] = useState<Record<string, number | null>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const eligibleUsers = allUsuarios.filter(u =>
+    u.id !== userId &&
+    (u.rol === userRol || u.rol === 'Administrador' || u.rol === 'DEV')
+  );
+
+  type AssignmentItem = { key: string; type: 'solicitud' | 'propuesta' | 'tarea'; id: number; label: string; status: string };
+
+  const allItems: AssignmentItem[] = [
+    ...assignments.solicitudes.map(s => ({
+      key: `solicitud-${s.id}`,
+      type: 'solicitud' as const,
+      id: s.id,
+      label: `#${s.id} · ${s.razon_social || s.marca_nombre || 'Sin cliente'}`,
+      status: s.status,
+    })),
+    ...assignments.propuestas.map(p => ({
+      key: `propuesta-${p.id}`,
+      type: 'propuesta' as const,
+      id: p.id,
+      label: `#${p.id} · Sol. #${p.solicitud_id}${p.articulo ? ` · ${p.articulo}` : ''}`,
+      status: p.status,
+    })),
+    ...assignments.tareas.map(t => ({
+      key: `tarea-${t.id}`,
+      type: 'tarea' as const,
+      id: t.id,
+      label: t.titulo || `Tarea #${t.id}`,
+      status: t.estatus || 'Sin estatus',
+    })),
+  ];
+
+  const selectedCount = allItems.filter(item => selections[item.key]).length;
+  const allSelected = allItems.length > 0 && selectedCount === allItems.length;
+
+  const handleGlobalAssign = (newUserId: number) => {
+    const newSelections: Record<string, number> = {};
+    allItems.forEach(item => { newSelections[item.key] = newUserId; });
+    setSelections(newSelections);
+  };
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const reassignments: Reassignment[] = allItems.map(item => ({
+        type: item.type,
+        id: item.id,
+        newUserId: selections[item.key]!,
+      }));
+      await usuariosService.reassign(userId, reassignments);
+      onComplete(reassignments);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al reasignar');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const renderSection = (title: string, items: AssignmentItem[], icon: React.ReactNode) => {
+    if (items.length === 0) return null;
+    return (
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-2">
+          {icon}
+          <h4 className={`text-sm font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+            {title} ({items.length})
+          </h4>
+        </div>
+        <div className={`rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} overflow-hidden`}>
+          {items.map((item, idx) => (
+            <div
+              key={item.key}
+              className={`flex items-center justify-between gap-3 px-4 py-3 ${idx > 0 ? `border-t ${isDark ? 'border-purple-500/10' : 'border-purple-100'}` : ''} ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'}`}
+            >
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm font-medium truncate ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.label}</p>
+                <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{item.status}</p>
+              </div>
+              <select
+                value={selections[item.key] || ''}
+                onChange={(e) => setSelections(prev => ({ ...prev, [item.key]: Number(e.target.value) || null }))}
+                className={`w-48 px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-zinc-700 border-purple-500/20 text-white' : 'bg-white border-purple-200 text-gray-900'} border focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
+              >
+                <option value="">Seleccionar...</option>
+                {eligibleUsers.map(u => (
+                  <option key={u.id} value={u.id}>{u.nombre}</option>
+                ))}
+              </select>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+      <div className={`w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl ${isDark ? 'bg-zinc-900 border-purple-500/20' : 'bg-white border-purple-200'} border shadow-2xl`}>
+        {/* Header */}
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-xl ${isDark ? 'bg-amber-500/10' : 'bg-amber-50'}`}>
+              <AlertTriangle className="h-5 w-5 text-amber-400" />
+            </div>
+            <h2 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+              Reasignacion de responsabilidades
+            </h2>
+          </div>
+          <button onClick={onClose} className={`p-2 rounded-lg ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'} transition-colors`}>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6">
+          <p className={`text-sm mb-4 ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
+            El usuario <strong className={isDark ? 'text-white' : 'text-gray-900'}>{userName}</strong> tiene{' '}
+            <strong>{allItems.length}</strong> asignacion(es) activa(s).
+            Selecciona un sustituto para cada elemento antes de continuar.
+          </p>
+
+          {/* Global assign */}
+          <div className={`flex items-center gap-3 p-4 rounded-xl mb-6 ${isDark ? 'bg-purple-500/10 border-purple-500/20' : 'bg-purple-50 border-purple-200'} border`}>
+            <label className={`text-sm font-medium whitespace-nowrap ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+              Asignar todos a:
+            </label>
+            <select
+              onChange={(e) => { if (e.target.value) handleGlobalAssign(Number(e.target.value)); }}
+              className={`flex-1 px-3 py-2 rounded-lg text-sm ${isDark ? 'bg-zinc-800 border-purple-500/20 text-white' : 'bg-white border-purple-200 text-gray-900'} border focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
+              defaultValue=""
+            >
+              <option value="">Seleccionar usuario...</option>
+              {eligibleUsers.map(u => (
+                <option key={u.id} value={u.id}>{u.nombre} ({u.rol})</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Sections */}
+          {renderSection('Solicitudes', allItems.filter(i => i.type === 'solicitud'), <Briefcase className="h-4 w-4 text-purple-400" />)}
+          {renderSection('Propuestas', allItems.filter(i => i.type === 'propuesta'), <Send className="h-4 w-4 text-blue-400" />)}
+          {renderSection('Tareas', allItems.filter(i => i.type === 'tarea'), <CheckCircle2 className="h-4 w-4 text-green-400" />)}
+        </div>
+
+        {/* Footer */}
+        <div className={`p-6 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+          {error && (
+            <p className="text-sm text-red-400 mb-3">{error}</p>
+          )}
+          {!allSelected && (
+            <p className={`text-sm mb-3 ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+              <AlertTriangle className="h-4 w-4 inline mr-1" />
+              Faltan {allItems.length - selectedCount} reasignacion(es) por completar
+            </p>
+          )}
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={onClose}
+              className={`px-4 py-2 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'} transition-colors`}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={!allSelected || submitting}
+              className={`px-4 py-2 rounded-xl text-sm font-medium text-white transition-colors ${
+                allSelected && !submitting
+                  ? 'bg-purple-600 hover:bg-purple-700'
+                  : 'bg-purple-600/50 cursor-not-allowed'
+              }`}
+            >
+              {submitting ? (
+                <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Reasignando...</span>
+              ) : (
+                'Confirmar reasignaciones'
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modal para restablecer contraseña (admin)
+function ResetPasswordModal({
+  usuario,
+  onClose,
+  onSubmit,
+  loading,
+}: {
+  usuario: UsuarioAdmin;
+  onClose: () => void;
+  onSubmit: (nuevaPassword: string) => void;
+  loading: boolean;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const inputClasses = getInputClasses(isDark);
+  const [nuevaPassword, setNuevaPassword] = useState('');
+  const [confirmar, setConfirmar] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (nuevaPassword.length < 6) return setError('Mínimo 6 caracteres');
+    if (nuevaPassword !== confirmar) return setError('Las contraseñas no coinciden');
+    setError(null);
+    onSubmit(nuevaPassword);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-md ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'}`}>
+          <div className="flex items-center gap-4">
+            <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-purple-500/20">
+              <KeyRound className="h-5 w-5 text-purple-400" />
+            </div>
+            <div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Restablecer contraseña</h2>
+              <p className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>{usuario.nombre}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && (
+            <div className={`p-3 text-sm rounded-lg border ${isDark ? 'text-red-400 bg-red-500/10 border-red-500/30' : 'text-red-600 bg-red-50 border-red-200'}`}>
+              {error}
+            </div>
+          )}
+          <div>
+            <label className={getLabelClasses(isDark)}>Nueva contraseña</label>
+            <input type="password" value={nuevaPassword} onChange={(e) => setNuevaPassword(e.target.value)}
+              className={inputClasses} placeholder="Mínimo 6 caracteres" required />
+          </div>
+          <div>
+            <label className={getLabelClasses(isDark)}>Confirmar contraseña</label>
+            <input type="password" value={confirmar} onChange={(e) => setConfirmar(e.target.value)}
+              className={inputClasses} placeholder="Repite la contraseña" required />
+          </div>
+          <div className={`flex justify-end gap-3 pt-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+            <button type="button" onClick={onClose}
+              className={`px-5 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300 bg-zinc-800 border-purple-500/20 hover:bg-purple-500/10' : 'text-gray-700 bg-gray-100 border-purple-200 hover:bg-purple-50'} border hover:border-purple-500/40 transition-all`}>
+              Cancelar
+            </button>
+            <button type="submit" disabled={loading}
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25 transition-all flex items-center gap-2">
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Guardando...' : 'Restablecer'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Modal para crear/editar equipo
+function EquipoModal({
+  equipo,
+  onClose,
+  onSubmit,
+  loading,
+}: {
+  equipo: Equipo | null;
+  onClose: () => void;
+  onSubmit: (data: CreateEquipoInput) => void;
+  loading: boolean;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const inputClasses = getInputClasses(isDark);
+  const labelClasses = getLabelClasses(isDark);
+  const [form, setForm] = useState<CreateEquipoInput>({
+    nombre: equipo?.nombre || '',
+    descripcion: equipo?.descripcion || '',
+    color: equipo?.color || '#8B5CF6',
+  });
+
+  const COLORES_DISPONIBLES = [
+    '#8B5CF6', // purple
+    '#EC4899', // pink
+    '#3B82F6', // blue
+    '#10B981', // green
+    '#F59E0B', // yellow
+    '#EF4444', // red
+    '#6366F1', // indigo
+    '#14B8A6', // teal
+  ];
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-md ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'}`}>
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl" style={{ backgroundColor: `${form.color}30` }}>
+              <Network className="h-6 w-6" style={{ color: form.color }} />
+            </div>
+            <div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{equipo ? 'Editar Equipo' : 'Nuevo Equipo'}</h2>
+              <p className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>Define el nombre y color del equipo</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className={labelClasses}>Nombre del equipo *</label>
+            <input
+              type="text"
+              value={form.nombre}
+              onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+              className={inputClasses}
+              placeholder="Ej: Equipo Comercial Norte"
+              required
+            />
+          </div>
+
+          <div>
+            <label className={labelClasses}>Descripcion (opcional)</label>
+            <textarea
+              value={form.descripcion}
+              onChange={(e) => setForm({ ...form, descripcion: e.target.value })}
+              className={`${inputClasses} resize-none`}
+              placeholder="Descripcion breve del equipo..."
+              rows={3}
+            />
+          </div>
+
+          <div>
+            <label className={labelClasses}>Color del equipo</label>
+            <div className="flex gap-2 flex-wrap">
+              {COLORES_DISPONIBLES.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  onClick={() => setForm({ ...form, color })}
+                  className={`w-10 h-10 rounded-xl transition-all ${
+                    form.color === color ? `ring-2 ring-white ring-offset-2 ${isDark ? 'ring-offset-zinc-900' : 'ring-offset-white'} scale-110` : 'hover:scale-105'
+                  }`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className={`flex justify-end gap-3 pt-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-5 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} hover:border-purple-500/40 transition-all`}
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !form.nombre.trim()}
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all flex items-center gap-2"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Guardando...' : equipo ? 'Guardar' : 'Crear Equipo'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Modal para agregar miembros a un equipo
+function AddMembersModal({
+  equipo,
+  onClose,
+  onSubmit,
+  loading,
+}: {
+  equipo: Equipo;
+  onClose: () => void;
+  onSubmit: (usuarioIds: number[]) => void;
+  loading: boolean;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [search, setSearch] = useState('');
+
+  const { data: availableUsers, isLoading: loadingUsers } = useQuery({
+    queryKey: ['available-users', equipo.id],
+    queryFn: () => equiposService.getAvailableUsers(equipo.id),
+  });
+
+  const filteredUsers = useMemo(() => {
+    if (!availableUsers) return [];
+    if (!search) return availableUsers;
+    const searchLower = search.toLowerCase();
+    return availableUsers.filter(
+      (u) =>
+        u.nombre.toLowerCase().includes(searchLower) ||
+        u.email.toLowerCase().includes(searchLower) ||
+        u.area?.toLowerCase().includes(searchLower)
+    );
+  }, [availableUsers, search]);
+
+  const toggleSelect = (id: number) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedIds(newSelected);
+  };
+
+  const handleSubmit = () => {
+    if (selectedIds.size > 0) {
+      onSubmit(Array.from(selectedIds));
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-lg ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[80vh] flex flex-col`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'}`}>
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-xl" style={{ backgroundColor: `${equipo.color}30` }}>
+              <UserPlus className="h-6 w-6" style={{ color: equipo.color || '#8B5CF6' }} />
+            </div>
+            <div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Agregar Miembros</h2>
+              <p className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>a {equipo.nombre}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <div className={`p-4 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+          <div className="relative">
+            <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-purple-400" />
+            <input
+              type="search"
+              placeholder="Buscar usuarios..."
+              className={`w-full pl-11 pr-4 py-3 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900/80 text-white' : 'bg-gray-50 text-gray-900'} text-sm ${isDark ? 'placeholder:text-zinc-500' : 'placeholder:text-gray-400'} focus:outline-none focus:ring-2 focus:ring-purple-500/30`}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {loadingUsers ? (
+            <div className="flex items-center justify-center py-10">
+              <Loader2 className="h-8 w-8 text-purple-400 animate-spin" />
+            </div>
+          ) : filteredUsers.length === 0 ? (
+            <div className="text-center py-10">
+              <Users className="h-12 w-12 text-purple-400/50 mx-auto mb-3" />
+              <p className={isDark ? 'text-zinc-400' : 'text-gray-500'}>No hay usuarios disponibles</p>
+            </div>
+          ) : (
+            filteredUsers.map((user) => (
+              <button
+                key={user.id}
+                onClick={() => toggleSelect(user.id)}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl border transition-all ${
+                  selectedIds.has(user.id)
+                    ? `${isDark ? 'bg-purple-500/20' : 'bg-purple-50'} ${isDark ? 'border-purple-500/50' : 'border-purple-300'}`
+                    : `${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'} ${isDark ? 'border-purple-500/10' : 'border-gray-200'} ${isDark ? 'hover:border-purple-500/30' : 'hover:border-purple-300'}`
+                }`}
+              >
+                <UserAvatar nombre={user.nombre} foto_perfil={user.foto_perfil} size="sm" />
+                <div className="flex-1 text-left">
+                  <p className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium text-sm`}>{user.nombre}</p>
+                  <p className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs`}>{user.area} - {user.puesto}</p>
+                </div>
+                {selectedIds.has(user.id) && (
+                  <div className="w-6 h-6 rounded-full bg-purple-500 flex items-center justify-center">
+                    <Check className="h-4 w-4 text-white" />
+                  </div>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className={`p-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'} flex justify-between items-center`}>
+          <span className={`text-sm ${isDark ? 'text-purple-300' : 'text-purple-600'}`}>
+            {selectedIds.size} usuario(s) seleccionado(s)
+          </span>
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className={`px-5 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} transition-all`}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={loading || selectedIds.size === 0}
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25 transition-all flex items-center gap-2"
+            >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {loading ? 'Agregando...' : 'Agregar'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Componente de tarjeta de equipo
+function EquipoCard({
+  equipo,
+  onEdit,
+  onDelete,
+  onAddMembers,
+  onRemoveMember,
+}: {
+  equipo: Equipo;
+  onEdit: () => void;
+  onDelete: () => void;
+  onAddMembers: () => void;
+  onRemoveMember: (userId: number) => void;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const user = useAuthStore((s) => s.user);
+  const [expanded, setExpanded] = useState(false);
+  const isDevTeam = equipo.nombre === 'DEV';
+  const canManage = !isDevTeam || user?.rol === 'DEV';
+
+  return (
+    <div
+      className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} overflow-hidden`}
+      style={{ borderLeftColor: equipo.color || '#8B5CF6', borderLeftWidth: '4px' }}
+    >
+      <div className="p-5">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl" style={{ backgroundColor: `${equipo.color}20` }}>
+              <Network className="h-5 w-5" style={{ color: equipo.color || '#8B5CF6' }} />
+            </div>
+            <div>
+              <h3 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{equipo.nombre}</h3>
+              {equipo.descripcion && (
+                <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-1`}>{equipo.descripcion}</p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {canManage ? (
+              <>
+                <button
+                  onClick={onAddMembers}
+                  className={`p-2 rounded-lg ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} text-purple-400 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} transition-all`}
+                  title="Agregar miembros"
+                >
+                  <UserPlus className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={onEdit}
+                  className={`p-2 rounded-lg ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} text-purple-400 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} transition-all`}
+                  title="Editar equipo"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+                {!isDevTeam && (
+                  <button
+                    onClick={onDelete}
+                    className={`p-2 rounded-lg ${isDark ? 'bg-red-500/10' : 'bg-red-50'} text-red-400 ${isDark ? 'hover:bg-red-500/20' : 'hover:bg-red-100'} border ${isDark ? 'border-red-500/20' : 'border-red-200'} transition-all`}
+                    title="Eliminar equipo"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </>
+            ) : (
+              <span className={`text-xs px-3 py-1.5 rounded-full ${isDark ? 'bg-zinc-800 text-zinc-500 border-zinc-700' : 'bg-gray-100 text-gray-400 border-gray-200'} border`}>
+                Solo miembros DEV
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center gap-2">
+          <span className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{equipo.miembros.length} miembro(s)</span>
+          {equipo.miembros.length > 0 && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className={`text-sm ${isDark ? 'text-purple-400 hover:text-purple-300' : 'text-purple-600 hover:text-purple-500'} transition-colors`}
+            >
+              {expanded ? 'Ocultar' : 'Ver miembros'}
+            </button>
+          )}
+        </div>
+
+        {/* Lista de miembros (colapsable) */}
+        {expanded && equipo.miembros.length > 0 && (
+          <div className={`mt-4 space-y-2 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'} pt-4`}>
+            {equipo.miembros.map((miembro) => (
+              <div
+                key={miembro.id}
+                className={`flex items-center justify-between p-3 rounded-xl ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'} border ${isDark ? 'border-purple-500/10' : 'border-gray-200'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <UserAvatar nombre={miembro.nombre} foto_perfil={miembro.foto_perfil} size="sm" />
+                  <div>
+                    <p className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium text-sm`}>{miembro.nombre}</p>
+                    <p className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs`}>{miembro.area} - {miembro.puesto}</p>
+                  </div>
+                </div>
+                {canManage && (
+                  <button
+                    onClick={() => onRemoveMember(miembro.id)}
+                    className={`p-1.5 rounded-lg ${isDark ? 'text-zinc-400' : 'text-gray-400'} hover:text-red-400 hover:bg-red-500/10 transition-all`}
+                    title="Remover del equipo"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Componente de la pestana Red de Trabajo
+function RedDeTrabajoTab() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const queryClient = useQueryClient();
+  const [showEquipoModal, setShowEquipoModal] = useState(false);
+  const [editingEquipo, setEditingEquipo] = useState<Equipo | null>(null);
+  const [deletingEquipo, setDeletingEquipo] = useState<Equipo | null>(null);
+  const [addingMembersEquipo, setAddingMembersEquipo] = useState<Equipo | null>(null);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [filterArea, setFilterArea] = useState<string>('');
+  const [showAreaDropdown, setShowAreaDropdown] = useState(false);
+  const areaDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (areaDropdownRef.current && !areaDropdownRef.current.contains(e.target as Node)) {
+        setShowAreaDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const { data: equipos, isLoading } = useQuery({
+    queryKey: ['equipos'],
+    queryFn: () => equiposService.getAll(),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: CreateEquipoInput) => equiposService.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['equipos'] });
+      setShowEquipoModal(false);
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: CreateEquipoInput }) => equiposService.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['equipos'] });
+      setEditingEquipo(null);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => equiposService.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['equipos'] });
+      setDeletingEquipo(null);
+    },
+  });
+
+  const addMembersMutation = useMutation({
+    mutationFn: ({ equipoId, usuarioIds }: { equipoId: number; usuarioIds: number[] }) =>
+      equiposService.addMembers(equipoId, usuarioIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['equipos'] });
+      queryClient.invalidateQueries({ queryKey: ['available-users'] });
+      setAddingMembersEquipo(null);
+    },
+  });
+
+  const removeMemberMutation = useMutation({
+    mutationFn: ({ equipoId, usuarioId }: { equipoId: number; usuarioId: number }) =>
+      equiposService.removeMembers(equipoId, [usuarioId]),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['equipos'] });
+    },
+  });
+
+  const handleCreateEquipo = (data: CreateEquipoInput) => {
+    createMutation.mutate(data);
+  };
+
+  const handleUpdateEquipo = (data: CreateEquipoInput) => {
+    if (editingEquipo) {
+      updateMutation.mutate({ id: editingEquipo.id, data });
+    }
+  };
+
+  const handleDeleteEquipo = () => {
+    if (deletingEquipo) {
+      deleteMutation.mutate(deletingEquipo.id);
+    }
+  };
+
+  const handleAddMembers = (usuarioIds: number[]) => {
+    if (addingMembersEquipo) {
+      addMembersMutation.mutate({ equipoId: addingMembersEquipo.id, usuarioIds });
+    }
+  };
+
+  const handleRemoveMember = (equipoId: number, usuarioId: number) => {
+    removeMemberMutation.mutate({ equipoId, usuarioId });
+  };
+
+  const areasEnEquipos = useMemo(() => {
+    if (!equipos) return [];
+    const areas = new Set<string>();
+    for (const eq of equipos) {
+      for (const m of eq.miembros) {
+        if (m.area) areas.add(m.area);
+      }
+    }
+    return Array.from(areas).sort();
+  }, [equipos]);
+
+  const filteredEquipos = useMemo(() => {
+    if (!equipos) return [];
+    return equipos.filter((eq) => {
+      if (filterArea) {
+        const hasMemberInArea = eq.miembros.some((m) => m.area === filterArea);
+        if (!hasMemberInArea) return false;
+      }
+      if (!debouncedSearch) return true;
+      const s = debouncedSearch.toLowerCase();
+      if (eq.nombre.toLowerCase().includes(s)) return true;
+      if (eq.descripcion?.toLowerCase().includes(s)) return true;
+      return eq.miembros.some(
+        (m) =>
+          m.nombre.toLowerCase().includes(s) ||
+          m.email.toLowerCase().includes(s) ||
+          m.area?.toLowerCase().includes(s) ||
+          m.puesto?.toLowerCase().includes(s)
+      );
+    });
+  }, [equipos, debouncedSearch, filterArea]);
+
+  return (
+    <div className="space-y-5">
+      {/* Control Bar */}
+      <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} backdrop-blur-xl p-5`}>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          {/* Search */}
+          <div className="relative flex-1 w-full sm:max-w-md">
+            <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-purple-400" />
+            <input
+              type="search"
+              placeholder="Buscar equipos o personas..."
+              className={`w-full pl-11 pr-4 py-3 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900/80 text-white placeholder:text-zinc-500' : 'bg-gray-50 text-gray-900 placeholder:text-gray-400'} text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all hover:border-purple-500/40`}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-3">
+            {/* Area Filter */}
+            <div className="relative" ref={areaDropdownRef}>
+              <button
+                onClick={() => setShowAreaDropdown(!showAreaDropdown)}
+                className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${
+                  filterArea
+                    ? 'bg-purple-600 text-white border-purple-500'
+                    : isDark ? 'bg-zinc-900/80 text-zinc-400 border-purple-500/20 hover:border-purple-500/40' : 'bg-gray-50 text-gray-500 border-purple-200 hover:border-purple-300'
+                }`}
+              >
+                <Filter className="h-4 w-4" />
+                {filterArea || 'Área'}
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+              {showAreaDropdown && (
+                <div className={`absolute right-0 top-full mt-2 w-56 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-purple-200 bg-white'} shadow-xl z-50 py-1 max-h-64 overflow-y-auto`}>
+                  <button
+                    onClick={() => { setFilterArea(''); setShowAreaDropdown(false); }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                      !filterArea
+                        ? isDark ? 'bg-purple-500/20 text-purple-300' : 'bg-purple-50 text-purple-700'
+                        : isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    Todas las áreas
+                  </button>
+                  {areasEnEquipos.map((area) => (
+                    <button
+                      key={area}
+                      onClick={() => { setFilterArea(area); setShowAreaDropdown(false); }}
+                      className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                        filterArea === area
+                          ? isDark ? 'bg-purple-500/20 text-purple-300' : 'bg-purple-50 text-purple-700'
+                          : isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {area}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowEquipoModal(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all"
+            >
+              <Plus className="h-4 w-4" />
+              Nuevo Equipo
+            </button>
+            <div className={`px-4 py-2 rounded-xl ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+              <span className={`${isDark ? 'text-purple-300' : 'text-purple-600'} text-sm font-medium`}>{filteredEquipos.length}{equipos && filteredEquipos.length !== equipos.length ? `/${equipos.length}` : ''} equipos</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Lista de equipos */}
+      {isLoading ? (
+        <div className="flex flex-col items-center justify-center py-20">
+          <Loader2 className="h-10 w-10 text-purple-400 animate-spin mb-4" />
+          <p className={`${isDark ? 'text-purple-300/70' : 'text-gray-500'} text-sm`}>Cargando equipos...</p>
+        </div>
+      ) : filteredEquipos.length > 0 ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {filteredEquipos.map((equipo) => (
+            <EquipoCard
+              key={equipo.id}
+              equipo={equipo}
+              onEdit={() => setEditingEquipo(equipo)}
+              onDelete={() => setDeletingEquipo(equipo)}
+              onAddMembers={() => setAddingMembersEquipo(equipo)}
+              onRemoveMember={(userId) => handleRemoveMember(equipo.id, userId)}
+            />
+          ))}
+        </div>
+      ) : (debouncedSearch || filterArea) ? (
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} p-16 text-center`}>
+          <Search className="h-16 w-16 text-purple-400/50 mx-auto mb-4" />
+          <h3 className={`text-xl font-semibold ${isDark ? 'text-white' : 'text-gray-900'} mb-2`}>Sin resultados</h3>
+          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-6`}>No se encontraron equipos con los filtros aplicados</p>
+          <button
+            onClick={() => { setSearch(''); setFilterArea(''); }}
+            className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} transition-all`}
+          >
+            <X className="h-4 w-4" />
+            Limpiar filtros
+          </button>
+        </div>
+      ) : (
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} p-16 text-center`}>
+          <Network className="h-16 w-16 text-purple-400/50 mx-auto mb-4" />
+          <h3 className={`text-xl font-semibold ${isDark ? 'text-white' : 'text-gray-900'} mb-2`}>No hay equipos creados</h3>
+          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-6`}>Crea tu primer equipo para organizar a los usuarios</p>
+          <button
+            onClick={() => setShowEquipoModal(true)}
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 transition-all"
+          >
+            <Plus className="h-4 w-4" />
+            Crear Primer Equipo
+          </button>
+        </div>
+      )}
+
+      {/* Modales */}
+      {showEquipoModal && (
+        <EquipoModal
+          equipo={null}
+          onClose={() => setShowEquipoModal(false)}
+          onSubmit={handleCreateEquipo}
+          loading={createMutation.isPending}
+        />
+      )}
+
+      {editingEquipo && (
+        <EquipoModal
+          equipo={editingEquipo}
+          onClose={() => setEditingEquipo(null)}
+          onSubmit={handleUpdateEquipo}
+          loading={updateMutation.isPending}
+        />
+      )}
+
+      {deletingEquipo && (
+        <DeleteConfirmModal
+          count={1}
+          title="Eliminar Equipo"
+          message={`Estas seguro de eliminar el equipo "${deletingEquipo.nombre}"? Los miembros no seran eliminados, solo desvinculados del equipo.`}
+          onClose={() => setDeletingEquipo(null)}
+          onConfirm={handleDeleteEquipo}
+          loading={deleteMutation.isPending}
+        />
+      )}
+
+      {addingMembersEquipo && (
+        <AddMembersModal
+          equipo={addingMembersEquipo}
+          onClose={() => setAddingMembersEquipo(null)}
+          onSubmit={handleAddMembers}
+          loading={addMembersMutation.isPending}
+        />
+      )}
+    </div>
+  );
+}
+
+// Componente de la pestana Usuarios (contenido original)
+function UsuariosTab() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [editingUsuario, setEditingUsuario] = useState<UsuarioAdmin | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [resetPasswordUsuario, setResetPasswordUsuario] = useState<UsuarioAdmin | null>(null);
+  const [deletingUsuario, setDeletingUsuario] = useState<UsuarioAdmin | null>(null);
+  const [reassignmentConfig, setReassignmentConfig] = useState<{
+    userId: number;
+    userName: string;
+    userRol: string;
+    assignments: AssignmentsData;
+    pendingAction: () => void;
+  } | null>(null);
+  const [loadingAssignments, setLoadingAssignments] = useState(false);
+  const currentUser = useAuthStore((s) => s.user);
+  const canDelete = currentUser?.email && EMAILS_CON_PERMISO_ELIMINAR.includes(currentUser.email);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data: usuarios, isLoading } = useQuery({
+    queryKey: ['usuarios-admin'],
+    queryFn: () => usuariosService.getAll(),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (data: CreateUsuarioInput) => usuariosService.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['usuarios-admin'] });
+      setShowCreateModal(false);
+      setCreateError(null);
+    },
+    onError: (error: Error) => {
+      setCreateError(error.message);
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: number; data: UpdateUsuarioInput }) => usuariosService.update(id, data),
+    onSuccess: (result: any) => {
+      // Si el backend devuelve nuevos tokens (usuario editó su propio perfil), actualizar sesión
+      if (result?.newTokens) {
+        const { accessToken, refreshToken, user } = result.newTokens;
+        useAuthStore.getState().setAuth(user, accessToken, refreshToken);
+        localStorage.setItem('accessToken', accessToken);
+        localStorage.setItem('refreshToken', refreshToken);
+      }
+      queryClient.invalidateQueries({ queryKey: ['usuarios-admin'] });
+      setEditingUsuario(null);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (ids: number[]) => usuariosService.deleteMany(ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['usuarios-admin'] });
+      setSelectedIds(new Set());
+      setShowDeleteConfirm(false);
+    },
+  });
+
+  const deleteSingleMutation = useMutation({
+    mutationFn: (id: number) => usuariosService.deleteMany([id]),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['usuarios-admin'] });
+      setDeletingUsuario(null);
+    },
+  });
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: ({ id, nuevaPassword }: { id: number; nuevaPassword: string }) =>
+      usuariosService.adminResetPassword(id, nuevaPassword),
+    onSuccess: () => setResetPasswordUsuario(null),
+  });
+
+  const handleCreate = (data: CreateUsuarioInput) => {
+    createMutation.mutate(data);
+  };
+
+  const handleUpdate = async (data: UpdateUsuarioInput) => {
+    if (!editingUsuario) return;
+
+    // Si el rol cambia, verificar asignaciones primero
+    if (data.rol && data.rol !== editingUsuario.rol) {
+      setLoadingAssignments(true);
+      try {
+        const oldPerms = getPermissions(editingUsuario.rol);
+        const newPerms = getPermissions(data.rol);
+
+        // Solo pedir reasignación de elementos donde el nuevo rol pierde acceso
+        const losesSolicitudes = oldPerms.canSeeSolicitudes && !newPerms.canSeeSolicitudes;
+        const losesPropuestas = oldPerms.canSeePropuestas && !newPerms.canSeePropuestas;
+        const losesCampanas = oldPerms.canSeeCampanas && !newPerms.canSeeCampanas;
+
+        // Si el nuevo rol mantiene acceso a todo, no pedir reasignación
+        if (!losesSolicitudes && !losesPropuestas && !losesCampanas) {
+          // El nuevo rol puede seguir manejando todas las asignaciones
+          updateMutation.mutate({ id: editingUsuario.id, data });
+          return;
+        }
+
+        const assignments = await usuariosService.getAssignments(editingUsuario.id);
+
+        // Filtrar solo las asignaciones donde pierde acceso
+        const filteredAssignments: AssignmentsData = {
+          solicitudes: losesSolicitudes ? assignments.solicitudes : [],
+          propuestas: losesPropuestas ? assignments.propuestas : [],
+          tareas: losesCampanas ? assignments.tareas : [],
+        };
+
+        const hasAny = filteredAssignments.solicitudes.length > 0 || filteredAssignments.propuestas.length > 0 || filteredAssignments.tareas.length > 0;
+
+        if (hasAny) {
+          const capturedUser = editingUsuario;
+          setEditingUsuario(null);
+          setReassignmentConfig({
+            userId: capturedUser.id,
+            userName: capturedUser.nombre,
+            userRol: capturedUser.rol,
+            assignments: filteredAssignments,
+            pendingAction: () => updateMutation.mutate({ id: capturedUser.id, data }),
+          });
+          return;
+        }
+      } catch {
+        // Si falla la consulta, continuar con el update normal
+      } finally {
+        setLoadingAssignments(false);
+      }
+    }
+
+    updateMutation.mutate({ id: editingUsuario.id, data });
+  };
+
+  const handleDeleteWithCheck = async (usuario: UsuarioAdmin) => {
+    setLoadingAssignments(true);
+    try {
+      const assignments = await usuariosService.getAssignments(usuario.id);
+      const hasAny = assignments.solicitudes.length > 0 || assignments.propuestas.length > 0 || assignments.tareas.length > 0;
+
+      if (hasAny) {
+        setReassignmentConfig({
+          userId: usuario.id,
+          userName: usuario.nombre,
+          userRol: usuario.rol,
+          assignments,
+          pendingAction: () => deleteSingleMutation.mutate(usuario.id),
+        });
+      } else {
+        setDeletingUsuario(usuario);
+      }
+    } catch {
+      setDeletingUsuario(usuario);
+    } finally {
+      setLoadingAssignments(false);
+    }
+  };
+
+  const handleDeleteSelected = () => {
+    deleteMutation.mutate(Array.from(selectedIds));
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredUsuarios.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredUsuarios.map((u) => u.id)));
+    }
+  };
+
+  const toggleSelect = (id: number) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedIds(newSelected);
+  };
+
+  const filteredUsuarios =
+    usuarios?.filter((u) => {
+      if (!debouncedSearch) return true;
+      const searchLower = debouncedSearch.toLowerCase();
+      return (
+        u.nombre.toLowerCase().includes(searchLower) ||
+        u.email.toLowerCase().includes(searchLower) ||
+        u.area?.toLowerCase().includes(searchLower) ||
+        u.puesto?.toLowerCase().includes(searchLower) ||
+        u.rol.toLowerCase().includes(searchLower)
+      );
+    }) || [];
+
+  const getRolBadgeStyle = (rol: string) => {
+    switch (rol) {
+      case 'Administrador':
+        return isDark ? 'bg-purple-500/20 text-purple-300 border-purple-500/30' : 'bg-purple-50 text-purple-700 border-purple-200';
+      case 'Normal':
+        return isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-100 text-gray-700 border-gray-300';
+      default:
+        return isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200';
+    }
+  };
+
+  const allSelected = filteredUsuarios.length > 0 && selectedIds.size === filteredUsuarios.length;
+  const someSelected = selectedIds.size > 0;
+
+  return (
+    <>
+      <div className="space-y-5">
+        {/* Control Bar */}
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} backdrop-blur-xl p-5`}>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            {/* Search */}
+            <div className="relative flex-1 w-full sm:max-w-md">
+              <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-purple-400" />
+              <input
+                type="search"
+                placeholder="Buscar usuarios..."
+                className={`w-full pl-11 pr-4 py-3 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900/80 text-white placeholder:text-zinc-500' : 'bg-gray-50 text-gray-900 placeholder:text-gray-400'} text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all hover:border-purple-500/40`}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-3">
+              {/* Add Button */}
+              <button
+                onClick={() => {
+                  setCreateError(null);
+                  setShowCreateModal(true);
+                }}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all"
+              >
+                <Plus className="h-4 w-4" />
+                Nuevo Usuario
+              </button>
+
+              {/* Delete Button - solo visible cuando hay seleccion */}
+              {someSelected && (
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 shadow-lg shadow-red-500/25 transition-all"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Eliminar ({selectedIds.size})
+                </button>
+              )}
+
+              {/* Stats */}
+              <div className={`px-4 py-2 rounded-xl ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+                <span className={`${isDark ? 'text-purple-300' : 'text-purple-600'} text-sm font-medium`}>{usuarios?.length || 0} usuarios</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Data Table */}
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} backdrop-blur-xl overflow-hidden shadow-xl ${isDark ? 'shadow-purple-500/5' : 'shadow-gray-200/50'}`}>
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center py-20">
+              <Loader2 className="h-10 w-10 text-purple-400 animate-spin mb-4" />
+              <p className={`${isDark ? 'text-purple-300/70' : 'text-gray-500'} text-sm`}>Cargando usuarios...</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className={`border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/30 via-fuchsia-900/20 to-purple-900/30' : 'bg-purple-50/50'}`}>
+                    <th className="px-5 py-4 text-left">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleSelectAll}
+                        className={`w-4 h-4 rounded border-purple-500/50 ${isDark ? 'bg-zinc-800' : 'bg-white'} text-purple-600 focus:ring-purple-500/50 focus:ring-offset-0 cursor-pointer`}
+                      />
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>
+                      Usuario
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden md:table-cell`}>
+                      Email
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden lg:table-cell`}>
+                      Area
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden lg:table-cell`}>
+                      Puesto
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>
+                      Rol
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden xl:table-cell`}>
+                      Equipos
+                    </th>
+                    <th className={`px-5 py-4 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>
+                      Acciones
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsuarios.map((usuario: UsuarioAdmin) => (
+                    <tr
+                      key={usuario.id}
+                      className={`border-b ${isDark ? 'border-purple-500/10' : 'border-gray-100'} last:border-0 ${isDark ? 'hover:bg-purple-500/5' : 'hover:bg-purple-50/50'} transition-all ${
+                        selectedIds.has(usuario.id) ? (isDark ? 'bg-purple-500/10' : 'bg-purple-50') : ''
+                      }`}
+                    >
+                      <td className="px-5 py-4">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(usuario.id)}
+                          onChange={() => toggleSelect(usuario.id)}
+                          className={`w-4 h-4 rounded border-purple-500/50 ${isDark ? 'bg-zinc-800' : 'bg-white'} text-purple-600 focus:ring-purple-500/50 focus:ring-offset-0 cursor-pointer`}
+                        />
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <UserAvatar nombre={usuario.nombre} foto_perfil={usuario.foto_perfil} size="md" />
+                          <div>
+                            <span className={`font-semibold ${isDark ? 'text-white' : 'text-gray-900'} text-sm block`}>{usuario.nombre}</span>
+                            <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'} md:hidden`}>{usuario.email}</span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 hidden md:table-cell">
+                        <div className="flex items-center gap-2">
+                          <Mail className="h-4 w-4 text-purple-400/50" />
+                          <span className={`${isDark ? 'text-zinc-300' : 'text-gray-600'} text-sm`}>{usuario.email}</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 hidden lg:table-cell">
+                        <div className="flex items-center gap-2">
+                          <Building className="h-4 w-4 text-purple-400/50" />
+                          <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm`}>{usuario.area || '-'}</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4 hidden lg:table-cell">
+                        <div className="flex items-center gap-2">
+                          <Briefcase className="h-4 w-4 text-purple-400/50" />
+                          <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm`}>{usuario.puesto || '-'}</span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <span
+                          title={usuario.rol}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border whitespace-nowrap max-w-[220px] ${getRolBadgeStyle(
+                            usuario.rol
+                          )}`}
+                        >
+                          <Shield className="h-3 w-3 flex-shrink-0" />
+                          <span className="truncate">{usuario.rol}</span>
+                        </span>
+                      </td>
+                      <td className="px-5 py-4 hidden xl:table-cell">
+                        {usuario.equipos && usuario.equipos.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {usuario.equipos.map((equipo) => (
+                              <span
+                                key={equipo.id}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border"
+                                style={{
+                                  backgroundColor: `${equipo.color || '#8B5CF6'}20`,
+                                  borderColor: `${equipo.color || '#8B5CF6'}50`,
+                                  color: equipo.color || '#8B5CF6',
+                                }}
+                                title={equipo.rol_equipo === 'Administrador' ? 'Administrador del equipo' : 'Miembro'}
+                              >
+                                {equipo.rol_equipo === 'Administrador' && (
+                                  <Crown className="h-3 w-3" />
+                                )}
+                                {equipo.nombre}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>Sin equipos</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setEditingUsuario(usuario)}
+                            className={`p-2 rounded-lg ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} text-purple-400 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} transition-all`}
+                            title="Editar usuario"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => setResetPasswordUsuario(usuario)}
+                            className={`p-2 rounded-lg ${isDark ? 'bg-amber-500/10' : 'bg-amber-50'} text-amber-400 ${isDark ? 'hover:bg-amber-500/20' : 'hover:bg-amber-100'} border ${isDark ? 'border-amber-500/20' : 'border-amber-200'} transition-all`}
+                            title="Restablecer contraseña"
+                          >
+                            <KeyRound className="h-4 w-4" />
+                          </button>
+                          {currentUser?.rol === 'DEV' && usuario.id !== currentUser.id && (
+                            <button
+                              onClick={async () => {
+                                if (!confirm(`¿Iniciar sesión como ${usuario.nombre}?`)) return;
+                                try {
+                                  const result = await usuariosService.impersonate(usuario.id);
+                                  useAuthStore.getState().setAuth(result.user, result.accessToken, result.refreshToken);
+                                  localStorage.setItem('accessToken', result.accessToken);
+                                  localStorage.setItem('refreshToken', result.refreshToken);
+                                  window.location.href = '/';
+                                } catch (err) {
+                                  alert(err instanceof Error ? err.message : 'Error al impersonar usuario');
+                                }
+                              }}
+                              className={`p-2 rounded-lg ${isDark ? 'bg-cyan-500/10' : 'bg-cyan-50'} text-cyan-400 ${isDark ? 'hover:bg-cyan-500/20' : 'hover:bg-cyan-100'} border ${isDark ? 'border-cyan-500/20' : 'border-cyan-200'} transition-all`}
+                              title="Iniciar sesión como este usuario"
+                            >
+                              <DoorOpen className="h-4 w-4" />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              onClick={() => handleDeleteWithCheck(usuario)}
+                              disabled={loadingAssignments}
+                              className={`p-2 rounded-lg ${isDark ? 'bg-red-500/10' : 'bg-red-50'} text-red-400 ${isDark ? 'hover:bg-red-500/20' : 'hover:bg-red-100'} border ${isDark ? 'border-red-500/20' : 'border-red-200'} transition-all`}
+                              title="Eliminar usuario"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {filteredUsuarios.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="px-5 py-16 text-center">
+                        <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} mb-4`}>
+                          <Users className="w-8 h-8 text-purple-400" />
+                        </div>
+                        <p className={`${isDark ? 'text-purple-300/70' : 'text-gray-500'} text-sm`}>No se encontraron usuarios</p>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Create Modal */}
+      {showCreateModal && (
+        <CreateModal
+          onClose={() => {
+            setShowCreateModal(false);
+            setCreateError(null);
+          }}
+          onSubmit={handleCreate}
+          loading={createMutation.isPending}
+          error={createError}
+        />
+      )}
+
+      {/* Edit Modal */}
+      {editingUsuario && (
+        <EditModal
+          usuario={editingUsuario}
+          onClose={() => setEditingUsuario(null)}
+          onSubmit={handleUpdate}
+          loading={updateMutation.isPending || loadingAssignments}
+        />
+      )}
+
+      {/* Reassignment Modal */}
+      {reassignmentConfig && (
+        <ReassignmentModal
+          userId={reassignmentConfig.userId}
+          userName={reassignmentConfig.userName}
+          userRol={reassignmentConfig.userRol}
+          assignments={reassignmentConfig.assignments}
+          allUsuarios={usuarios || []}
+          onComplete={() => {
+            reassignmentConfig.pendingAction();
+            setReassignmentConfig(null);
+          }}
+          onClose={() => setReassignmentConfig(null)}
+        />
+      )}
+
+      {/* Reset Password Modal */}
+      {resetPasswordUsuario && (
+        <ResetPasswordModal
+          usuario={resetPasswordUsuario}
+          onClose={() => setResetPasswordUsuario(null)}
+          onSubmit={(nuevaPassword) => resetPasswordMutation.mutate({ id: resetPasswordUsuario.id, nuevaPassword })}
+          loading={resetPasswordMutation.isPending}
+        />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <DeleteConfirmModal
+          count={selectedIds.size}
+          onClose={() => setShowDeleteConfirm(false)}
+          onConfirm={handleDeleteSelected}
+          loading={deleteMutation.isPending}
+        />
+      )}
+
+      {/* Delete Single User Modal */}
+      {deletingUsuario && (
+        <DeleteSingleUserModal
+          usuario={deletingUsuario}
+          onClose={() => setDeletingUsuario(null)}
+          onConfirm={() => deleteSingleMutation.mutate(deletingUsuario.id)}
+          loading={deleteSingleMutation.isPending}
+        />
+      )}
+    </>
+  );
+}
+
+// Componente de la pestana Tickets
+function TicketsTab() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const queryClient = useQueryClient();
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedTicket, setSelectedTicket] = useState<TicketType | null>(null);
+
+  const { data: ticketsData, isLoading } = useQuery({
+    queryKey: ['my-tickets'],
+    queryFn: () => ticketsService.getMyTickets(),
+  });
+
+  const tickets = ticketsData?.data || [];
+
+  const STATUS_CONFIG: Record<string, { color: string; textColor: string; bgColor: string; borderColor: string; icon: typeof Ticket }> = {
+    'Nuevo': { color: 'bg-blue-500', textColor: 'text-blue-400', bgColor: 'bg-blue-500/10', borderColor: 'border-blue-500/30', icon: Ticket },
+    'En Progreso': { color: 'bg-yellow-500', textColor: 'text-yellow-400', bgColor: 'bg-yellow-500/10', borderColor: 'border-yellow-500/30', icon: Clock },
+    'Resuelto': { color: 'bg-green-500', textColor: 'text-green-400', bgColor: 'bg-green-500/10', borderColor: 'border-green-500/30', icon: CheckCircle2 },
+    'Cerrado': { color: 'bg-zinc-500', textColor: 'text-zinc-400', bgColor: 'bg-zinc-500/10', borderColor: 'border-zinc-500/30', icon: X },
+  };
+
+  const PRIORIDAD_CONFIG: Record<string, { color: string; bgColor: string; borderColor: string }> = {
+    'Baja': { color: 'text-zinc-400', bgColor: 'bg-zinc-500/10', borderColor: 'border-zinc-500/30' },
+    'Normal': { color: 'text-blue-400', bgColor: 'bg-blue-500/10', borderColor: 'border-blue-500/30' },
+    'Alta': { color: 'text-orange-400', bgColor: 'bg-orange-500/10', borderColor: 'border-orange-500/30' },
+    'Urgente': { color: 'text-red-400', bgColor: 'bg-red-500/10', borderColor: 'border-red-500/30' },
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Control Bar */}
+      <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} backdrop-blur-xl p-5`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Mis Tickets de Soporte</h2>
+            <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Reporta problemas o solicita ayuda</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all"
+            >
+              <Plus className="h-4 w-4" />
+              Nuevo Ticket
+            </button>
+            <div className={`px-4 py-2 rounded-xl ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+              <span className={`${isDark ? 'text-purple-300' : 'text-purple-600'} text-sm font-medium`}>{tickets.length} tickets</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Tickets List */}
+      {isLoading ? (
+        <div className="flex flex-col items-center justify-center py-20">
+          <Loader2 className="h-10 w-10 text-purple-400 animate-spin mb-4" />
+          <p className={`${isDark ? 'text-purple-300/70' : 'text-gray-500'} text-sm`}>Cargando tickets...</p>
+        </div>
+      ) : tickets.length > 0 ? (
+        <div className="space-y-3">
+          {tickets.map((ticket) => {
+            const statusConfig = STATUS_CONFIG[ticket.status] || STATUS_CONFIG['Nuevo'];
+            const prioridadConfig = PRIORIDAD_CONFIG[ticket.prioridad] || PRIORIDAD_CONFIG['Normal'];
+            const StatusIcon = statusConfig.icon;
+
+            return (
+              <div
+                key={ticket.id}
+                className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} p-5 ${isDark ? 'hover:border-purple-500/40' : 'hover:border-purple-300'} transition-all cursor-pointer`}
+                onClick={() => setSelectedTicket(ticket)}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>#{ticket.id}</span>
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusConfig.bgColor} ${statusConfig.textColor} ${statusConfig.borderColor}`}>
+                        <StatusIcon className="h-3 w-3" />
+                        {ticket.status}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${prioridadConfig.bgColor} ${prioridadConfig.color} ${prioridadConfig.borderColor}`}>
+                        {ticket.prioridad}
+                      </span>
+                    </div>
+                    <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'} mb-1`}>{ticket.titulo}</h3>
+                    <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} line-clamp-2`}>{ticket.descripcion}</p>
+                    <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mt-2`}>
+                      Creado: {new Date(ticket.created_at).toLocaleString('es-MX')}
+                    </p>
+                  </div>
+                  {ticket.imagen && (
+                    <div className={`p-2 rounded-lg ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+                      <Image className="h-5 w-5 text-purple-400" />
+                    </div>
+                  )}
+                </div>
+
+                {ticket.respuesta && (
+                  <div className="mt-4 p-3 rounded-xl bg-green-500/10 border border-green-500/20">
+                    <p className="text-xs text-green-400 font-medium mb-1">Respuesta:</p>
+                    <p className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-600'}`}>{ticket.respuesta}</p>
+                    {ticket.respondido_por && (
+                      <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mt-1`}>
+                        Por {ticket.respondido_por} - {ticket.respondido_at && new Date(ticket.respondido_at).toLocaleString('es-MX')}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'bg-white'} p-16 text-center`}>
+          <Ticket className="h-16 w-16 text-purple-400/50 mx-auto mb-4" />
+          <h3 className={`text-xl font-semibold ${isDark ? 'text-white' : 'text-gray-900'} mb-2`}>No tienes tickets</h3>
+          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-6`}>Crea un ticket si necesitas ayuda o quieres reportar un problema</p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 transition-all"
+          >
+            <Plus className="h-4 w-4" />
+            Crear Primer Ticket
+          </button>
+        </div>
+      )}
+
+      {/* Create Modal */}
+      {showCreateModal && (
+        <CreateTicketModal
+          onClose={() => setShowCreateModal(false)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['my-tickets'] });
+            setShowCreateModal(false);
+          }}
+        />
+      )}
+
+      {/* View Ticket Modal */}
+      {selectedTicket && (
+        <ViewTicketModal
+          ticket={selectedTicket}
+          onClose={() => setSelectedTicket(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal para crear ticket
+function CreateTicketModal({
+  onClose,
+  onSuccess,
+}: {
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const isDark = useThemeStore((s) => s.theme === 'dark');
+  const inputClasses = getInputClasses(isDark);
+  const labelClasses = `block text-sm font-medium mb-1.5 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`;
+  const [form, setForm] = useState<CreateTicketInput>({
+    titulo: '',
+    descripcion: '',
+    prioridad: 'Normal',
+    imagen: null,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const createMutation = useMutation({
+    mutationFn: (data: CreateTicketInput) => ticketsService.create(data),
+    onSuccess: () => {
+      onSuccess();
+    },
+    onError: (err: Error) => {
+      setError(err.message);
+    },
+  });
+
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        setError('La imagen no puede ser mayor a 5MB');
+        return;
+      }
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+      setForm({ ...form, imagen: file.name });
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.titulo.trim() || !form.descripcion.trim()) {
+      setError('Titulo y descripcion son requeridos');
+      return;
+    }
+    let imagenUrl: string | null = null;
+    if (imageFile) {
+      try {
+        const uploaded = await uploadsService.uploadFile(imageFile, 'tickets');
+        imagenUrl = uploaded.url;
+      } catch (err) {
+        setError('Error al subir la imagen');
+        return;
+      }
+    }
+    createMutation.mutate({ ...form, imagen: imagenUrl });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-lg ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'} sticky top-0 z-10`}>
+          <div className="flex items-center gap-4">
+            <div className={`p-3 rounded-xl ${isDark ? 'bg-purple-500/20' : 'bg-purple-100'}`}>
+              <Ticket className={`h-6 w-6 ${isDark ? 'text-purple-300' : 'text-purple-600'}`} />
+            </div>
+            <div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Nuevo Ticket</h2>
+              <p className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>Describe tu problema o solicitud</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className={labelClasses}>Titulo *</label>
+            <input
+              type="text"
+              value={form.titulo}
+              onChange={(e) => setForm({ ...form, titulo: e.target.value })}
+              className={inputClasses}
+              placeholder="Ej: Error al cargar la pagina"
+              required
+            />
+          </div>
+
+          <div>
+            <label className={labelClasses}>Descripcion *</label>
+            <textarea
+              value={form.descripcion}
+              onChange={(e) => setForm({ ...form, descripcion: e.target.value })}
+              className={`${inputClasses} resize-none`}
+              placeholder="Describe detalladamente el problema o solicitud..."
+              rows={5}
+              required
+            />
+          </div>
+
+          <div>
+            <label className={labelClasses}>Prioridad</label>
+            <select
+              value={form.prioridad}
+              onChange={(e) => setForm({ ...form, prioridad: e.target.value as CreateTicketInput['prioridad'] })}
+              className={inputClasses}
+            >
+              <option value="Baja">Baja - No urgente</option>
+              <option value="Normal">Normal</option>
+              <option value="Alta">Alta - Afecta mi trabajo</option>
+              <option value="Urgente">Urgente - Bloquea operaciones</option>
+            </select>
+          </div>
+
+          <div>
+            <label className={labelClasses}>Captura de pantalla (opcional)</label>
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/*"
+              onChange={handleImageChange}
+              className="hidden"
+            />
+            {imagePreview ? (
+              <div className="relative">
+                <img
+                  src={imagePreview}
+                  alt="Preview"
+                  className={`w-full max-h-48 object-contain rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-800/50' : 'border-purple-200 bg-gray-50'}`}
+                />
+                <button
+                  type="button"
+                  onClick={() => { setForm({ ...form, imagen: null }); setImageFile(null); setImagePreview(null); }}
+                  className="absolute top-2 right-2 p-1.5 rounded-lg bg-red-500/80 text-white hover:bg-red-500 transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className={`w-full p-4 rounded-xl border-2 border-dashed ${isDark ? 'border-purple-500/30 hover:border-purple-500/50' : 'border-purple-200 hover:border-purple-300'} transition-colors flex flex-col items-center gap-2`}
+              >
+                <Image className="h-8 w-8 text-purple-400" />
+                <span className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Haz clic para subir una imagen</span>
+                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Max 5MB</span>
+              </button>
+            )}
+          </div>
+
+          {error && (
+            <div className={`p-4 rounded-xl bg-red-500/10 border border-red-500/30 ${isDark ? 'text-red-300' : 'text-red-700'} text-sm flex items-center gap-2`}>
+              <AlertTriangle className="h-4 w-4" />
+              {error}
+            </div>
+          )}
+
+          <div className={`flex justify-end gap-3 pt-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-5 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'text-purple-300' : 'text-gray-700'} ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} hover:border-purple-500/40 transition-all`}
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={createMutation.isPending}
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all flex items-center gap-2"
+            >
+              {createMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              {createMutation.isPending ? 'Enviando...' : 'Enviar Ticket'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// Modal para ver ticket
+function ViewTicketModal({
+  ticket,
+  onClose,
+}: {
+  ticket: TicketType;
+  onClose: () => void;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const [showImage, setShowImage] = useState(false);
+
+  const STATUS_CONFIG: Record<string, { textColor: string; bgColor: string; borderColor: string }> = {
+    'Nuevo': { textColor: 'text-blue-400', bgColor: 'bg-blue-500/10', borderColor: 'border-blue-500/30' },
+    'En Progreso': { textColor: 'text-yellow-400', bgColor: 'bg-yellow-500/10', borderColor: 'border-yellow-500/30' },
+    'Resuelto': { textColor: 'text-green-400', bgColor: 'bg-green-500/10', borderColor: 'border-green-500/30' },
+    'Cerrado': { textColor: 'text-zinc-400', bgColor: 'bg-zinc-500/10', borderColor: 'border-zinc-500/30' },
+  };
+
+  const statusConfig = STATUS_CONFIG[ticket.status] || STATUS_CONFIG['Nuevo'];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className={`relative z-50 w-full max-w-2xl ${isDark ? 'bg-gradient-to-br from-zinc-900 via-purple-950/20 to-zinc-900' : 'bg-white'} border ${isDark ? 'border-purple-500/30' : 'border-purple-200'} rounded-2xl shadow-2xl shadow-purple-500/10 overflow-hidden animate-in fade-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto`}>
+        <div className={`flex items-center justify-between p-6 border-b ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40' : 'bg-purple-50'} sticky top-0 z-10`}>
+          <div className="flex items-center gap-4">
+            <div className={`p-3 rounded-xl ${isDark ? 'bg-purple-500/20' : 'bg-purple-100'}`}>
+              <Ticket className={`h-6 w-6 ${isDark ? 'text-purple-300' : 'text-purple-600'}`} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Ticket #{ticket.id}</span>
+                <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${statusConfig.bgColor} ${statusConfig.textColor} ${statusConfig.borderColor}`}>
+                  {ticket.status}
+                </span>
+              </div>
+              <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{ticket.titulo}</h2>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-purple-500/20' : 'hover:bg-purple-50'} rounded-xl transition-colors group`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-purple-300 group-hover:text-white' : 'text-gray-500 group-hover:text-gray-900'} transition-colors`} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <div className={`p-4 rounded-xl ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'} border ${isDark ? 'border-purple-500/10' : 'border-gray-200'}`}>
+            <h3 className={`text-sm font-medium ${isDark ? 'text-purple-300' : 'text-purple-600'} mb-2`}>Descripcion</h3>
+            <p className={`${isDark ? 'text-zinc-300' : 'text-gray-600'} whitespace-pre-wrap`}>{ticket.descripcion}</p>
+          </div>
+
+          {ticket.imagen && (
+            <div className={`p-4 rounded-xl ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'} border ${isDark ? 'border-purple-500/10' : 'border-gray-200'}`}>
+              <button
+                onClick={() => setShowImage(!showImage)}
+                className={`flex items-center gap-2 ${isDark ? 'text-purple-400 hover:text-purple-300' : 'text-purple-600 hover:text-purple-500'} transition-colors`}
+              >
+                <Image className="h-4 w-4" />
+                <span className="text-sm font-medium">
+                  {showImage ? 'Ocultar imagen' : 'Ver imagen adjunta'}
+                </span>
+              </button>
+              {showImage && (
+                <div className="mt-3">
+                  <img
+                    src={ticket.imagen}
+                    alt="Imagen del ticket"
+                    className={`max-w-full rounded-lg border ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {ticket.respuesta && (
+            <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20">
+              <h3 className="text-sm font-medium text-green-400 mb-2">Respuesta del equipo</h3>
+              <p className={`${isDark ? 'text-zinc-300' : 'text-gray-600'} whitespace-pre-wrap`}>{ticket.respuesta}</p>
+              {ticket.respondido_por && (
+                <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mt-2`}>
+                  Por {ticket.respondido_por} - {ticket.respondido_at && new Date(ticket.respondido_at).toLocaleString('es-MX')}
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className={`flex items-center justify-between text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} pt-4 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-200'}`}>
+            <span>Creado: {new Date(ticket.created_at).toLocaleString('es-MX')}</span>
+            <span>Actualizado: {new Date(ticket.updated_at).toLocaleString('es-MX')}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Componente principal con tabs
+export function UsuariosAdminPage() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const [activeTab, setActiveTab] = useState<TabType>('usuarios');
+
+  // WebSocket para actualizar equipos en tiempo real
+  useSocketEquipos();
+
+  const tabs = [
+    { key: 'usuarios' as TabType, label: 'Usuarios', icon: Users },
+    { key: 'equipos' as TabType, label: 'Red de Trabajo', icon: Network },
+  ];
+
+  return (
+    <div className="min-h-screen">
+      <Header title="Administrador" />
+
+      <div className="p-6">
+        {/* Tabs */}
+        <div className="flex gap-2 mb-6">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  activeTab === tab.key
+                    ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 text-white shadow-lg shadow-purple-500/25'
+                    : isDark
+                      ? 'bg-zinc-800/50 text-zinc-400 hover:text-white hover:bg-zinc-800 border border-purple-500/10'
+                      : 'bg-gray-100 text-gray-500 hover:text-gray-900 hover:bg-gray-200 border border-purple-200'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'usuarios' && <UsuariosTab />}
+        {activeTab === 'equipos' && <RedDeTrabajoTab />}
+      </div>
+    </div>
+  );
+}

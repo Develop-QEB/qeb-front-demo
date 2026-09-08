@@ -1,0 +1,2552 @@
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  Search, List, History, X, Loader2, AlertCircle, Calendar as CalendarIcon,
+  Plus, Edit2, Ban, CheckCircle, Package, MapPin, ChevronDown, ChevronRight,
+  Eye, EyeOff, ArrowUp, ArrowDown, ArrowUpDown, SlidersHorizontal, Monitor, Ruler,
+  Upload, Download, AlertTriangle, CheckCircle2, FileText, Activity,
+  BarChart3, FolderOpen
+} from 'lucide-react';
+import { Header } from '../../components/layout/Header';
+import { useThemeStore } from '../../store/themeStore';
+import { useAuthStore } from '../../store/authStore';
+import { inventariosService, BulkCheckResult } from '../../services/inventarios.service';
+import { campanasService } from '../../services/campanas.service';
+import { notificacionesService } from '../../services/notificaciones.service';
+import { analisisOcupacionService, AnalisisOcupacion, InventarioResumen } from '../../services/analisisOcupacion.service';
+import { Inventario } from '../../types';
+
+import { InventarioMap } from './InventarioMap';
+import { BloqueoModal, BloqueoData } from './BloqueoModal';
+import { BloqueoBulkModal, BloqueoBulkData } from './BloqueoBulkModal';
+import { AnalisisOcupacionModal } from './AnalisisOcupacionModal';
+import { AnalisisOcupacionListModal } from './AnalisisOcupacionListModal';
+import { AuditoriaConflictosModal } from './AuditoriaConflictosModal';
+import { ReorganizarOcupacionModal } from './ReorganizarOcupacionModal';
+import { BloqueoMasivoModal } from './BloqueoMasivoModal';
+
+const getEstatusStyles = (isDark: boolean): Record<string, { bg: string; text: string; border: string }> => ({
+  Activo: { bg: isDark ? 'bg-emerald-500/20' : 'bg-emerald-50', text: isDark ? 'text-emerald-300' : 'text-emerald-700', border: 'border-emerald-500/30' },
+  Disponible: { bg: isDark ? 'bg-emerald-500/20' : 'bg-emerald-50', text: isDark ? 'text-emerald-300' : 'text-emerald-700', border: 'border-emerald-500/30' },
+  Reservado: { bg: isDark ? 'bg-amber-500/20' : 'bg-amber-50', text: isDark ? 'text-amber-300' : 'text-amber-700', border: 'border-amber-500/30' },
+  Ocupado: { bg: isDark ? 'bg-cyan-500/20' : 'bg-cyan-50', text: isDark ? 'text-cyan-300' : 'text-cyan-700', border: 'border-cyan-500/30' },
+  Mantenimiento: { bg: isDark ? 'bg-zinc-500/20' : 'bg-zinc-50', text: isDark ? 'text-zinc-300' : 'text-zinc-700', border: 'border-zinc-500/30' },
+  Bloqueado: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
+});
+const getDefaultEstatus = (isDark: boolean) => ({ bg: isDark ? 'bg-violet-500/20' : 'bg-violet-50', text: isDark ? 'text-violet-300' : 'text-violet-700', border: 'border-violet-500/30' });
+
+const EMPTY_FORM: Record<string, string> = {
+  codigo_unico: '', ubicacion: '', tipo_de_cara: '', cara: '', mueble: '',
+  latitud: '', longitud: '', plaza: '', estado: '', municipio: '', cp: '',
+  tradicional_digital: '', sentido: '', tipo_de_mueble: '', ancho: '', alto: '',
+  nivel_socioeconomico: '', total_espacios: '', estatus: 'Disponible', codigo: '',
+  isla: '', mueble_isla: '', entre_calle_1: '', entre_calle_2: '', orientacion: '',
+  tarifa_piso: '', tarifa_publica: '',
+};
+
+type SortCol = 'id' | 'codigo_unico' | 'mueble' | 'plaza' | 'estatus' | 'tarifa_publica';
+
+// FilterChip Component matching CampanasPage style
+function FilterChip({ label, options, value, onChange, onClear }: {
+  label: string; options: string[]; value: string; onChange: (v: string) => void; onClear: () => void;
+}) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const [open, setOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const filtered = useMemo(() => {
+    if (!searchTerm) return options;
+    return options.filter(o => o.toLowerCase().includes(searchTerm.toLowerCase()));
+  }, [options, searchTerm]);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${value
+          ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
+          : `${isDark ? 'bg-zinc-800/80 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'}`
+        }`}
+      >
+        <span>{value || label}</span>
+        {value ? (
+          <X className={`h-3 w-3 ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`} onClick={(e) => { e.stopPropagation(); onClear(); }} />
+        ) : (
+          <ChevronDown className="h-3 w-3" />
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); setSearchTerm(''); }} />
+          <div className={`absolute top-full left-0 mt-1.5 z-50 w-64 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+            <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                placeholder="Buscar..."
+                className={`w-full px-3 py-1.5 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-gray-100 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-purple-500/50`}
+                autoFocus
+              />
+            </div>
+            <div className="max-h-60 overflow-y-auto">
+              {filtered.map(opt => (
+                <button
+                  key={opt}
+                  onClick={() => { onChange(opt); setOpen(false); setSearchTerm(''); }}
+                  className={`w-full text-left px-3 py-2 text-xs transition-colors ${isDark ? 'hover:bg-purple-500/10' : 'hover:bg-purple-50'} ${value === opt ? (isDark ? 'bg-purple-500/20 text-purple-300' : 'bg-purple-50 text-purple-700') : isDark ? 'text-zinc-300' : 'text-gray-700'}`}
+                >
+                  {opt}
+                </button>
+              ))}
+              {filtered.length === 0 && (
+                <div className={`px-3 py-3 text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} text-center`}>Sin resultados</div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function InventariosPage() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const { user } = useAuthStore();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { analisisId: analisisIdParam } = useParams<{ analisisId?: string }>();
+  const navigate = useNavigate();
+  const campanaIdParam = searchParams.get('campanaId');
+  const campanaNombreParam = searchParams.get('campanaNombre');
+  const [page, setPage] = useState(1);
+  const [searchTags, setSearchTags] = useState<string[]>([]);
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearchTags, setDebouncedSearchTags] = useState<string[]>([]);
+  const [debouncedSearchInput, setDebouncedSearchInput] = useState('');
+  const [tipo, setTipo] = useState('');
+  const [estatus, setEstatus] = useState('');
+  const [plaza, setPlaza] = useState('');
+  const [cto, setCto] = useState('');
+  const [tradicional, setTradicional] = useState('');
+  const [micromacro, setMicromacro] = useState(''); // '' | 'Excluir Mi Macro' | 'Solo Mi Macro'
+  const [viewMode, setViewMode] = useState<'table' | 'map'>('table');
+  const [sortCol, setSortCol] = useState<SortCol>('id');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [showFilters, setShowFilters] = useState(false);
+
+  // Modals
+  const [isHistorialOpen, setIsHistorialOpen] = useState(false);
+  const [historialTab, setHistorialTab] = useState<'campanas' | 'acciones'>('campanas');
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [bloqueoItem, setBloqueoItem] = useState<Inventario | null>(null);
+  const [isBloqueoSubmitting, setIsBloqueoSubmitting] = useState(false);
+  const [desbloqueoItem, setDesbloqueoItem] = useState<Inventario | null>(null);
+  // Bloqueo masivo: cuando hay items aquí se abre el BloqueoBulkModal.
+  const [bloqueoBulkItems, setBloqueoBulkItems] = useState<Inventario[] | null>(null);
+  const [isBloqueoBulkSubmitting, setIsBloqueoBulkSubmitting] = useState(false);
+
+  // Bulk upload state
+  const [isBulkOpen, setIsBulkOpen] = useState(false);
+  const [bulkCsvData, setBulkCsvData] = useState<Record<string, string>[]>([]);
+  const [bulkValidation, setBulkValidation] = useState<{ valid: number; errors: { fila: number; campo: string; mensaje: string }[]; duplicatesInCsv: number }>({ valid: 0, errors: [], duplicatesInCsv: 0 });
+  const [bulkParsing, setBulkParsing] = useState(false);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkUploadProgress, setBulkUploadProgress] = useState(0);
+  const [bulkResult, setBulkResult] = useState<{ insertados: number; duplicados: number; actualizados?: number; duplicados_ocupados?: number; errores: { fila: number; campo: string; mensaje: string }[]; total: number } | null>(null);
+  const [bulkCheckResult, setBulkCheckResult] = useState<BulkCheckResult | null>(null);
+  const [bulkChecking, setBulkChecking] = useState(false);
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+  const [bulkStep, setBulkStep] = useState<'upload' | 'check' | 'result'>('upload');
+  const [bulkTab, setBulkTab] = useState<'errors' | 'ok'>('errors');
+  const [checkTab, setCheckTab] = useState<'nuevos' | 'sobreescribibles' | 'ocupados'>('nuevos');
+  const [checkPage, setCheckPage] = useState(1);
+  const [bulkPage, setBulkPage] = useState(1);
+  const BULK_PAGE_SIZE = 50;
+  const bulkInputRef = useRef<HTMLInputElement>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [editItemOcupado, setEditItemOcupado] = useState(false);
+  const [formData, setFormData] = useState<Record<string, string>>({ ...EMPTY_FORM });
+  const [saving, setSaving] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [isAnalisisOpen, setIsAnalisisOpen] = useState(false);
+  const [analisisInicial, setAnalisisInicial] = useState<AnalisisOcupacion | undefined>(undefined);
+  const [analisisInicialInventarios, setAnalisisInicialInventarios] = useState<InventarioResumen[]>([]);
+  const [isAnalisisListOpen, setIsAnalisisListOpen] = useState(false);
+  const [isAuditoriaOpen, setIsAuditoriaOpen] = useState(false);
+  // Enlace directo desde la notificación del monitor: abre la auditoría con las
+  // catorcenas vigentes ya puestas y corriendo.
+  const [auditoriaAutoIniciar, setAuditoriaAutoIniciar] = useState(false);
+  const [openingAnalisis, setOpeningAnalisis] = useState(false);
+  const [isReorganizarOpen, setIsReorganizarOpen] = useState(false);
+  const [isBloqueoMasivoOpen, setIsBloqueoMasivoOpen] = useState(false);
+  const [bloqueoMasivoInventarios, setBloqueoMasivoInventarios] = useState<InventarioResumen[]>([]);
+  const [analisisMenuOpen, setAnalisisMenuOpen] = useState(false);
+  const [bloqueoMenuOpen, setBloqueoMenuOpen] = useState(false);
+  const analisisMenuRef = useRef<HTMLDivElement>(null);
+  const bloqueoMenuRef = useRef<HTMLDivElement>(null);
+  const isDev = user?.rol === 'DEV';
+
+  useEffect(() => {
+    if (!analisisMenuOpen && !bloqueoMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (analisisMenuOpen && analisisMenuRef.current && !analisisMenuRef.current.contains(e.target as Node)) {
+        setAnalisisMenuOpen(false);
+      }
+      if (bloqueoMenuOpen && bloqueoMenuRef.current && !bloqueoMenuRef.current.contains(e.target as Node)) {
+        setBloqueoMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [analisisMenuOpen, bloqueoMenuOpen]);
+
+  useEffect(() => {
+    if (!analisisIdParam) return;
+    const id = parseInt(analisisIdParam);
+    if (Number.isNaN(id)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const a = await analisisOcupacionService.get(id);
+        if (cancelled) return;
+        setAnalisisInicial(a);
+        setAnalisisInicialInventarios([]);
+        setIsAnalisisOpen(true);
+      } catch (err) {
+        console.error('Error abriendo análisis compartido:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [analisisIdParam]);
+
+  // ?auditoria=1 → abrir la Auditoría de conflictos y correrla sola. Solo DEV,
+  // igual que el módulo. El parámetro se limpia para que un refresh no reabra.
+  useEffect(() => {
+    if (searchParams.get('auditoria') !== '1') return;
+    if (user?.rol === 'DEV') {
+      setAuditoriaAutoIniciar(true);
+      setIsAuditoriaOpen(true);
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete('auditoria');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, user?.rol]);
+
+  const handleCloseAnalisis = () => {
+    setIsAnalisisOpen(false);
+    if (analisisIdParam) {
+      navigate('/inventarios', { replace: true });
+    }
+  };
+
+  const limit = 50;
+  const campanaIdNum = campanaIdParam ? parseInt(campanaIdParam) : undefined;
+
+  // Add search tag on Enter/Tab
+  const addSearchTag = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed && !searchTags.includes(trimmed)) {
+      setSearchTags(prev => [...prev, trimmed]);
+    }
+    setSearchInput('');
+  };
+
+  const removeSearchTag = (tag: string) => {
+    setSearchTags(prev => prev.filter(t => t !== tag));
+  };
+
+  // Debounce conjunto de tags + input. Un solo timer evita renders dobles
+  // cuando ambos cambian a la vez (típico al presionar Enter para crear tag).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTags(searchTags);
+      setDebouncedSearchInput(searchInput);
+      setPage(1);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchTags, searchInput]);
+
+  // Combina tags + input debounced. Backend usa OR entre todos los términos
+  // (semántica natural para "muéstrame estos N inventarios específicos").
+  const allSearchTerms = useMemo(() => {
+    const terms = [...debouncedSearchTags];
+    if (debouncedSearchInput.trim()) terms.push(debouncedSearchInput.trim());
+    return terms;
+  }, [debouncedSearchTags, debouncedSearchInput]);
+  const serverSearch = allSearchTerms.length > 0 ? allSearchTerms.join('|') : undefined;
+
+  // Mapea la etiqueta del chip Mi Macro al valor que espera el backend
+  const micromacroParam = micromacro === 'Excluir Mi Macro' ? 'excluir' : micromacro === 'Solo Mi Macro' ? 'solo' : undefined;
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['inventarios', page, serverSearch, tipo, estatus, plaza, cto, tradicional, micromacro, campanaIdNum],
+    queryFn: () =>
+      inventariosService.getAll({ page, limit, search: serverSearch, tipo: tipo || undefined, estatus: estatus || undefined, plaza: plaza || undefined, cto: cto || undefined, tradicional: tradicional || undefined, micromacro: micromacroParam, campanaId: campanaIdNum }),
+  });
+
+  const { data: tipos } = useQuery({ queryKey: ['inventarios', 'tipos'], queryFn: () => inventariosService.getTipos(), staleTime: 30 * 60 * 1000 });
+  const { data: plazas } = useQuery({ queryKey: ['inventarios', 'plazas'], queryFn: () => inventariosService.getPlazas(), staleTime: 30 * 60 * 1000 });
+  const { data: ctos } = useQuery({ queryKey: ['inventarios', 'ctos'], queryFn: () => inventariosService.getCtos(), staleTime: 30 * 60 * 1000 });
+  const { data: estatusList } = useQuery({ queryKey: ['inventarios', 'estatus'], queryFn: () => inventariosService.getEstatus(), staleTime: 30 * 60 * 1000 });
+
+  // Stats query — global KPIs with same filters
+  const { data: statsData, isLoading: isLoadingStats } = useQuery({
+    queryKey: ['inventarios-stats', serverSearch, tipo, estatus, plaza, tradicional, micromacro, campanaIdNum],
+    queryFn: () =>
+      inventariosService.getStats({
+        search: serverSearch,
+        tipo: tipo || undefined,
+        estatus: estatus || undefined,
+        plaza: plaza || undefined,
+        tradicional: tradicional || undefined,
+        micromacro: micromacroParam,
+        campanaId: campanaIdNum,
+      }),
+  });
+
+  const { data: historialData, isLoading: isLoadingHistorial } = useQuery({
+    queryKey: ['inventario-historial', selectedId],
+    queryFn: () => inventariosService.getHistorial(selectedId!),
+    enabled: isHistorialOpen && selectedId !== null,
+  });
+
+  const { data: accionesData, isLoading: isLoadingAcciones } = useQuery({
+    queryKey: ['inventario-acciones', selectedId],
+    queryFn: () => inventariosService.getAcciones(selectedId!),
+    enabled: isHistorialOpen && selectedId !== null && historialTab === 'acciones',
+  });
+
+  const toggleBlockMutation = useMutation({
+    mutationFn: (id: number) => inventariosService.toggleBlock(id),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['inventarios'] });
+      queryClient.invalidateQueries({ queryKey: ['inventario-acciones', id] });
+      queryClient.invalidateQueries({ queryKey: ['inventario-historial', id] });
+      setBloqueoItem(null);
+    },
+  });
+
+  const EN_USO_ESTATUS = ['Reservado', 'Ocupado', 'Vendido'];
+
+  const handleBloquearClick = (item: Inventario) => {
+    if (item.estatus === 'Bloqueado') {
+      setDesbloqueoItem(item);
+    } else {
+      setBloqueoItem(item);
+    }
+  };
+
+  const handleConfirmarBloqueo = async (data: BloqueoData) => {
+    if (!bloqueoItem) return;
+    setIsBloqueoSubmitting(true);
+    try {
+      const realEstatus = bloqueoItem.estatus_real || bloqueoItem.estatus || '';
+      const esLibre = bloqueoItem.estatus !== 'Bloqueado' && !EN_USO_ESTATUS.includes(realEstatus) && data.campanas.length === 0;
+      const fechaBloqueo = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+      // Info del inventario para descripción
+      const infoInventario = [
+        `Inventario: #${bloqueoItem.id}${bloqueoItem.codigo_unico ? ` — ${bloqueoItem.codigo_unico}` : ''}`,
+        bloqueoItem.ubicacion ? `Ubicación: ${bloqueoItem.ubicacion}` : null,
+        bloqueoItem.plaza ? `Plaza: ${bloqueoItem.plaza}` : null,
+      ].filter(Boolean).join('\n');
+
+      if (esLibre) {
+        // Disponible y sin campañas activas → bloquear directo
+        await toggleBlockMutation.mutateAsync(bloqueoItem.id);
+      } else {
+        // En uso, ya bloqueado, o con campañas activas → crear una tarea de ajuste por cada campaña
+        // Si no está bloqueado aún, bloquearlo
+        if (bloqueoItem.estatus !== 'Bloqueado') {
+          await toggleBlockMutation.mutateAsync(bloqueoItem.id);
+        }
+        const campanasList = data.campanas.map(c => `  • ${c.campana_nombre} (${c.cliente_nombre})`).join('\n');
+
+        await Promise.all(
+          data.campanas.map((c, i) => {
+            // Use per-campaign assignments if available, otherwise fallback to flat lists
+            const entry = data.perCampana?.[i];
+            const asignados = entry
+              ? [...entry.analistas, ...entry.trafico]
+              : [...data.analistas, ...data.trafico];
+
+            const descripcion = [
+              infoInventario,
+              `\nFecha de bloqueo: ${fechaBloqueo}`,
+              //`\nCampañas afectadas:\n${campanasList}`,
+              `\nIndicaciones: ${data.motivo}`,
+              user ? `\nSolicitado por: ${user.nombre}` : null,
+            ].filter(Boolean).join('\n');
+
+            return campanasService.createTarea(c.campana_id, {
+              titulo: 'Ajuste Inventario Bloqueado',
+              descripcion,
+              contenido: JSON.stringify([c]),
+              tipo: 'Ajuste Inventario Bloqueado',
+              ...(asignados.length > 0 && {
+                id_asignado: asignados.map(u => u.id).join(', '),
+                asignado: asignados.map(u => u.nombre).join(', '),
+              }),
+            });
+          })
+        );
+      }
+
+      // Tarea de seguimiento de bloqueo asignada al usuario que bloqueó
+      const seguimientoDesc = [
+        infoInventario,
+        `\nFecha de bloqueo: ${fechaBloqueo}`,
+        `\nIndicaciones: ${data.motivo}`,
+        user ? `\nBloqueado por: ${user.nombre}` : null,
+      ].filter(Boolean).join('\n');
+
+      await notificacionesService.create({
+        titulo: `Seguimiento de bloqueo — #${bloqueoItem.id}${bloqueoItem.codigo_unico ? ` ${bloqueoItem.codigo_unico}` : ''}`,
+        descripcion: seguimientoDesc,
+        tipo: 'Notificación',
+        ...(user && {
+          id_responsable: user.id,
+          responsable: user.nombre,
+          id_asignado: String(user.id),
+          asignado: user.nombre,
+        }),
+      });
+
+      setBloqueoItem(null);
+    } finally {
+      setIsBloqueoSubmitting(false);
+    }
+  };
+
+  // Bloqueo masivo: por cada inventario seleccionado, en paralelo,
+  // 1) toggleBlock (que ahora también soft-deletea las reservas activas en el back),
+  // 2) crea una tarea "Ajuste Inventario Bloqueado" por cada campaña afectada
+  //    con los analistas/tráfico que se asignaron en el wizard para esa pareja
+  //    (inv, campaña),
+  // 3) una notificación de seguimiento al usuario que bloqueó (1 por inventario).
+  // Inventarios que ya estaban bloqueados: se skipea el toggleBlock pero se
+  // crean tareas igual si tienen campañas activas (mismo criterio que el
+  // flujo individual).
+  const handleConfirmarBloqueoBulk = async (data: BloqueoBulkData) => {
+    setIsBloqueoBulkSubmitting(true);
+    try {
+      const fechaBloqueo = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+      await Promise.all(data.perItem.map(async (entry) => {
+        const inv = entry.item;
+        const infoInventario = [
+          `Inventario: #${inv.id}${inv.codigo_unico ? ` — ${inv.codigo_unico}` : ''}`,
+          inv.ubicacion ? `Ubicación: ${inv.ubicacion}` : null,
+          inv.plaza ? `Plaza: ${inv.plaza}` : null,
+        ].filter(Boolean).join('\n');
+
+        // 1) Bloquear (libera reservas en el back) — solo si no estaba bloqueado.
+        if (!entry.yaEstaBloquedo) {
+          await toggleBlockMutation.mutateAsync(inv.id);
+        }
+
+        // 2) Tareas por campaña afectada
+        await Promise.all(entry.pairs.map(p => {
+          const asignados = [...p.analistas, ...p.trafico];
+          const descripcion = [
+            infoInventario,
+            `\nFecha de bloqueo: ${fechaBloqueo}`,
+            `\nIndicaciones: ${data.motivo}`,
+            user ? `\nSolicitado por: ${user.nombre}` : null,
+          ].filter(Boolean).join('\n');
+
+          return campanasService.createTarea(p.campana.campana_id, {
+            titulo: 'Ajuste Inventario Bloqueado',
+            descripcion,
+            contenido: JSON.stringify([p.campana]),
+            tipo: 'Ajuste Inventario Bloqueado',
+            ...(asignados.length > 0 && {
+              id_asignado: asignados.map(u => u.id).join(', '),
+              asignado: asignados.map(u => u.nombre).join(', '),
+            }),
+          });
+        }));
+
+        // 3) Notificación de seguimiento por inventario
+        const seguimientoDesc = [
+          infoInventario,
+          `\nFecha de bloqueo: ${fechaBloqueo}`,
+          `\nIndicaciones: ${data.motivo}`,
+          user ? `\nBloqueado por: ${user.nombre}` : null,
+        ].filter(Boolean).join('\n');
+
+        await notificacionesService.create({
+          titulo: `Seguimiento de bloqueo — #${inv.id}${inv.codigo_unico ? ` ${inv.codigo_unico}` : ''}`,
+          descripcion: seguimientoDesc,
+          tipo: 'Notificación',
+          ...(user && {
+            id_responsable: user.id,
+            responsable: user.nombre,
+            id_asignado: String(user.id),
+            asignado: user.nombre,
+          }),
+        });
+      }));
+
+      setBloqueoBulkItems(null);
+      clearSelection();
+    } finally {
+      setIsBloqueoBulkSubmitting(false);
+    }
+  };
+
+  // Sort
+  const sortedData = useMemo(() => {
+    if (!data?.data) return [];
+    const arr = [...data.data];
+    arr.sort((a, b) => {
+      let aVal: string | number = '';
+      let bVal: string | number = '';
+      switch (sortCol) {
+        case 'id': aVal = a.id; bVal = b.id; break;
+        case 'codigo_unico': aVal = a.codigo_unico || ''; bVal = b.codigo_unico || ''; break;
+        case 'mueble': aVal = a.mueble || ''; bVal = b.mueble || ''; break;
+        case 'plaza': aVal = a.plaza || ''; bVal = b.plaza || ''; break;
+        case 'estatus': aVal = a.estatus || ''; bVal = b.estatus || ''; break;
+        case 'tarifa_publica': aVal = a.tarifa_publica || 0; bVal = b.tarifa_publica || 0; break;
+      }
+      if (typeof aVal === 'number' && typeof bVal === 'number') return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+      return sortDir === 'asc' ? String(aVal).localeCompare(String(bVal)) : String(bVal).localeCompare(String(aVal));
+    });
+    return arr;
+  }, [data?.data, sortCol, sortDir]);
+
+  const handleSort = (col: SortCol) => {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('asc'); }
+  };
+
+  const visibleSelectedCount = useMemo(
+    () => sortedData.reduce((acc, item) => acc + (selectedRows.has(item.id) ? 1 : 0), 0),
+    [sortedData, selectedRows]
+  );
+  const allVisibleSelected = sortedData.length > 0 && visibleSelectedCount === sortedData.length;
+  const someVisibleSelected = visibleSelectedCount > 0 && !allVisibleSelected;
+
+  const toggleRowSelected = (id: number) => {
+    setSelectedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = () => {
+    setSelectedRows(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) sortedData.forEach(item => next.delete(item.id));
+      else sortedData.forEach(item => next.add(item.id));
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedRows(new Set());
+
+  const inventarioToResumen = (inv: Inventario): InventarioResumen => ({
+    id: inv.id,
+    codigo_unico: inv.codigo_unico,
+    ubicacion: inv.ubicacion,
+    mueble: inv.mueble,
+    plaza: inv.plaza,
+    estado: inv.estado,
+    tipo_de_cara: inv.tipo_de_cara,
+    tradicional_digital: inv.tradicional_digital,
+  });
+
+  const openAnalisisFromSelection = async () => {
+    if (selectedRows.size === 0) return;
+    setOpeningAnalisis(true);
+    try {
+      const ids = Array.from(selectedRows);
+      const enPagina: Record<number, Inventario> = {};
+      sortedData.forEach(i => { if (selectedRows.has(i.id)) enPagina[i.id] = i; });
+      const faltantes = ids.filter(id => !(id in enPagina));
+      const fetched = await Promise.all(
+        faltantes.map(async id => {
+          try { return await inventariosService.getById(id); } catch { return null; }
+        })
+      );
+      fetched.forEach(inv => { if (inv) enPagina[inv.id] = inv; });
+      const resumenes = ids
+        .map(id => enPagina[id])
+        .filter((x): x is Inventario => !!x)
+        .map(inventarioToResumen);
+      setAnalisisInicial(undefined);
+      setAnalisisInicialInventarios(resumenes);
+      setIsAnalisisOpen(true);
+    } finally {
+      setOpeningAnalisis(false);
+    }
+  };
+
+  const openAnalisisVacio = () => {
+    setAnalisisInicial(undefined);
+    setAnalisisInicialInventarios([]);
+    setIsAnalisisOpen(true);
+  };
+
+  const openBloqueoMasivo = async () => {
+    if (selectedRows.size === 0) {
+      setBloqueoMasivoInventarios([]);
+      setIsBloqueoMasivoOpen(true);
+      return;
+    }
+    setOpeningAnalisis(true);
+    try {
+      const ids = Array.from(selectedRows);
+      const enPagina: Record<number, Inventario> = {};
+      sortedData.forEach(i => { if (selectedRows.has(i.id)) enPagina[i.id] = i; });
+      const faltantes = ids.filter(id => !(id in enPagina));
+      const fetched = await Promise.all(
+        faltantes.map(async id => {
+          try { return await inventariosService.getById(id); } catch { return null; }
+        })
+      );
+      fetched.forEach(inv => { if (inv) enPagina[inv.id] = inv; });
+      const resumenes = ids
+        .map(id => enPagina[id])
+        .filter((x): x is Inventario => !!x)
+        .map(inventarioToResumen);
+      setBloqueoMasivoInventarios(resumenes);
+      setIsBloqueoMasivoOpen(true);
+    } finally {
+      setOpeningAnalisis(false);
+    }
+  };
+
+  const openAnalisisGuardado = (a: AnalisisOcupacion) => {
+    setAnalisisInicial(a);
+    setAnalisisInicialInventarios([]);
+    setIsAnalisisListOpen(false);
+    setIsAnalisisOpen(true);
+  };
+
+  // Desde la auditoría: abre el análisis de ocupación precargado con los sitios
+  // en conflicto. Los periodos se eligen en el wizard como siempre.
+  const openAnalisisDesdeAuditoria = (invs: InventarioResumen[]) => {
+    setAnalisisInicial(undefined);
+    setAnalisisInicialInventarios(invs);
+    setIsAuditoriaOpen(false);
+    setIsAnalisisOpen(true);
+  };
+
+  const SortIcon = ({ col }: { col: SortCol }) => {
+    if (sortCol !== col) return <ArrowUpDown className={`h-3 w-3 ${isDark ? 'text-zinc-600' : 'text-gray-400'} ml-1`} />;
+    return sortDir === 'asc' ? <ArrowUp className={`h-3 w-3 ${isDark ? 'text-purple-400' : 'text-purple-600'} ml-1`} /> : <ArrowDown className={`h-3 w-3 ${isDark ? 'text-purple-400' : 'text-purple-600'} ml-1`} />;
+  };
+
+  const openEdit = (item: Inventario) => {
+    const realEstatus = (item as unknown as Record<string, unknown>).estatus_real as string || item.estatus;
+    const isOcupado = realEstatus === 'Ocupado' || realEstatus === 'Reservado';
+    setEditItemOcupado(isOcupado);
+    setFormData({
+      codigo_unico: item.codigo_unico || '', ubicacion: item.ubicacion || '', tipo_de_cara: item.tipo_de_cara || '',
+      cara: item.cara || '', mueble: item.mueble || '', latitud: String(item.latitud || ''), longitud: String(item.longitud || ''),
+      plaza: item.plaza || '', estado: item.estado || '', municipio: item.municipio || '', cp: item.cp ? String(item.cp) : '',
+      tradicional_digital: item.tradicional_digital || '', sentido: item.sentido || '', tipo_de_mueble: item.tipo_de_mueble || '',
+      ancho: String(item.ancho || ''), alto: String(item.alto || ''), nivel_socioeconomico: item.nivel_socioeconomico || '',
+      total_espacios: item.total_espacios ? String(item.total_espacios) : '', estatus: item.estatus || 'Disponible',
+      codigo: item.codigo || '', isla: item.isla || '', mueble_isla: item.mueble_isla || '',
+      entre_calle_1: item.entre_calle_1 || '', entre_calle_2: item.entre_calle_2 || '', orientacion: item.orientacion || '',
+      tarifa_piso: item.tarifa_piso ? String(item.tarifa_piso) : '', tarifa_publica: item.tarifa_publica ? String(item.tarifa_publica) : '',
+    });
+    setSelectedId(item.id);
+    setIsEditOpen(true);
+  };
+
+  const openCreate = () => { setFormData({ ...EMPTY_FORM }); setIsCreateOpen(true); };
+
+  // Bulk upload helpers
+  const BULK_REQUIRED_FIELDS = ['codigo_unico', 'tipo_de_mueble', 'tipo_de_cara', 'tradicional_digital', 'plaza', 'estado', 'municipio'];
+
+  const HEADER_MAP: Record<string, string> = {
+    'codigounico': 'codigo_unico', 'codigo': 'codigo', 'codigocorto': 'codigo',
+    'tipodemueble': 'tipo_de_mueble', 'tipomueble': 'tipo_de_mueble', 'formato': 'tipo_de_mueble',
+    'tipodecara': 'tipo_de_cara', 'tipocara': 'tipo_de_cara',
+    'tradicionaldigital': 'tradicional_digital', 'traddigital': 'tradicional_digital', 'tipo': 'tradicional_digital',
+    'ubicacion': 'ubicacion', 'cara': 'cara', 'mueble': 'mueble',
+    'latitud': 'latitud', 'longitud': 'longitud', 'plaza': 'plaza',
+    'estado': 'estado', 'municipio': 'municipio', 'ciudad': 'municipio',
+    'cp': 'cp', 'codigopostal': 'cp', 'sentido': 'sentido',
+    'ancho': 'ancho', 'alto': 'alto', 'orientacion': 'orientacion',
+    'nivelsocioeconomico': 'nivel_socioeconomico', 'nse': 'nivel_socioeconomico',
+    'isla': 'isla', 'muebleisla': 'mueble_isla',
+    'totalspacios': 'total_espacios', 'totalespacios': 'total_espacios', 'espacios': 'total_espacios',
+    'tarifapublica': 'tarifa_publica', 'tarifapiso': 'tarifa_piso',
+    'estatus': 'estatus', 'status': 'estatus',
+    'entrecalle1': 'entre_calle_1', 'entrecalle2': 'entre_calle_2',
+    'muebleformato': 'mueble',
+  };
+
+  const normalizeHeader = (text: string): string => {
+    return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s_\-./()]/g, '');
+  };
+
+  const mapHeader = (raw: string): string => {
+    const norm = normalizeHeader(raw);
+    return HEADER_MAP[norm] || raw.toLowerCase().replace(/\s+/g, '_');
+  };
+
+  const revalidateBulkData = useCallback((data: Record<string, string>[]) => {
+    const errors: { fila: number; campo: string; mensaje: string }[] = [];
+    const codigosSeen = new Set<string>();
+    let duplicatesInCsv = 0;
+
+    data.forEach((row, idx) => {
+      const fila = idx + 1;
+      for (const field of BULK_REQUIRED_FIELDS) {
+        if (!row[field] || row[field].trim() === '') {
+          errors.push({ fila, campo: field, mensaje: 'Campo requerido vacío' });
+        }
+      }
+      const codigo = row.codigo_unico?.trim();
+      if (codigo) {
+        if (codigosSeen.has(codigo)) {
+          errors.push({ fila, campo: 'codigo_unico', mensaje: 'Duplicado dentro del CSV' });
+          duplicatesInCsv++;
+        }
+        codigosSeen.add(codigo);
+      }
+      if (row.tipo_de_cara && !['Flujo', 'Contraflujo', 'Flujo2', 'Contraflujo2'].includes(row.tipo_de_cara)) {
+        errors.push({ fila, campo: 'tipo_de_cara', mensaje: 'Debe ser Flujo o Contraflujo' });
+      }
+      if (row.tradicional_digital && !['Tradicional', 'Digital'].includes(row.tradicional_digital)) {
+        errors.push({ fila, campo: 'tradicional_digital', mensaje: 'Debe ser Tradicional o Digital' });
+      }
+      const numFields = ['latitud', 'longitud', 'cp', 'total_espacios', 'tarifa_publica', 'tarifa_piso'];
+      for (const nf of numFields) {
+        if (row[nf] && row[nf].trim() !== '' && row[nf].trim().toUpperCase() !== 'NA' && isNaN(Number(row[nf]))) {
+          errors.push({ fila, campo: nf, mensaje: 'Debe ser un número válido' });
+        }
+      }
+    });
+
+    const errorFilas = new Set(errors.map(e => e.fila));
+    const validCount = data.length - errorFilas.size;
+    setBulkValidation({ valid: validCount, errors, duplicatesInCsv });
+  }, []);
+
+  const downloadTemplate = useCallback(() => {
+    const keys = FORM_FIELDS.map(f => f.key);
+    const headers = keys.join(',');
+    const example = keys.map(k => {
+      switch (k) {
+        case 'codigo_unico': return 'MUPI-GDL-001_F';
+        case 'tipo_de_mueble': return 'MUPI';
+        case 'tipo_de_cara': return 'Flujo';
+        case 'tradicional_digital': return 'Tradicional';
+        case 'plaza': return 'GDL';
+        case 'estado': return 'Jalisco';
+        case 'municipio': return 'Guadalajara';
+        case 'ubicacion': return 'Av. Vallarta 1234';
+        case 'latitud': return '20.6597';
+        case 'longitud': return '-103.3496';
+        case 'ancho': return '1.2';
+        case 'alto': return '1.8';
+        case 'estatus': return 'Disponible';
+        default: return '';
+      }
+    }).join(',');
+    const csv = '\ufeff' + headers + '\n' + example;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'plantilla_inventarios.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const handleBulkCsvUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setBulkParsing(true);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      // Use setTimeout to let the loading state render before heavy parsing
+      setTimeout(() => {
+        // Full CSV parser: handles commas, quotes, and newlines inside quoted fields
+        const parseCsv = (csv: string): string[][] => {
+          const rows: string[][] = [];
+          let current = '', inQuotes = false;
+          const fields: string[] = [];
+          for (let j = 0; j < csv.length; j++) {
+            const ch = csv[j];
+            if (ch === '"') {
+              inQuotes = !inQuotes;
+            } else if (ch === ',' && !inQuotes) {
+              fields.push(current.trim());
+              current = '';
+            } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+              if (ch === '\r' && csv[j + 1] === '\n') j++; // skip \r\n
+              fields.push(current.trim());
+              if (fields.some(f => f !== '')) rows.push([...fields]);
+              fields.length = 0;
+              current = '';
+            } else {
+              current += ch;
+            }
+          }
+          fields.push(current.trim());
+          if (fields.some(f => f !== '')) rows.push(fields);
+          return rows;
+        };
+
+        const allRows = parseCsv(text);
+        if (allRows.length < 2) { setBulkParsing(false); return; }
+
+        const rawHeaders = allRows[0].map(h => h.replace(/"/g, ''));
+        const mappedHeaders = rawHeaders.map(mapHeader);
+
+        const parsed: Record<string, string>[] = [];
+        for (let i = 1; i < allRows.length; i++) {
+          const values = allRows[i];
+          const row: Record<string, string> = {};
+          mappedHeaders.forEach((header, idx) => {
+            row[header] = (values[idx] || '').replace(/\n/g, ' ');
+          });
+          // Skip completely empty rows
+          if (Object.values(row).every(v => !v)) continue;
+          parsed.push(row);
+        }
+
+        setBulkCsvData(parsed);
+        revalidateBulkData(parsed);
+        setBulkResult(null);
+        setBulkStep('upload');
+        setBulkParsing(false);
+      }, 50);
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const updateBulkRow = (idx: number, field: string, value: string) => {
+    const updated = [...bulkCsvData];
+    updated[idx] = { ...updated[idx], [field]: value };
+    setBulkCsvData(updated);
+    revalidateBulkData(updated);
+  };
+
+  const deleteBulkRow = (idx: number) => {
+    const updated = bulkCsvData.filter((_, i) => i !== idx);
+    setBulkCsvData(updated);
+    revalidateBulkData(updated);
+  };
+
+  const handleBulkCheck = async () => {
+    const errorFilas = new Set(bulkValidation.errors.map(e => e.fila));
+    const validRows = bulkCsvData.filter((_, idx) => !errorFilas.has(idx + 1));
+    const codigos = validRows.map(r => r.codigo_unico?.trim()).filter(Boolean);
+    if (codigos.length === 0) return;
+
+    setBulkChecking(true);
+    try {
+      const result = await inventariosService.bulkCheck(codigos);
+      setBulkCheckResult(result);
+      setConfirmOverwrite(false);
+      setBulkStep('check');
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Error al verificar inventarios');
+    } finally {
+      setBulkChecking(false);
+    }
+  };
+
+  const handleBulkSubmit = async () => {
+    const errorFilas = new Set(bulkValidation.errors.map(e => e.fila));
+    const validRows = bulkCsvData.filter((_, idx) => !errorFilas.has(idx + 1));
+    if (validRows.length === 0) return;
+
+    // Si tenemos check result, filtrar ocupados y preparar overwrite
+    const ocupadosCodigos = new Set(bulkCheckResult?.ocupados.map(o => o.codigo_unico) || []);
+    const rowsToSend = bulkCheckResult
+      ? validRows.filter(r => !ocupadosCodigos.has(r.codigo_unico?.trim()))
+      : validRows;
+
+    const overwriteCodigos = confirmOverwrite && bulkCheckResult
+      ? bulkCheckResult.sobreescribibles.map(s => s.codigo_unico)
+      : undefined;
+
+    setBulkUploading(true);
+    setBulkUploadProgress(0);
+    try {
+      // Upload in chunks for progress tracking
+      const CHUNK_SIZE = 200;
+      const totalChunks = Math.ceil(rowsToSend.length / CHUNK_SIZE);
+      let totalInsertados = 0, totalDuplicados = 0, totalActualizados = 0;
+      const totalErrores: { fila: number; campo: string; mensaje: string }[] = [];
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = rowsToSend.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkOverwrite = overwriteCodigos
+          ? overwriteCodigos.filter(code => chunk.some(r => r.codigo_unico?.trim() === code))
+          : undefined;
+        const result = await inventariosService.bulkCreate(chunk, chunkOverwrite);
+        totalInsertados += result.insertados || 0;
+        totalDuplicados += result.duplicados || 0;
+        totalActualizados += result.actualizados || 0;
+        if (result.errores?.length) totalErrores.push(...result.errores);
+        setBulkUploadProgress(Math.round(((i + 1) / totalChunks) * 100));
+      }
+
+      setBulkResult({ insertados: totalInsertados, duplicados: totalDuplicados, actualizados: totalActualizados, duplicados_ocupados: ocupadosCodigos.size, errores: totalErrores, total: rowsToSend.length });
+      setBulkStep('result');
+      queryClient.invalidateQueries({ queryKey: ['inventarios'] });
+    } catch (err) {
+      setBulkResult({
+        insertados: 0,
+        duplicados: 0,
+        errores: [{ fila: 0, campo: 'general', mensaje: err instanceof Error ? err.message : 'Error al subir inventarios' }],
+        total: rowsToSend.length,
+      });
+      setBulkStep('result');
+    } finally {
+      setBulkUploading(false);
+      setBulkUploadProgress(0);
+    }
+  };
+
+  const downloadBulkSubsetCsv = (codigos: string[], filename: string) => {
+    const codigosSet = new Set(codigos);
+    const rows = bulkCsvData.filter(r => codigosSet.has(r.codigo_unico?.trim()));
+    if (rows.length === 0) return;
+
+    const keys = Object.keys(rows[0]);
+    const header = keys.join(',');
+    const csvRows = rows.map(r => keys.map(k => `"${(r[k] || '').replace(/"/g, '""')}"`).join(','));
+    const csv = '\ufeff' + header + '\n' + csvRows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const closeBulkModal = () => {
+    setIsBulkOpen(false);
+    setBulkCsvData([]);
+    setBulkValidation({ valid: 0, errors: [], duplicatesInCsv: 0 });
+    setBulkResult(null);
+    setBulkCheckResult(null);
+    setBulkChecking(false);
+    setConfirmOverwrite(false);
+    setBulkStep('upload');
+    if (bulkInputRef.current) bulkInputRef.current.value = '';
+  };
+
+  const handleSave = async (isEdit: boolean) => {
+    setSaving(true);
+    try {
+      if (isEdit && selectedId) await inventariosService.update(selectedId, formData);
+      else await inventariosService.create(formData);
+      queryClient.invalidateQueries({ queryKey: ['inventarios'] });
+      setIsEditOpen(false);
+      setIsCreateOpen(false);
+    } catch (err) {
+      console.error('Error saving:', err);
+      alert(err instanceof Error ? err.message : 'Error al guardar');
+    } finally { setSaving(false); }
+  };
+
+  const getEstatusStyle = (est: string | null) => getEstatusStyles(isDark)[est || ''] || getDefaultEstatus(isDark);
+
+  const totalPages = data?.pagination?.totalPages || 1;
+  const totalItems = data?.pagination?.total || 0;
+  const hasActiveFilters = !!(tipo || plaza || cto || estatus || tradicional || micromacro || searchTags.length > 0 || searchInput || campanaIdParam);
+
+  // Form fields for create/edit
+  const FORM_FIELDS: { key: string; label: string; type?: string; options?: string[]; span?: number }[] = [
+    { key: 'codigo_unico', label: 'Código Único' },
+    { key: 'codigo', label: 'Código Corto' },
+    { key: 'tipo_de_mueble', label: 'Tipo de Mueble' },
+    { key: 'mueble', label: 'Mueble / Formato' },
+    { key: 'tipo_de_cara', label: 'Tipo de Cara', options: ['Flujo', 'Contraflujo', 'Flujo2', 'Contraflujo2'] },
+    { key: 'cara', label: 'Cara' },
+    { key: 'tradicional_digital', label: 'Trad / Digital', options: ['Tradicional', 'Digital'] },
+    { key: 'sentido', label: 'Sentido' },
+    { key: 'ubicacion', label: 'Ubicación', span: 2 },
+    { key: 'entre_calle_1', label: 'Entre Calle 1' },
+    { key: 'entre_calle_2', label: 'Entre Calle 2' },
+    { key: 'plaza', label: 'Plaza' },
+    { key: 'estado', label: 'Estado' },
+    { key: 'municipio', label: 'Municipio' },
+    { key: 'cp', label: 'C.P.', type: 'number' },
+    { key: 'latitud', label: 'Latitud', type: 'number' },
+    { key: 'longitud', label: 'Longitud', type: 'number' },
+    { key: 'ancho', label: 'Ancho (m)', type: 'number' },
+    { key: 'alto', label: 'Alto (m)', type: 'number' },
+    { key: 'orientacion', label: 'Orientación' },
+    { key: 'nivel_socioeconomico', label: 'NSE' },
+    { key: 'isla', label: 'Isla' },
+    { key: 'mueble_isla', label: 'Mueble Isla' },
+    { key: 'total_espacios', label: 'Total Espacios', type: 'number' },
+    { key: 'tarifa_publica', label: 'Tarifa Pública', type: 'number' },
+    { key: 'tarifa_piso', label: 'Tarifa Piso', type: 'number' },
+    { key: 'estatus', label: 'Estatus', options: ['Disponible', 'Reservado', 'Ocupado', 'Mantenimiento', 'Bloqueado'] },
+  ];
+
+  const renderFormModal = (isEdit: boolean) => (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => { setIsCreateOpen(false); setIsEditOpen(false); }}>
+      <div className={`${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl shadow-purple-500/10`} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className={`p-5 border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-fuchsia-900/10 to-purple-900/20' : 'border-purple-200 bg-gradient-to-r from-purple-50 via-fuchsia-50 to-purple-50'} flex items-center justify-between`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-xl ${isDark ? 'bg-purple-500/20' : 'bg-purple-50'} flex items-center justify-center`}>
+              {isEdit ? <Edit2 className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} /> : <Plus className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />}
+            </div>
+            <div>
+              <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{isEdit ? 'Editar Inventario' : 'Nuevo Inventario'}</h2>
+              {isEdit && selectedId && <p className={`text-xs ${isDark ? 'text-purple-300/50' : 'text-purple-400'}`}>ID: #{selectedId}</p>}
+            </div>
+          </div>
+          <button onClick={() => { setIsCreateOpen(false); setIsEditOpen(false); }} className={`p-2 rounded-lg ${isDark ? 'hover:bg-zinc-800 text-zinc-400 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-gray-900'} transition-colors`}>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        {/* Body */}
+        <div className="flex-1 overflow-auto p-5">
+          {/* Aviso informativo: antes esto bloqueaba la edición (inputs disabled +
+              botón Guardar oculto). Ahora solo advierte — se permite editar un
+              inventario con reservas activas. */}
+          {isEdit && editItemOcupado && (
+            <div className={`mb-4 flex items-center gap-3 px-4 py-3 rounded-xl ${isDark ? 'bg-amber-500/10 border-amber-500/20' : 'bg-amber-50 border-amber-200'} border`}>
+              <AlertTriangle className={`h-5 w-5 flex-shrink-0 ${isDark ? 'text-amber-400' : 'text-amber-600'}`} />
+              <div>
+                <p className={`text-sm font-medium ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>Inventario Ocupado/Reservado</p>
+                <p className={`text-xs ${isDark ? 'text-amber-400/70' : 'text-amber-600'}`}>Este inventario tiene reservas activas. Los cambios afectarán campañas en curso.</p>
+              </div>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            {FORM_FIELDS.map(f => (
+              <div key={f.key} className={f.span === 2 ? 'col-span-2' : ''}>
+                <label className={`text-[10px] ${isDark ? 'text-purple-300/50' : 'text-purple-400'} uppercase tracking-wide mb-1 block`}>{f.label}</label>
+                {f.options ? (
+                  <select
+                    value={formData[f.key] || ''}
+                    onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
+                    className={`w-full px-3 py-2.5 ${isDark ? 'bg-zinc-800/80 border-zinc-700/50 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    <option value="">— Seleccionar —</option>
+                    {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    type={f.type || 'text'}
+                    value={formData[f.key] || ''}
+                    onChange={e => setFormData({ ...formData, [f.key]: e.target.value })}
+                    step={f.type === 'number' ? 'any' : undefined}
+                    className={`w-full px-3 py-2.5 ${isDark ? 'bg-zinc-800/80 border-zinc-700/50 text-white placeholder:text-zinc-600' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-500/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* Footer */}
+        <div className={`p-5 border-t ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/10 via-transparent to-fuchsia-900/10' : 'border-purple-200 bg-gradient-to-r from-purple-50/50 via-transparent to-fuchsia-50/50'} flex justify-end gap-3`}>
+          <button onClick={() => { setIsCreateOpen(false); setIsEditOpen(false); }}
+            className={`px-4 py-2.5 rounded-xl text-sm ${isDark ? 'text-zinc-400 hover:text-white border-zinc-700/50 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-900 border-gray-200 hover:bg-gray-100'} border transition-all`}>
+            Cancelar
+          </button>
+          <button
+            onClick={() => handleSave(isEdit)}
+            disabled={saving}
+            className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-sm font-medium transition-all flex items-center gap-2 shadow-lg shadow-purple-500/20"
+          >
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+            {isEdit ? 'Guardar Cambios' : 'Crear Inventario'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen">
+      <Header title="Inventarios" />
+
+      <div className="p-6 space-y-5">
+        {/* KPI Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Total */}
+          <div className={`rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-5 flex flex-col justify-between relative overflow-hidden group`}>
+            <div className={`absolute top-0 right-0 w-32 h-32 ${isDark ? 'bg-purple-500/10 group-hover:bg-purple-500/20' : 'bg-purple-100/50 group-hover:bg-purple-100'} rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none transition-all duration-500`} />
+            <div>
+              <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>Total Inventarios</p>
+              <h3 className={`text-4xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} tracking-tight`}>
+                {isLoadingStats ? '...' : (statsData?.total ?? 0).toLocaleString()}
+              </h3>
+            </div>
+            <div className="mt-4 flex items-center gap-2">
+              <span className={`text-xs px-2 py-1 rounded-full ${isDark ? 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50' : 'bg-gray-100 text-gray-700 border-gray-200'} border`}>
+                {hasActiveFilters ? 'Filtrado' : 'Todos'}
+              </span>
+            </div>
+          </div>
+
+          {/* Bloqueados */}
+          <div className={`rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-5 flex flex-col justify-between relative overflow-hidden group`}>
+            <div className="absolute bottom-0 right-0 w-24 h-24 bg-red-500/10 rounded-full blur-2xl -mr-5 -mb-5 pointer-events-none group-hover:bg-red-500/20 transition-all duration-500" />
+            <div>
+              <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>Bloqueados</p>
+              <div className="flex items-baseline gap-2">
+                <h3 className="text-3xl font-bold text-red-400">
+                  {isLoadingStats ? '...' : (statsData?.bloqueados ?? 0)}
+                </h3>
+                <span className="text-xs text-red-500/80 font-medium">ocultos</span>
+              </div>
+            </div>
+            <div className={`mt-4 w-full h-1.5 ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} rounded-full overflow-hidden`}>
+              <div
+                className="h-full bg-gradient-to-r from-red-500 to-orange-500 transition-all duration-500"
+                style={{ width: `${statsData?.total ? ((statsData.bloqueados / statsData.total) * 100) : 0}%` }}
+              />
+            </div>
+            <div className={`mt-2 flex justify-between text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+              <span>Activos: {(statsData?.total ?? 0) - (statsData?.bloqueados ?? 0)}</span>
+              <span>{statsData?.total ? Math.round((statsData.bloqueados / statsData.total) * 100) : 0}%</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Campaign filter banner */}
+        {campanaIdParam && campanaNombreParam && (
+          <div className={`flex items-center justify-between gap-3 px-4 py-3 rounded-xl border ${isDark ? 'border-orange-500/30 bg-orange-500/10' : 'border-orange-300 bg-orange-50'}`}>
+            <div className="flex items-center gap-2">
+              <AlertTriangle className={`h-4 w-4 ${isDark ? 'text-orange-400' : 'text-orange-600'}`} />
+              <span className={`text-sm ${isDark ? 'text-orange-300' : 'text-orange-700'}`}>
+                Mostrando inventarios de la campaña: <strong>{campanaNombreParam}</strong>
+                {data && <span className="ml-1 opacity-70">({data.pagination.total} inventarios)</span>}
+              </span>
+            </div>
+            <button
+              onClick={() => setSearchParams({})}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${isDark ? 'bg-orange-500/20 text-orange-300 hover:bg-orange-500/30' : 'bg-orange-100 text-orange-700 hover:bg-orange-200'}`}
+            >
+              <X className="h-3.5 w-3.5" />
+              Mostrar todos
+            </button>
+          </div>
+        )}
+
+        {/* Control Bar - matching CampanasPage */}
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'border-purple-200 bg-white'} backdrop-blur-xl p-4 relative z-30`}>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col lg:flex-row items-start lg:items-center gap-4">
+              {/* Search with Tags */}
+              <div className={`relative flex-1 w-full lg:max-w-xl flex items-center flex-wrap gap-1.5 min-h-[48px] px-3 py-1.5 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900/80 hover:border-purple-500/40' : 'border-purple-200 bg-gray-50 hover:border-purple-300'} focus-within:ring-2 focus-within:ring-purple-500/30 focus-within:border-purple-500/40 transition-all`}>
+                <Search className={`h-4 w-4 shrink-0 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+                {searchTags.map((tag) => (
+                  <span
+                    key={tag}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-purple-100 text-purple-700 border border-purple-200'}`}
+                  >
+                    {tag}
+                    <button
+                      onClick={() => removeSearchTag(tag)}
+                      className={`rounded-full p-0.5 transition-colors ${isDark ? 'hover:bg-purple-500/30' : 'hover:bg-purple-200'}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  type="text"
+                  placeholder={searchTags.length === 0 ? 'Buscar código, ubicación, municipio... (Enter para agregar)' : 'Agregar otro código...'}
+                  className={`flex-1 min-w-[120px] bg-transparent border-none outline-none text-sm ${isDark ? 'text-white placeholder:text-zinc-500' : 'text-gray-900 placeholder:text-gray-400'}`}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === 'Tab') && searchInput.trim()) {
+                      e.preventDefault();
+                      addSearchTag(searchInput);
+                    }
+                    if (e.key === 'Backspace' && !searchInput && searchTags.length > 0) {
+                      removeSearchTag(searchTags[searchTags.length - 1]);
+                    }
+                  }}
+                />
+                {searchTags.length > 0 && (
+                  <button
+                    onClick={() => { setSearchTags([]); setSearchInput(''); }}
+                    className={`shrink-0 p-1 rounded-full transition-colors ${isDark ? 'text-zinc-400 hover:text-white hover:bg-zinc-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-200'}`}
+                    title="Limpiar búsqueda"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter Toggle */}
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${showFilters || hasActiveFilters
+                  ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
+                  : isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200'
+                }`}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filtros
+                {hasActiveFilters && <span className={`w-2 h-2 rounded-full ${isDark ? 'bg-purple-400' : 'bg-purple-500'}`} />}
+              </button>
+
+              {/* View Toggle */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                    viewMode === 'table'
+                      ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
+                      : isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'
+                  }`}
+                >
+                  <List className="h-4 w-4" />
+                  Tabla
+                </button>
+                {/* Botón Mapa oculto */}
+              </div>
+
+              {/* Download CSV button */}
+              <button
+                onClick={() => inventariosService.downloadCSV(
+                  selectedRows.size > 0
+                    ? { ids: Array.from(selectedRows) }
+                    : { search: serverSearch, tipo: tipo || undefined, estatus: estatus || undefined, plaza: plaza || undefined }
+                )}
+                title={selectedRows.size > 0 ? `Descargar ${selectedRows.size} seleccionados` : 'Descargar con filtros aplicados'}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700' : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-300'}`}
+              >
+                <Download className="h-4 w-4" />
+                Descargar CSV
+                {selectedRows.size > 0 && (
+                  <span className={`ml-1 px-1.5 rounded-full text-[10px] font-bold ${isDark ? 'bg-purple-500/30 text-purple-200' : 'bg-purple-100 text-purple-800'}`}>
+                    {selectedRows.size}
+                  </span>
+                )}
+              </button>
+
+              {/* Análisis ▾ */}
+              <div ref={analisisMenuRef} className="relative">
+                <button
+                  onClick={() => setAnalisisMenuOpen(o => !o)}
+                  disabled={openingAnalisis}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${isDark ? 'bg-fuchsia-500/10 hover:bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30' : 'bg-fuchsia-50 hover:bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200'} disabled:opacity-50`}
+                >
+                  {openingAnalisis ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarChart3 className="h-4 w-4" />}
+                  Análisis
+                  {selectedRows.size > 0 && (
+                    <span className={`ml-1 px-1.5 rounded-full text-[10px] font-bold ${isDark ? 'bg-fuchsia-500/30 text-fuchsia-200' : 'bg-fuchsia-200 text-fuchsia-800'}`}>
+                      {selectedRows.size}
+                    </span>
+                  )}
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${analisisMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {analisisMenuOpen && (
+                  <div className={`absolute right-0 mt-1 w-64 rounded-xl border shadow-xl z-50 overflow-hidden ${isDark ? 'bg-zinc-900 border-fuchsia-500/30' : 'bg-white border-fuchsia-200'}`}>
+                    <button
+                      onClick={() => { setAnalisisMenuOpen(false); selectedRows.size > 0 ? openAnalisisFromSelection() : openAnalisisVacio(); }}
+                      className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors ${isDark ? 'text-fuchsia-200 hover:bg-fuchsia-500/10' : 'text-fuchsia-800 hover:bg-fuchsia-50'}`}
+                    >
+                      <BarChart3 className="h-4 w-4 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium flex items-center gap-1.5">
+                          Análisis de Ocupación
+                          {selectedRows.size > 0 && (
+                            <span className={`px-1.5 rounded-full text-[10px] font-bold ${isDark ? 'bg-fuchsia-500/30 text-fuchsia-200' : 'bg-fuchsia-200 text-fuchsia-800'}`}>
+                              {selectedRows.size}
+                            </span>
+                          )}
+                        </div>
+                        <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                          {selectedRows.size > 0 ? `Analizar ${selectedRows.size} seleccionados` : 'Crear un análisis nuevo'}
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setAnalisisMenuOpen(false); setIsAnalisisListOpen(true); }}
+                      className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors border-t ${isDark ? 'text-zinc-200 hover:bg-zinc-800 border-zinc-800' : 'text-gray-700 hover:bg-gray-50 border-gray-100'}`}
+                    >
+                      <FolderOpen className="h-4 w-4 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium">Guardados</div>
+                        <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Abrir un análisis guardado</div>
+                      </div>
+                    </button>
+                    {isDev && (
+                      <button
+                        onClick={() => { setAnalisisMenuOpen(false); setAuditoriaAutoIniciar(false); setIsAuditoriaOpen(true); }}
+                        className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors border-t ${isDark ? 'text-amber-300 hover:bg-amber-500/10 border-zinc-800' : 'text-amber-700 hover:bg-amber-50 border-gray-100'}`}
+                      >
+                        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium">Auditoría de conflictos <span className={`ml-1 text-[10px] font-semibold ${isDark ? 'text-amber-500/80' : 'text-amber-600'}`}>DEV</span></div>
+                          <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Tradicionales con 2+ ventas firmes, en todo el inventario</div>
+                        </div>
+                      </button>
+                    )}
+                    {isDev && (
+                      <button
+                        onClick={() => { setAnalisisMenuOpen(false); setIsReorganizarOpen(true); }}
+                        className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors border-t ${isDark ? 'text-cyan-300 hover:bg-cyan-500/10 border-zinc-800' : 'text-cyan-700 hover:bg-cyan-50 border-gray-100'}`}
+                      >
+                        <Activity className="h-4 w-4 mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium">Revisar por Campaña <span className={`ml-1 text-[10px] font-semibold ${isDark ? 'text-cyan-500/80' : 'text-cyan-600'}`}>DEV</span></div>
+                          <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Reorganizar ocupación por campaña</div>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Bloqueo ▾ */}
+              <div ref={bloqueoMenuRef} className="relative">
+                <button
+                  onClick={() => setBloqueoMenuOpen(o => !o)}
+                  disabled={openingAnalisis}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${isDark ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border-rose-500/30' : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'} disabled:opacity-50`}
+                >
+                  <Ban className="h-4 w-4" />
+                  Bloqueo
+                  {selectedRows.size > 0 && (
+                    <span className={`ml-1 px-1.5 rounded-full text-[10px] font-bold ${isDark ? 'bg-rose-500/30 text-rose-200' : 'bg-rose-200 text-rose-800'}`}>
+                      {selectedRows.size}
+                    </span>
+                  )}
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${bloqueoMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {bloqueoMenuOpen && (
+                  <div className={`absolute right-0 mt-1 w-72 rounded-xl border shadow-xl z-50 overflow-hidden ${isDark ? 'bg-zinc-900 border-rose-500/30' : 'bg-white border-rose-200'}`}>
+                    <button
+                      onClick={async () => {
+                        setBloqueoMenuOpen(false);
+                        if (selectedRows.size === 0) return;
+                        const ids = Array.from(selectedRows);
+                        const enPagina: Record<number, Inventario> = {};
+                        sortedData.forEach(i => { if (selectedRows.has(i.id)) enPagina[i.id] = i; });
+                        const faltantes = ids.filter(id => !(id in enPagina));
+                        const fetched = await Promise.all(
+                          faltantes.map(async id => {
+                            try { return await inventariosService.getById(id); } catch { return null; }
+                          })
+                        );
+                        fetched.forEach(inv => { if (inv) enPagina[inv.id] = inv; });
+                        const items = ids.map(id => enPagina[id]).filter(Boolean) as Inventario[];
+                        if (items.length > 0) setBloqueoBulkItems(items);
+                      }}
+                      disabled={selectedRows.size === 0}
+                      className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors ${isDark ? 'text-rose-200 hover:bg-rose-500/10 disabled:text-zinc-600 disabled:hover:bg-transparent' : 'text-rose-800 hover:bg-rose-50 disabled:text-gray-400 disabled:hover:bg-transparent'} disabled:cursor-not-allowed`}
+                    >
+                      <EyeOff className="h-4 w-4 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium flex items-center gap-1.5">
+                          Bloquear seleccionados
+                          {selectedRows.size > 0 && (
+                            <span className={`px-1.5 rounded-full text-[10px] font-bold ${isDark ? 'bg-rose-500/30 text-rose-200' : 'bg-rose-200 text-rose-800'}`}>
+                              {selectedRows.size}
+                            </span>
+                          )}
+                        </div>
+                        <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                          {selectedRows.size > 0 ? `Bloqueo rápido de ${selectedRows.size} inventario(s)` : 'Marca filas en la tabla para activar'}
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setBloqueoMenuOpen(false); openBloqueoMasivo(); }}
+                      className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors border-t ${isDark ? 'text-rose-200 hover:bg-rose-500/10 border-zinc-800' : 'text-rose-800 hover:bg-rose-50 border-gray-100'}`}
+                    >
+                      <Ban className="h-4 w-4 mt-0.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium flex items-center gap-1.5">
+                          Bloqueo Masivo (Matriz)
+                          {selectedRows.size > 0 && (
+                            <span className={`px-1.5 rounded-full text-[10px] font-bold ${isDark ? 'bg-rose-500/30 text-rose-200' : 'bg-rose-200 text-rose-800'}`}>
+                              {selectedRows.size}
+                            </span>
+                          )}
+                        </div>
+                        <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                          Matriz inventario × catorcena con tareas a Tráfico
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Bulk upload button */}
+              <button
+                onClick={() => setIsBulkOpen(true)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white transition-all shadow-lg shadow-amber-500/20"
+              >
+                <Upload className="h-4 w-4" />
+                Carga Masiva
+              </button>
+
+              {/* New button */}
+              <button
+                onClick={openCreate}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-purple-600 hover:bg-purple-700 text-white transition-all shadow-lg shadow-purple-500/20"
+              >
+                <Plus className="h-4 w-4" />
+                Nuevo Inventario
+              </button>
+            </div>
+
+            {/* Filters Row */}
+            {showFilters && (
+              <div className={`flex flex-wrap items-center gap-2 pt-3 border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-200'} relative z-50`}>
+                <FilterChip label="Tipo" options={tipos || []} value={tipo} onChange={v => { setTipo(v); setPage(1); }} onClear={() => { setTipo(''); setPage(1); }} />
+                <FilterChip label="Trad / Digital" options={['Tradicional', 'Digital']} value={tradicional} onChange={v => { setTradicional(v); setPage(1); }} onClear={() => { setTradicional(''); setPage(1); }} />
+                <FilterChip label="Mi Macro" options={['Excluir Mi Macro', 'Solo Mi Macro']} value={micromacro} onChange={v => { setMicromacro(v); setPage(1); }} onClear={() => { setMicromacro(''); setPage(1); }} />
+                <FilterChip label="Plaza" options={plazas || []} value={plaza} onChange={v => { setPlaza(v); setPage(1); }} onClear={() => { setPlaza(''); setPage(1); }} />
+                <FilterChip label="CTO" options={ctos || []} value={cto} onChange={v => { setCto(v); setPage(1); }} onClear={() => { setCto(''); setPage(1); }} />
+                <FilterChip label="Estatus" options={estatusList || []} value={estatus} onChange={v => { setEstatus(v); setPage(1); }} onClear={() => { setEstatus(''); setPage(1); }} />
+
+                {hasActiveFilters && (
+                  <button
+                    onClick={() => { setSearchTags([]); setSearchInput(''); setTipo(''); setPlaza(''); setCto(''); setEstatus(''); setTradicional(''); setMicromacro(''); setPage(1); }}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${isDark ? 'bg-red-500/10 text-red-400 border-red-500/30 hover:bg-red-500/20' : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'} border transition-all`}
+                  >
+                    <X className="h-3 w-3" /> Limpiar todo
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Results Badge */}
+        {hasActiveFilters && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg ${isDark ? 'bg-purple-500/10 border-purple-500/20 text-purple-300' : 'bg-purple-50 border-purple-200 text-purple-700'} border text-xs`}>
+              <Package className="h-3.5 w-3.5" />
+              {totalItems} resultados
+            </div>
+          </div>
+        )}
+
+        {/* Table View */}
+        {viewMode === 'table' && (
+          <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'border-purple-200 bg-white'} backdrop-blur-xl overflow-hidden shadow-xl shadow-purple-500/5`}>
+            {isLoading ? (
+              <div className="flex items-center justify-center h-64">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500" />
+              </div>
+            ) : sortedData.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 gap-3">
+                <div className={`w-12 h-12 rounded-full ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} flex items-center justify-center`}>
+                  <Package className={`h-6 w-6 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+                </div>
+                <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm`}>No se encontraron inventarios</p>
+              </div>
+            ) : (
+              <>
+                {selectedRows.size > 0 && (
+                  <div className={`flex items-center justify-between px-4 py-2 border-b ${isDark ? 'border-purple-500/20 bg-purple-500/10' : 'border-purple-200 bg-purple-50'}`}>
+                    <span className={`text-xs font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+                      {selectedRows.size} {selectedRows.size === 1 ? 'fila seleccionada' : 'filas seleccionadas'}
+                    </span>
+                    <button
+                      onClick={clearSelection}
+                      className={`text-xs font-medium px-2 py-1 rounded-md transition-colors ${isDark ? 'text-purple-300 hover:bg-purple-500/20' : 'text-purple-700 hover:bg-purple-100'}`}
+                    >
+                      Limpiar selección
+                    </button>
+                  </div>
+                )}
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className={`border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/30 via-fuchsia-900/20 to-purple-900/30' : 'border-purple-200 bg-gradient-to-r from-purple-50 via-fuchsia-50 to-purple-50'}`}>
+                        <th className="px-4 py-3 w-10">
+                          <input
+                            type="checkbox"
+                            checked={allVisibleSelected}
+                            ref={el => { if (el) el.indeterminate = someVisibleSelected; }}
+                            onChange={toggleAllVisible}
+                            className={`h-4 w-4 rounded cursor-pointer accent-purple-600 ${isDark ? 'bg-zinc-800 border-zinc-600' : 'bg-white border-gray-300'}`}
+                            title={allVisibleSelected ? 'Deseleccionar todos' : 'Seleccionar todos'}
+                          />
+                        </th>
+                        {[
+                          { col: 'id' as SortCol, label: 'ID', sortable: true },
+                          { col: 'codigo_unico' as SortCol, label: 'Código', sortable: true },
+                          { col: 'mueble' as SortCol, label: 'Mueble', sortable: true },
+                          { col: '' as SortCol, label: 'Formato', sortable: false },
+                          { col: '' as SortCol, label: 'Ubicación', sortable: false },
+                          { col: 'plaza' as SortCol, label: 'Plaza', sortable: true },
+                          { col: '' as SortCol, label: 'CTO', sortable: false },
+                          { col: '' as SortCol, label: 'Cara', sortable: false },
+                          { col: '' as SortCol, label: 'Dimensiones', sortable: false },
+                          { col: 'estatus' as SortCol, label: 'Actividad', sortable: true },
+                          { col: '' as SortCol, label: 'Estatus', sortable: false },
+                        ].map(({ col, label, sortable }) => (
+                          <th
+                            key={label}
+                            onClick={sortable ? () => handleSort(col) : undefined}
+                            className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider ${sortable ? isDark ? 'cursor-pointer hover:text-purple-200' : 'cursor-pointer hover:text-purple-900' : ''}`}
+                          >
+                            <span className="flex items-center">
+                              {label}
+                              {sortable && <SortIcon col={col} />}
+                            </span>
+                          </th>
+                        ))}
+                        <th className={`px-4 py-3 text-center text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedData.map(item => {
+                        const realEstatus = item.estatus_real || item.estatus;
+                        const estStyle = getEstatusStyle(realEstatus);
+                        const isBlocked = item.estatus === 'Bloqueado';
+                        const isSelected = selectedRows.has(item.id);
+                        return (
+                          <tr key={item.id} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-200 hover:bg-gray-50'} transition-colors ${isBlocked ? 'opacity-40' : ''} ${isSelected ? (isDark ? 'bg-purple-500/10' : 'bg-purple-50/60') : ''}`}>
+                            <td className="px-4 py-3">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => toggleRowSelected(item.id)}
+                                className={`h-4 w-4 rounded cursor-pointer accent-purple-600 ${isDark ? 'bg-zinc-800 border-zinc-600' : 'bg-white border-gray-300'}`}
+                              />
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`font-mono text-xs px-2 py-1 rounded-md ${isDark ? 'bg-purple-500/10 text-purple-300' : 'bg-purple-50 text-purple-700'}`}>#{item.id}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`font-mono text-xs ${isDark ? 'text-white' : 'text-gray-900'} font-medium`}>{item.codigo_unico || '-'}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{item.mueble || '-'}</span>
+                                {item.tradicional_digital === 'Digital' && (
+                                  <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${isDark ? 'bg-cyan-500/20 text-cyan-300' : 'bg-cyan-50 text-cyan-700'} border border-cyan-500/30`}>
+                                    <Monitor className="h-2.5 w-2.5 inline mr-0.5" />DIG
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{item.tipo_de_mueble || '-'}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} max-w-[200px] truncate block`} title={item.ubicacion || ''}>{item.ubicacion || '-'}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{item.plaza || '-'}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              {(item as any).cto ? (
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${isDark ? 'bg-violet-500/15 text-violet-300 border-violet-500/30' : 'bg-violet-50 text-violet-700 border-violet-200'}`}>{(item as any).cto}</span>
+                              ) : (
+                                <span className={`text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>-</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{item.tipo_de_cara || '-'}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1 font-mono text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                                <Ruler className={`h-3 w-3 ${isDark ? 'text-zinc-600' : 'text-gray-400'}`} />
+                                {item.ancho}×{item.alto}m
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${estStyle.bg} ${estStyle.text} border ${estStyle.border}`}>
+                                {realEstatus === 'Ocupado' || realEstatus === 'Reservado' ? 'Ocupado' : 'Disponible'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                                isBlocked
+                                  ? isDark ? 'bg-red-500/20 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'
+                                  : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              } border`}>
+                                {isBlocked ? 'Bloqueado' : 'Activo'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  onClick={() => openEdit(item)}
+                                  className={`p-1.5 rounded-lg ${isDark ? 'hover:bg-purple-500/10 hover:text-purple-300' : 'hover:bg-purple-50 hover:text-purple-600'} ${isDark ? 'text-zinc-500' : 'text-gray-400'} transition-colors`}
+                                  title="Editar"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => { setSelectedId(item.id); setHistorialTab('campanas'); setIsHistorialOpen(true); }}
+                                  className={`p-1.5 rounded-lg ${isDark ? 'hover:bg-purple-500/10 hover:text-purple-300' : 'hover:bg-purple-50 hover:text-purple-600'} ${isDark ? 'text-zinc-500' : 'text-gray-400'} transition-colors`}
+                                  title="Historial"
+                                >
+                                  <History className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => handleBloquearClick(item)}
+                                  disabled={toggleBlockMutation.isPending && toggleBlockMutation.variables === item.id}
+                                  className={`p-1.5 rounded-lg transition-colors ${isBlocked
+                                    ? isDark ? 'hover:bg-amber-500/10 text-red-400 hover:text-amber-300' : 'hover:bg-amber-50 text-red-600 hover:text-amber-700'
+                                    : `${isDark ? 'hover:bg-red-500/10 hover:text-red-400' : 'hover:bg-red-50 hover:text-red-600'} ${isDark ? 'text-zinc-500' : 'text-gray-400'}`
+                                  } disabled:opacity-50`}
+                                  title={isBlocked ? 'Crear tarea de revisión' : 'Bloquear'}
+                                >
+                                  {toggleBlockMutation.isPending && toggleBlockMutation.variables === item.id
+                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    : isBlocked ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
+                                  }
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination - matching CampanasPage */}
+                {totalPages > 1 && !campanaIdParam && (
+                  <div className={`flex items-center justify-between border-t ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-purple-200 bg-gradient-to-r from-purple-50/50 via-transparent to-fuchsia-50/50'} px-4 py-3`}>
+                    <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-purple-600/70'}`}>
+                      Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{totalPages}</span>
+                      <span className={`${isDark ? 'text-purple-300/50' : 'text-purple-400'} ml-2`}>({totalItems.toLocaleString()} total)</span>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={page === 1}
+                        className={`px-4 py-2 rounded-lg border ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'} text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all`}
+                      >
+                        Anterior
+                      </button>
+                      <button
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                        disabled={page === totalPages}
+                        className={`px-4 py-2 rounded-lg border ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'} text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all`}
+                      >
+                        Siguiente
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Map View */}
+        {viewMode === 'map' && (
+          <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'border-purple-200 bg-white'} backdrop-blur-xl overflow-hidden shadow-xl shadow-purple-500/5`} style={{ height: '600px' }}>
+            <InventarioMap tipo={tipo} estatus={estatus} plaza={plaza} />
+          </div>
+        )}
+      </div>
+
+      {/* Create Modal */}
+      {isCreateOpen && renderFormModal(false)}
+
+      {/* Edit Modal */}
+      {isEditOpen && renderFormModal(true)}
+
+      {/* Historial Modal */}
+      {isHistorialOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => { setIsHistorialOpen(false); setSelectedId(null); }}>
+          <div className={`${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl shadow-purple-500/10`} onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className={`p-5 border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-fuchsia-900/10 to-purple-900/20' : 'border-purple-200 bg-gradient-to-r from-purple-50 via-fuchsia-50 to-purple-50'} flex items-center justify-between`}>
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl ${isDark ? 'bg-purple-500/20' : 'bg-purple-50'} flex items-center justify-center`}>
+                  <History className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
+                </div>
+                <div>
+                  <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Historial del Inventario</h2>
+                  {historialData?.inventario && (
+                    <p className={`text-xs ${isDark ? 'text-purple-300/50' : 'text-purple-400'}`}>{historialData.inventario.codigo_unico} — {historialData.inventario.ubicacion}</p>
+                  )}
+                </div>
+              </div>
+              <button onClick={() => { setIsHistorialOpen(false); setSelectedId(null); }} className={`p-2 rounded-lg ${isDark ? 'hover:bg-zinc-800 text-zinc-400 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-gray-900'} transition-colors`}>
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div className={`flex border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              {[
+                { key: 'campanas' as const, label: 'Campañas', icon: History },
+                { key: 'acciones' as const, label: 'Acciones', icon: Activity },
+              ].map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => setHistorialTab(key)}
+                  className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition-colors relative ${
+                    historialTab === key
+                      ? isDark ? 'text-purple-400' : 'text-purple-600'
+                      : isDark ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-400 hover:text-gray-600'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  {label}
+                  {historialTab === key && (
+                    <span className={`absolute bottom-0 left-0 right-0 h-0.5 ${isDark ? 'bg-purple-400' : 'bg-purple-600'}`} />
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 overflow-auto p-5">
+              {isLoadingHistorial ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500" />
+                </div>
+              ) : historialData ? (
+                <div className="space-y-4">
+                  {/* Info cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {[
+                      { label: 'Código', value: historialData.inventario.codigo_unico },
+                      { label: 'Formato', value: historialData.inventario.mueble },
+                      { label: 'Plaza', value: historialData.inventario.plaza },
+                      { label: 'Tipo', value: historialData.inventario.tradicional_digital },
+                    ].map(({ label, value }) => (
+                      <div key={label} className={`p-3 rounded-xl ${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} border`}>
+                        <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wide`}>{label}</p>
+                        <p className={`text-sm ${isDark ? 'text-white' : 'text-gray-900'} font-medium mt-0.5`}>{value || '-'}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Tab: Campañas */}
+                  {historialTab === 'campanas' && (
+                    <>
+                      <h3 className={`text-sm font-medium ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
+                        Historial de Campañas ({historialData.historial.length})
+                      </h3>
+
+                      {historialData.historial.length === 0 ? (
+                        <div className="text-center py-8">
+                          <div className={`w-12 h-12 rounded-full ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} flex items-center justify-center mx-auto mb-3`}>
+                            <History className={`h-6 w-6 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+                          </div>
+                          <p className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>No hay historial para este inventario</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {historialData.historial.map((item, index) => {
+                            const targetHref = item.campana_id
+                              ? `/campanas/detail/${item.campana_id}`
+                              : `/propuestas?viewId=${item.propuesta_id}`;
+                            return (
+                            <div key={`${item.reserva_id}-${index}`} className={`p-4 rounded-xl cursor-pointer ${isDark ? 'bg-zinc-800/30 border-zinc-800/50 hover:border-purple-500/30 hover:bg-zinc-800/50' : 'bg-gray-50 border-gray-200 hover:border-purple-300 hover:bg-purple-50/30'} border transition-colors`} onClick={() => window.open(targetHref, '_blank')}>
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                    <a
+                                      href={targetHref}
+                                      onClick={(e) => { e.preventDefault(); window.open(targetHref, '_blank'); }}
+                                      className={`font-mono text-xs px-2 py-1 rounded-md cursor-pointer hover:underline ${isDark ? 'bg-purple-500/10 text-purple-300 hover:text-purple-200' : 'bg-purple-50 text-purple-700 hover:text-purple-900'}`}
+                                    >
+                                      #{item.propuesta_id || item.campana_id}
+                                    </a>
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] ${
+                                      item.reserva_estatus === 'Vendido' ? (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-50 text-emerald-700') + ' border border-emerald-500/30' :
+                                      item.reserva_estatus === 'Reservado' ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-50 text-amber-700') + ' border border-amber-500/30' :
+                                      item.reserva_estatus === 'eliminada' ? (isDark ? 'bg-red-500/20 text-red-300' : 'bg-red-50 text-red-700') + ' border border-red-500/30' :
+                                      (isDark ? 'bg-zinc-500/20 text-zinc-300' : 'bg-zinc-50 text-zinc-700') + ' border border-zinc-500/30'
+                                    }`}>
+                                      {item.reserva_estatus}
+                                    </span>
+                                    {!!item.instalado && (
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] ${isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-50 text-blue-700'} border border-blue-500/30`}>Instalado</span>
+                                    )}
+                                  </div>
+                                  <a
+                                    href={targetHref}
+                                    onClick={(e) => { e.preventDefault(); window.open(targetHref, '_blank'); }}
+                                    className={`${isDark ? 'text-white hover:text-purple-300' : 'text-gray-900 hover:text-purple-700'} font-medium text-sm cursor-pointer hover:underline`}
+                                  >{item.campana_nombre || `Propuesta #${item.propuesta_id}`}</a>
+                                  {/* <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{item.cliente_nombre || 'Sin cliente'}</p> */}
+                                  <div className={`flex items-center gap-3 mt-2 text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} flex-wrap`}>
+                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${isDark ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-cyan-50 text-cyan-700 border-cyan-200'} border`}>
+                                      <CalendarIcon className="h-3 w-3" />
+                                      {item.inicio_periodo?.split('T')[0]} — {item.fin_periodo?.split('T')[0]}
+                                    </span>
+                                    <span>{item.numero_catorcena && item.anio_catorcena
+                                      ? `Cat ${item.numero_catorcena} / ${item.anio_catorcena}`
+                                      : item.inicio_periodo
+                                        ? `${(() => { const parts = item.inicio_periodo.split('-'); const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']; return parts.length >= 2 ? `${meses[parseInt(parts[1]) - 1]} ${parts[0]}` : '-'; })()}`
+                                        : 'Sin periodo'}</span>
+                                  </div>
+                                </div>
+                                {item.archivo && (
+                                  <img
+                                    src={item.archivo?.startsWith('http') ? item.archivo : `${import.meta.env.VITE_API_URL || 'http://localhost:3000'}${item.archivo}`}
+                                    alt="Arte"
+                                    className={`w-14 h-14 object-cover rounded-xl cursor-pointer hover:opacity-80 flex-shrink-0 border ${isDark ? 'border-zinc-700/50' : 'border-gray-200'}`}
+                                    onClick={() => item.archivo && window.open(item.archivo.startsWith('http') ? item.archivo : `${import.meta.env.VITE_API_URL || 'http://localhost:3000'}${item.archivo}`, '_blank')}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Tab: Acciones */}
+                  {historialTab === 'acciones' && (
+                    <>
+                      <h3 className={`text-sm font-medium ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
+                        Registro de Acciones {accionesData ? `(${accionesData.length})` : ''}
+                      </h3>
+
+                      {isLoadingAcciones ? (
+                        <div className="flex items-center justify-center py-12">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500" />
+                        </div>
+                      ) : !accionesData || accionesData.length === 0 ? (
+                        <div className="text-center py-8">
+                          <div className={`w-12 h-12 rounded-full ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} flex items-center justify-center mx-auto mb-3`}>
+                            <Activity className={`h-6 w-6 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+                          </div>
+                          <p className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>No hay acciones registradas para este inventario</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {accionesData.map((accion) => {
+                            const accionStyles: Record<string, { bg: string; text: string; border: string }> = {
+                              reservado: { bg: isDark ? 'bg-amber-500/20' : 'bg-amber-50', text: isDark ? 'text-amber-300' : 'text-amber-700', border: 'border-amber-500/30' },
+                              quitado_de_campana: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
+                              bloqueado: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
+                              desbloqueado: { bg: isDark ? 'bg-emerald-500/20' : 'bg-emerald-50', text: isDark ? 'text-emerald-300' : 'text-emerald-700', border: 'border-emerald-500/30' },
+                              actualizado: { bg: isDark ? 'bg-cyan-500/20' : 'bg-cyan-50', text: isDark ? 'text-cyan-300' : 'text-cyan-700', border: 'border-cyan-500/30' },
+                              creado: { bg: isDark ? 'bg-blue-500/20' : 'bg-blue-50', text: isDark ? 'text-blue-300' : 'text-blue-700', border: 'border-blue-500/30' },
+                            };
+                            const style = accionStyles[accion.accion.toLowerCase()] || { bg: isDark ? 'bg-zinc-500/20' : 'bg-zinc-50', text: isDark ? 'text-zinc-300' : 'text-zinc-700', border: 'border-zinc-500/30' };
+                            return (
+                              <div key={accion.id} className={`p-4 rounded-xl ${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} border`}>
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${style.bg} ${style.text} border ${style.border} shrink-0`}>
+                                      {accion.accion}
+                                    </span>
+                                    {accion.detalles && (
+                                      <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} truncate`}>{accion.detalles}</p>
+                                    )}
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                                      {new Date(accion.fecha).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                    </p>
+                                    {accion.usuario_nombre && (
+                                      <p className={`text-[10px] ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>{accion.usuario_nombre}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <AlertCircle className={`h-12 w-12 mx-auto mb-3 ${isDark ? 'text-zinc-500' : 'text-gray-400'} opacity-30`} />
+                  <p className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Error al cargar el historial</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Upload Modal */}
+      {isBulkOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={closeBulkModal}>
+          <div className={`${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border ${isDark ? 'border-amber-500/20' : 'border-amber-200'} w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl shadow-amber-500/10`} onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className={`p-5 border-b ${isDark ? 'border-amber-500/20 bg-gradient-to-r from-amber-900/20 via-orange-900/10 to-amber-900/20' : 'border-amber-200 bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50'} flex items-center justify-between`}>
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl ${isDark ? 'bg-amber-500/20' : 'bg-amber-50'} flex items-center justify-center`}>
+                  <Upload className={`h-5 w-5 ${isDark ? 'text-amber-400' : 'text-amber-600'}`} />
+                </div>
+                <div>
+                  <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Carga Masiva de Inventarios</h2>
+                  <p className={`text-xs ${isDark ? 'text-amber-300/50' : 'text-amber-500'}`}>Sube un archivo CSV para agregar múltiples inventarios</p>
+                </div>
+              </div>
+              <button onClick={closeBulkModal} className={`p-2 rounded-lg ${isDark ? 'hover:bg-zinc-800 text-zinc-400 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-gray-900'} transition-colors`}>
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-auto overscroll-contain p-5 space-y-4">
+              {/* Step 1: Upload + Template */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <input ref={bulkInputRef} type="file" accept=".csv" onChange={handleBulkCsvUpload} className="hidden" />
+                <button
+                  onClick={() => bulkInputRef.current?.click()}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white transition-all"
+                >
+                  <FileText className="h-4 w-4" />
+                  {bulkCsvData.length > 0 ? 'Cambiar archivo' : 'Seleccionar CSV'}
+                </button>
+                <button
+                  onClick={downloadTemplate}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700' : 'bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-200'} border transition-all`}
+                >
+                  <Download className="h-4 w-4" />
+                  Descargar Plantilla
+                </button>
+                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                  Requeridos: codigo_unico, tipo_de_mueble, tipo_de_cara, tradicional_digital, plaza, estado, municipio
+                </span>
+              </div>
+
+              {/* Step 2: Preview */}
+              {bulkParsing && (
+                <div className={`flex items-center justify-center gap-3 py-8 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                  <Loader2 className="h-5 w-5 animate-spin text-purple-400" />
+                  <span className="text-sm">Procesando archivo...</span>
+                </div>
+              )}
+
+              {!bulkParsing && bulkCsvData.length > 0 && bulkStep === 'upload' && (
+                <>
+                  {/* Counters */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-gray-100 text-gray-700'} text-xs`}>
+                      <Package className="h-3.5 w-3.5" />
+                      {bulkCsvData.length} filas totales
+                    </div>
+                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${isDark ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} border text-xs`}>
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {bulkValidation.valid} válidas
+                    </div>
+                    {bulkValidation.errors.length > 0 && (
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${isDark ? 'bg-red-500/10 text-red-300 border-red-500/20' : 'bg-red-50 text-red-700 border-red-200'} border text-xs`}>
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        {new Set(bulkValidation.errors.map(e => e.fila)).size} con errores
+                      </div>
+                    )}
+                    {bulkValidation.duplicatesInCsv > 0 && (
+                      <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg ${isDark ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'} border text-xs`}>
+                        <AlertCircle className="h-3.5 w-3.5" />
+                        {bulkValidation.duplicatesInCsv} duplicados en CSV
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Error details */}
+                  {bulkValidation.errors.length > 0 && (
+                    <div className={`${isDark ? 'bg-red-500/5 border-red-500/20' : 'bg-red-50 border-red-200'} border rounded-xl p-3 max-h-48 overflow-auto`}>
+                      <p className={`text-xs ${isDark ? 'text-red-300' : 'text-red-700'} font-medium mb-2`}>Errores encontrados ({bulkValidation.errors.length}):</p>
+                      <div className="space-y-1">
+                        {bulkValidation.errors.map((err, idx) => (
+                          <p key={idx} className={`text-[11px] ${isDark ? 'text-red-300/80' : 'text-red-600'}`}>
+                            Fila {err.fila}: <span className={`${isDark ? 'text-red-400' : 'text-red-700'} font-mono`}>{err.campo}</span> — {err.mensaje}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tabs: Errores / OK */}
+                  {(() => {
+                    const errorFilasSet = new Set(bulkValidation.errors.map(e => e.fila));
+                    const errorRows = bulkCsvData.map((row, idx) => ({ row, idx })).filter(({ idx }) => errorFilasSet.has(idx + 1));
+                    const okRows = bulkCsvData.map((row, idx) => ({ row, idx })).filter(({ idx }) => !errorFilasSet.has(idx + 1));
+                    const currentRows = bulkTab === 'errors' ? errorRows : okRows;
+                    const totalPages = Math.max(1, Math.ceil(currentRows.length / BULK_PAGE_SIZE));
+                    const safePage = Math.min(bulkPage, totalPages);
+                    const pagedRows = currentRows.slice((safePage - 1) * BULK_PAGE_SIZE, safePage * BULK_PAGE_SIZE);
+
+                    return (
+                      <div className={`border ${isDark ? 'border-zinc-800' : 'border-gray-200'} rounded-xl overflow-hidden`}>
+                        {/* Tab buttons + download */}
+                        <div className={`flex items-center ${isDark ? 'bg-zinc-800/50 border-zinc-800' : 'bg-gray-50 border-gray-200'} border-b`}>
+                          <button
+                            onClick={() => { setBulkTab('errors'); setBulkPage(1); }}
+                            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors ${bulkTab === 'errors' ? (isDark ? 'text-red-300 border-b-2 border-red-400 bg-red-500/5' : 'text-red-700 border-b-2 border-red-500 bg-red-50') : (isDark ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-400 hover:text-gray-600')}`}
+                          >
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            Con errores ({errorRows.length})
+                          </button>
+                          <button
+                            onClick={() => { setBulkTab('ok'); setBulkPage(1); }}
+                            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors ${bulkTab === 'ok' ? (isDark ? 'text-emerald-300 border-b-2 border-emerald-400 bg-emerald-500/5' : 'text-emerald-700 border-b-2 border-emerald-500 bg-emerald-50') : (isDark ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-400 hover:text-gray-600')}`}
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            OK ({okRows.length})
+                          </button>
+                          <div className="ml-auto pr-2">
+                            <button
+                              onClick={() => {
+                                const rows = currentRows.map(({ row }) => row);
+                                if (rows.length === 0) return;
+                                const keys = FORM_FIELDS.map(f => f.key);
+                                const header = keys.join(',');
+                                const csvRows = rows.map(r => keys.map(k => {
+                                  const val = (r[k] || '').replace(/"/g, '""');
+                                  return val.includes(',') || val.includes('\n') ? `"${val}"` : val;
+                                }).join(','));
+                                const csv = '\ufeff' + header + '\n' + csvRows.join('\n');
+                                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                                const url = URL.createObjectURL(blob);
+                                const link = document.createElement('a');
+                                link.href = url;
+                                link.download = `inventarios_${bulkTab}.csv`;
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                                URL.revokeObjectURL(url);
+                              }}
+                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium ${isDark ? 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'} transition-colors`}
+                              title="Descargar CSV del tab actual"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                              CSV
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Table - all columns editable */}
+                        <div className="max-h-96 overflow-auto">
+                          <table className="text-xs" style={{ minWidth: FORM_FIELDS.length * 110 }}>
+                            <thead className={`${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'} sticky top-0 z-10`}>
+                              <tr>
+                                <th className={`px-1 py-2 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium w-8 sticky left-0 ${isDark ? 'bg-zinc-800/90' : 'bg-gray-50'} z-20`}>#</th>
+                                {FORM_FIELDS.map(f => (
+                                  <th key={f.key} className={`px-1 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium whitespace-nowrap`}>{f.label}</th>
+                                ))}
+                                <th className={`px-1 py-2 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium w-16`}>Estatus</th>
+                                <th className={`px-1 py-2 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium w-8`}></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pagedRows.length === 0 ? (
+                                <tr><td colSpan={FORM_FIELDS.length + 3} className={`px-4 py-6 text-center text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>{bulkTab === 'errors' ? 'Sin errores' : 'Sin filas válidas'}</td></tr>
+                              ) : pagedRows.map(({ row, idx }) => {
+                                const filaNum = idx + 1;
+                                const rowErrors = bulkValidation.errors.filter(e => e.fila === filaNum);
+                                const hasError = rowErrors.length > 0;
+                                const isDupInCsv = rowErrors.some(e => e.mensaje === 'Duplicado dentro del CSV');
+                                const fieldHasError = (field: string) => rowErrors.some(e => e.campo === field);
+                                const inputClass = (field: string) => `w-full px-1.5 py-1 ${isDark ? 'bg-zinc-800/80 text-white' : 'bg-white text-gray-900'} ${fieldHasError(field) ? 'border-red-500 ring-1 ring-red-500/30' : isDark ? 'border-zinc-700/50' : 'border-gray-200'} border rounded text-[11px] focus:outline-none focus:ring-1 focus:ring-purple-500/50`;
+                                return (
+                                  <tr
+                                    key={idx}
+                                    className={`border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-100'} ${hasError ? (isDupInCsv ? 'bg-amber-500/5' : 'bg-red-500/5') : ''}`}
+                                    title={hasError ? rowErrors.map(e => `${e.campo}: ${e.mensaje}`).join('\n') : undefined}
+                                  >
+                                    <td className={`px-1 py-1 text-center ${isDark ? 'text-zinc-600' : 'text-gray-400'} text-[10px] sticky left-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} z-10`}>{filaNum}</td>
+                                    {FORM_FIELDS.map(f => (
+                                      <td key={f.key} className="px-1 py-1">
+                                        {f.options ? (
+                                          <select value={row[f.key] || ''} onChange={e => updateBulkRow(idx, f.key, e.target.value)} className={inputClass(f.key)}>
+                                            <option value="">—</option>
+                                            {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                                          </select>
+                                        ) : (
+                                          <input value={row[f.key] || ''} onChange={e => updateBulkRow(idx, f.key, e.target.value)} className={`${inputClass(f.key)} ${f.key === 'codigo_unico' ? 'font-mono' : ''}`} style={{ minWidth: 80 }} />
+                                        )}
+                                      </td>
+                                    ))}
+                                    <td className="px-1 py-1 text-center">
+                                      {hasError ? (
+                                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium ${isDupInCsv ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700') : (isDark ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700')}`}>
+                                          {isDupInCsv ? 'DUP' : 'ERR'}
+                                        </span>
+                                      ) : (
+                                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium ${isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700'}`}>OK</span>
+                                      )}
+                                    </td>
+                                    <td className="px-1 py-1 text-center">
+                                      <button onClick={() => deleteBulkRow(idx)} className={`p-0.5 rounded ${isDark ? 'hover:bg-red-500/20 text-zinc-600 hover:text-red-400' : 'hover:bg-red-50 text-gray-400 hover:text-red-600'} transition-colors`} title="Eliminar fila">
+                                        <X className="h-3.5 w-3.5" />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination */}
+                        {totalPages > 1 && (
+                          <div className={`flex items-center justify-between px-3 py-2 ${isDark ? 'bg-zinc-800/30 border-zinc-800' : 'bg-gray-50 border-gray-200'} border-t`}>
+                            <span className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                              Página {safePage} de {totalPages} ({currentRows.length} filas)
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => setBulkPage(p => Math.max(1, p - 1))}
+                                disabled={safePage <= 1}
+                                className={`px-2 py-1 rounded text-[11px] ${isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:text-zinc-700' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 disabled:text-gray-300'} disabled:cursor-not-allowed transition-colors`}
+                              >
+                                Anterior
+                              </button>
+                              <button
+                                onClick={() => setBulkPage(p => Math.min(totalPages, p + 1))}
+                                disabled={safePage >= totalPages}
+                                className={`px-2 py-1 rounded text-[11px] ${isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:text-zinc-700' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 disabled:text-gray-300'} disabled:cursor-not-allowed transition-colors`}
+                              >
+                                Siguiente
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+
+              {/* Step 3: Check Result - Tabs */}
+              {bulkStep === 'check' && bulkCheckResult && (
+                <div className="space-y-4">
+                  {/* Tab buttons as KPI cards */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      onClick={() => { setCheckTab('nuevos'); setCheckPage(1); }}
+                      className={`flex items-center gap-2 px-4 py-3 rounded-xl border transition-all ${checkTab === 'nuevos' ? (isDark ? 'bg-emerald-500/15 border-emerald-400 ring-1 ring-emerald-400/30' : 'bg-emerald-50 border-emerald-500 ring-1 ring-emerald-500/30') : (isDark ? 'bg-emerald-500/5 border-emerald-500/20 hover:bg-emerald-500/10' : 'bg-emerald-50/50 border-emerald-200 hover:bg-emerald-50')}`}
+                    >
+                      <CheckCircle2 className={`h-5 w-5 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                      <div className="text-left">
+                        <p className={`text-sm font-medium ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>{bulkCheckResult.nuevos.length} nuevos</p>
+                        <p className={`text-[10px] ${isDark ? 'text-emerald-400/60' : 'text-emerald-500'}`}>Se insertarán</p>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setCheckTab('sobreescribibles'); setCheckPage(1); }}
+                      className={`flex items-center gap-2 px-4 py-3 rounded-xl border transition-all ${checkTab === 'sobreescribibles' ? (isDark ? 'bg-amber-500/15 border-amber-400 ring-1 ring-amber-400/30' : 'bg-amber-50 border-amber-500 ring-1 ring-amber-500/30') : (isDark ? 'bg-amber-500/5 border-amber-500/20 hover:bg-amber-500/10' : 'bg-amber-50/50 border-amber-200 hover:bg-amber-50')}`}
+                    >
+                      <AlertCircle className={`h-5 w-5 ${isDark ? 'text-amber-400' : 'text-amber-600'}`} />
+                      <div className="text-left">
+                        <p className={`text-sm font-medium ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>{bulkCheckResult.sobreescribibles.length} existentes</p>
+                        <p className={`text-[10px] ${isDark ? 'text-amber-400/60' : 'text-amber-500'}`}>Sobreescribibles</p>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setCheckTab('ocupados'); setCheckPage(1); }}
+                      className={`flex items-center gap-2 px-4 py-3 rounded-xl border transition-all ${checkTab === 'ocupados' ? (isDark ? 'bg-red-500/15 border-red-400 ring-1 ring-red-400/30' : 'bg-red-50 border-red-500 ring-1 ring-red-500/30') : (isDark ? 'bg-red-500/5 border-red-500/20 hover:bg-red-500/10' : 'bg-red-50/50 border-red-200 hover:bg-red-50')}`}
+                    >
+                      <Ban className={`h-5 w-5 ${isDark ? 'text-red-400' : 'text-red-600'}`} />
+                      <div className="text-left">
+                        <p className={`text-sm font-medium ${isDark ? 'text-red-300' : 'text-red-700'}`}>{bulkCheckResult.ocupados.length} ocupados</p>
+                        <p className={`text-[10px] ${isDark ? 'text-red-400/60' : 'text-red-500'}`}>No se pueden sobreescribir</p>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Sobreescribir checkbox (only on sobreescribibles tab) */}
+                  {checkTab === 'sobreescribibles' && bulkCheckResult.sobreescribibles.length > 0 && (
+                    <label className={`flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer ${isDark ? 'bg-amber-500/5 border-amber-500/20 hover:bg-amber-500/10' : 'bg-amber-50 border-amber-200 hover:bg-amber-100'} border transition-colors`}>
+                      <input type="checkbox" checked={confirmOverwrite} onChange={e => setConfirmOverwrite(e.target.checked)} className="w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500" />
+                      <div>
+                        <p className={`text-sm font-medium ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>Sobreescribir {bulkCheckResult.sobreescribibles.length} inventarios existentes</p>
+                        <p className={`text-[10px] ${isDark ? 'text-amber-400/60' : 'text-amber-500'}`}>Revisa y edita los datos antes de subir</p>
+                      </div>
+                    </label>
+                  )}
+
+                  {/* Tab content with paginated table */}
+                  {(() => {
+                    const codigosList = checkTab === 'nuevos' ? bulkCheckResult.nuevos
+                      : checkTab === 'sobreescribibles' ? bulkCheckResult.sobreescribibles.map(s => s.codigo_unico || '')
+                      : bulkCheckResult.ocupados.map(o => o.codigo_unico || '');
+                    const codigosSet = new Set(codigosList);
+                    const matchedRows = bulkCsvData.map((row, idx) => ({ row, idx })).filter(({ row }) => codigosSet.has(row.codigo_unico?.trim()));
+                    const totalCheckPages = Math.max(1, Math.ceil(matchedRows.length / BULK_PAGE_SIZE));
+                    const safeCheckPage = Math.min(checkPage, totalCheckPages);
+                    const pagedCheckRows = matchedRows.slice((safeCheckPage - 1) * BULK_PAGE_SIZE, safeCheckPage * BULK_PAGE_SIZE);
+                    const isEditable = checkTab === 'sobreescribibles' && confirmOverwrite;
+                    const colorPrefix = checkTab === 'nuevos' ? 'emerald' : checkTab === 'sobreescribibles' ? 'amber' : 'red';
+
+                    return (
+                      <div className={`border ${isDark ? 'border-zinc-800' : 'border-gray-200'} rounded-xl overflow-hidden`}>
+                        {/* Download button */}
+                        <div className={`flex items-center justify-between px-3 py-2 ${isDark ? 'bg-zinc-800/50 border-zinc-800' : 'bg-gray-50 border-gray-200'} border-b`}>
+                          <div>
+                            <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                              {matchedRows.length} filas — {checkTab === 'nuevos' ? 'Se insertarán' : checkTab === 'sobreescribibles' ? 'Se pueden sobreescribir' : 'No se sobreescribirán'}
+                            </span>
+                            {checkTab === 'ocupados' && <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Ocupación al día</p>}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => downloadBulkSubsetCsv(codigosList, `inventarios_${checkTab}.csv`)}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${isDark ? 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'} transition-colors`}
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                              CSV
+                            </button>
+                            {checkTab === 'ocupados' && bulkCheckResult.ocupados.length > 0 && (
+                              <button
+                                onClick={() => {
+                                  const header = 'codigo_unico,estatus,campana';
+                                  const rows = bulkCheckResult.ocupados.map(o => `"${o.codigo_unico || ''}","${o.estatus_real || o.estatus || ''}","${(o.campana || 'Sin campaña').replace(/"/g, '""')}"`);
+                                  const csv = '\ufeff' + header + '\n' + rows.join('\n');
+                                  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                                  const url = URL.createObjectURL(blob);
+                                  const link = document.createElement('a');
+                                  link.href = url;
+                                  link.download = 'inventarios_ocupados_detalle.csv';
+                                  document.body.appendChild(link);
+                                  link.click();
+                                  document.body.removeChild(link);
+                                  URL.revokeObjectURL(url);
+                                }}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${isDark ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30' : 'bg-red-100 text-red-700 hover:bg-red-200'} transition-colors`}
+                              >
+                                <Download className="h-3.5 w-3.5" />
+                                CSV con Campañas
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Table */}
+                        <div className="max-h-72 overflow-auto">
+                          <table className="w-full text-xs">
+                            <thead className={`${isDark ? 'bg-zinc-800/50' : 'bg-gray-50'} sticky top-0 z-10`}>
+                              <tr>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Código Único</th>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Tipo Mueble</th>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Cara</th>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>T/D</th>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Plaza</th>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Estado</th>
+                                <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Municipio</th>
+                                {checkTab === 'ocupados' && <th className={`px-2 py-2 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Estatus</th>}
+                                {checkTab === 'ocupados' && <th className={`px-2 py-2 text-left ${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Campaña</th>}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pagedCheckRows.length === 0 ? (
+                                <tr><td colSpan={9} className={`px-4 py-6 text-center text-xs ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>Sin filas</td></tr>
+                              ) : pagedCheckRows.map(({ row, idx }) => {
+                                const editCell = (field: string, value: string) => {
+                                  const updated = [...bulkCsvData];
+                                  updated[idx] = { ...updated[idx], [field]: value };
+                                  setBulkCsvData(updated);
+                                };
+                                const inputClass = `w-full px-1.5 py-1 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-gray-300 text-gray-900'} border rounded text-[11px] focus:outline-none focus:ring-1 focus:ring-purple-500/50`;
+                                const ocupadoItem = checkTab === 'ocupados' ? bulkCheckResult.ocupados.find(o => o.codigo_unico === row.codigo_unico?.trim()) : null;
+                                return (
+                                  <tr key={idx} className={`border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-100'}`}>
+                                    <td className={`px-2 py-1.5 font-mono text-[11px] ${isDark ? 'text-white' : 'text-gray-900'}`}>{row.codigo_unico}</td>
+                                    {isEditable ? (
+                                      <>
+                                        <td className="px-1 py-1"><input value={row.tipo_de_mueble || ''} onChange={e => editCell('tipo_de_mueble', e.target.value)} className={inputClass} /></td>
+                                        <td className="px-1 py-1">
+                                          <select value={row.tipo_de_cara || ''} onChange={e => editCell('tipo_de_cara', e.target.value)} className={inputClass}>
+                                            <option value="Flujo">Flujo</option><option value="Contraflujo">Contraflujo</option>
+                                          </select>
+                                        </td>
+                                        <td className="px-1 py-1">
+                                          <select value={row.tradicional_digital || ''} onChange={e => editCell('tradicional_digital', e.target.value)} className={inputClass}>
+                                            <option value="Tradicional">Tradicional</option><option value="Digital">Digital</option>
+                                          </select>
+                                        </td>
+                                        <td className="px-1 py-1"><input value={row.plaza || ''} onChange={e => editCell('plaza', e.target.value)} className={inputClass} /></td>
+                                        <td className="px-1 py-1"><input value={row.estado || ''} onChange={e => editCell('estado', e.target.value)} className={inputClass} /></td>
+                                        <td className="px-1 py-1"><input value={row.municipio || ''} onChange={e => editCell('municipio', e.target.value)} className={inputClass} /></td>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{row.tipo_de_mueble}</td>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{row.tipo_de_cara}</td>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{row.tradicional_digital}</td>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{row.plaza}</td>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{row.estado}</td>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{row.municipio}</td>
+                                      </>
+                                    )}
+                                    {checkTab === 'ocupados' && ocupadoItem && (
+                                      <>
+                                        <td className="px-2 py-1.5 text-center">
+                                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium ${isDark ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700'}`}>
+                                            {ocupadoItem.estatus_real || ocupadoItem.estatus}
+                                          </span>
+                                        </td>
+                                        <td className={`px-2 py-1.5 text-[11px] ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                                          {ocupadoItem.campana || 'Sin campaña'}
+                                        </td>
+                                      </>
+                                    )}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination */}
+                        {totalCheckPages > 1 && (
+                          <div className={`flex items-center justify-between px-3 py-2 ${isDark ? 'bg-zinc-800/30 border-zinc-800' : 'bg-gray-50 border-gray-200'} border-t`}>
+                            <span className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Página {safeCheckPage} de {totalCheckPages}</span>
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => setCheckPage(p => Math.max(1, p - 1))} disabled={safeCheckPage <= 1} className={`px-2 py-1 rounded text-[11px] ${isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:text-zinc-700' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 disabled:text-gray-300'} disabled:cursor-not-allowed transition-colors`}>Anterior</button>
+                              <button onClick={() => setCheckPage(p => Math.min(totalCheckPages, p + 1))} disabled={safeCheckPage >= totalCheckPages} className={`px-2 py-1 rounded text-[11px] ${isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 disabled:text-zinc-700' : 'bg-gray-200 text-gray-600 hover:bg-gray-300 disabled:text-gray-300'} disabled:cursor-not-allowed transition-colors`}>Siguiente</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Step 4: Result */}
+              {bulkStep === 'result' && bulkResult && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    {bulkResult.insertados > 0 && (
+                      <div className={`flex items-center gap-2 px-4 py-3 rounded-xl ${isDark ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'} border`}>
+                        <CheckCircle2 className={`h-5 w-5 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                        <div>
+                          <p className={`text-sm font-medium ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>{bulkResult.insertados} insertados</p>
+                          <p className={`text-[10px] ${isDark ? 'text-emerald-400/60' : 'text-emerald-500'}`}>Agregados a la base de datos</p>
+                        </div>
+                      </div>
+                    )}
+                    {(bulkResult.actualizados || 0) > 0 && (
+                      <div className={`flex items-center gap-2 px-4 py-3 rounded-xl ${isDark ? 'bg-blue-500/10 border-blue-500/20' : 'bg-blue-50 border-blue-200'} border`}>
+                        <Edit2 className={`h-5 w-5 ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
+                        <div>
+                          <p className={`text-sm font-medium ${isDark ? 'text-blue-300' : 'text-blue-700'}`}>{bulkResult.actualizados} actualizados</p>
+                          <p className={`text-[10px] ${isDark ? 'text-blue-400/60' : 'text-blue-500'}`}>Sobreescritos con datos del CSV</p>
+                        </div>
+                      </div>
+                    )}
+                    {bulkResult.duplicados > 0 && (
+                      <div className={`flex items-center gap-2 px-4 py-3 rounded-xl ${isDark ? 'bg-amber-500/10 border-amber-500/20' : 'bg-amber-50 border-amber-200'} border`}>
+                        <AlertCircle className={`h-5 w-5 ${isDark ? 'text-amber-400' : 'text-amber-600'}`} />
+                        <div>
+                          <p className={`text-sm font-medium ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>{bulkResult.duplicados} duplicados omitidos</p>
+                          <p className={`text-[10px] ${isDark ? 'text-amber-400/60' : 'text-amber-500'}`}>Ya existían (sin sobreescritura)</p>
+                        </div>
+                      </div>
+                    )}
+                    {(bulkResult.duplicados_ocupados || 0) > 0 && (
+                      <div className={`flex items-center gap-2 px-4 py-3 rounded-xl ${isDark ? 'bg-red-500/10 border-red-500/20' : 'bg-red-50 border-red-200'} border`}>
+                        <Ban className={`h-5 w-5 ${isDark ? 'text-red-400' : 'text-red-600'}`} />
+                        <div>
+                          <p className={`text-sm font-medium ${isDark ? 'text-red-300' : 'text-red-700'}`}>{bulkResult.duplicados_ocupados} ocupados</p>
+                          <p className={`text-[10px] ${isDark ? 'text-red-400/60' : 'text-red-500'}`}>No se sobreescribieron</p>
+                        </div>
+                      </div>
+                    )}
+                    {bulkResult.errores.length > 0 && (
+                      <div className={`flex items-center gap-2 px-4 py-3 rounded-xl ${isDark ? 'bg-red-500/10 border-red-500/20' : 'bg-red-50 border-red-200'} border`}>
+                        <AlertTriangle className={`h-5 w-5 ${isDark ? 'text-red-400' : 'text-red-600'}`} />
+                        <div>
+                          <p className={`text-sm font-medium ${isDark ? 'text-red-300' : 'text-red-700'}`}>{bulkResult.errores.length} errores</p>
+                          <p className={`text-[10px] ${isDark ? 'text-red-400/60' : 'text-red-500'}`}>No se pudieron insertar</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {bulkResult.errores.length > 0 && (
+                    <div className={`${isDark ? 'bg-red-500/5 border-red-500/20' : 'bg-red-50 border-red-200'} border rounded-xl p-3 max-h-32 overflow-auto`}>
+                      {bulkResult.errores.map((err, idx) => (
+                        <p key={idx} className={`text-[11px] ${isDark ? 'text-red-300/80' : 'text-red-600'}`}>
+                          {err.fila > 0 ? `Fila ${err.fila}: ` : ''}<span className={`font-mono ${isDark ? 'text-red-400' : 'text-red-700'}`}>{err.campo}</span> — {err.mensaje}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className={`p-5 border-t ${isDark ? 'border-amber-500/20 bg-gradient-to-r from-amber-900/10 via-transparent to-orange-900/10' : 'border-amber-200 bg-gradient-to-r from-amber-50/50 via-transparent to-orange-50/50'} flex justify-end gap-3`}>
+              {bulkStep === 'check' && (
+                <button onClick={() => { setBulkStep('upload'); setBulkCheckResult(null); }}
+                  className={`px-4 py-2.5 rounded-xl text-sm ${isDark ? 'text-zinc-400 hover:text-white border-zinc-700/50 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-900 border-gray-200 hover:bg-gray-100'} border transition-all`}>
+                  Volver
+                </button>
+              )}
+              <button onClick={closeBulkModal}
+                className={`px-4 py-2.5 rounded-xl text-sm ${isDark ? 'text-zinc-400 hover:text-white border-zinc-700/50 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-900 border-gray-200 hover:bg-gray-100'} border transition-all`}>
+                {bulkStep === 'result' ? 'Cerrar' : 'Cancelar'}
+              </button>
+              {/* Verify button (step upload -> check) */}
+              {bulkStep === 'upload' && bulkCsvData.length > 0 && bulkValidation.valid > 0 && (
+                <button
+                  onClick={handleBulkCheck}
+                  disabled={bulkChecking}
+                  className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl text-sm font-medium transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                >
+                  {bulkChecking && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Verificar {bulkValidation.valid} inventarios
+                </button>
+              )}
+              {/* Submit button + progress bar (step check -> result) */}
+              {bulkStep === 'check' && bulkCheckResult && (
+                bulkUploading ? (
+                  <div className="flex items-center gap-3 min-w-[250px]">
+                    <div className="flex-1">
+                      <div className={`w-full h-2.5 rounded-full ${isDark ? 'bg-zinc-800' : 'bg-gray-200'} overflow-hidden`}>
+                        <div className="h-full bg-amber-500 rounded-full transition-all duration-300" style={{ width: `${bulkUploadProgress}%` }} />
+                      </div>
+                      <p className={`text-[10px] mt-1 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Subiendo... {bulkUploadProgress}%</p>
+                    </div>
+                    <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleBulkSubmit}
+                    className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-medium transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                  >
+                    Subir {bulkCheckResult.nuevos.length + (confirmOverwrite ? bulkCheckResult.sobreescribibles.length : 0)} inventarios
+                  </button>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <BloqueoModal
+        isOpen={bloqueoItem !== null}
+        onClose={() => setBloqueoItem(null)}
+        item={bloqueoItem}
+        onConfirm={handleConfirmarBloqueo}
+        isSubmitting={isBloqueoSubmitting}
+      />
+
+      <BloqueoBulkModal
+        isOpen={bloqueoBulkItems !== null}
+        onClose={() => setBloqueoBulkItems(null)}
+        items={bloqueoBulkItems || []}
+        onConfirm={handleConfirmarBloqueoBulk}
+        isSubmitting={isBloqueoBulkSubmitting}
+      />
+
+      {/* Modal de desbloqueo */}
+      {desbloqueoItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-xl w-full max-w-sm shadow-xl`}>
+            <div className={`flex items-center justify-between px-5 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <div className="flex items-center gap-2">
+                <CheckCircle className="h-5 w-5 text-emerald-400" />
+                <h2 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Desbloquear inventario</h2>
+              </div>
+              <button onClick={() => setDesbloqueoItem(null)} className={`${isDark ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-400 hover:text-gray-600'}`}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="px-5 py-4 space-y-3">
+              <div className={`px-3 py-2.5 ${isDark ? 'bg-zinc-800/60' : 'bg-gray-50'} rounded-lg space-y-0.5`}>
+                <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                  <span className={isDark ? 'text-zinc-500' : 'text-gray-400'}>ID:</span>{' '}
+                  <span className={`font-mono ${isDark ? 'text-white' : 'text-gray-900'}`}>#{desbloqueoItem.id}</span>
+                  {desbloqueoItem.codigo_unico && <span className={`ml-2 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>· {desbloqueoItem.codigo_unico}</span>}
+                </p>
+                {desbloqueoItem.ubicacion && <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} truncate`}>{desbloqueoItem.ubicacion}</p>}
+                {desbloqueoItem.plaza && <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{desbloqueoItem.plaza}</p>}
+              </div>
+
+              <p className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
+                ¿Estás seguro de que deseas desbloquear este inventario?
+              </p>
+            </div>
+
+            <div className={`flex gap-2 px-5 py-4 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <button
+                onClick={() => setDesbloqueoItem(null)}
+                className={`flex-1 px-3 py-2 text-sm border rounded-lg transition-colors ${isDark ? 'text-zinc-400 border-zinc-700 hover:bg-zinc-800' : 'text-gray-500 border-gray-300 hover:bg-gray-50'}`}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  toggleBlockMutation.mutate(desbloqueoItem.id);
+                  setDesbloqueoItem(null);
+                }}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors"
+              >
+                <CheckCircle className="h-4 w-4" />
+                Desbloquear
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Análisis de Ocupación */}
+      <AnalisisOcupacionModal
+        open={isAnalisisOpen}
+        onClose={handleCloseAnalisis}
+        initialInventarios={analisisInicialInventarios}
+        initialAnalisis={analisisInicial}
+      />
+
+      {/* Auditoría de conflictos sobre todo el inventario (solo DEV) */}
+      {isDev && (
+        <AuditoriaConflictosModal
+          open={isAuditoriaOpen}
+          onClose={() => { setIsAuditoriaOpen(false); setAuditoriaAutoIniciar(false); }}
+          onOpenEnMatriz={openAnalisisDesdeAuditoria}
+          autoIniciar={auditoriaAutoIniciar}
+        />
+      )}
+
+      {/* Lista de análisis guardados */}
+      <AnalisisOcupacionListModal
+        open={isAnalisisListOpen}
+        onClose={() => setIsAnalisisListOpen(false)}
+        onOpenAnalisis={openAnalisisGuardado}
+        onCreateNew={() => { setIsAnalisisListOpen(false); openAnalisisVacio(); }}
+      />
+
+      {/* Reorganizar Ocupación (DEV) */}
+      {isDev && (
+        <ReorganizarOcupacionModal
+          open={isReorganizarOpen}
+          onClose={() => setIsReorganizarOpen(false)}
+        />
+      )}
+
+      {/* Bloqueo Masivo */}
+      <BloqueoMasivoModal
+        open={isBloqueoMasivoOpen}
+        onClose={() => setIsBloqueoMasivoOpen(false)}
+        initialInventarios={bloqueoMasivoInventarios}
+      />
+
+    </div>
+  );
+}

@@ -1,0 +1,2870 @@
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  Search, Download, Filter, ChevronDown, ChevronRight, X, SlidersHorizontal,
+  ArrowUpDown, Calendar, DollarSign, FileText, Building2, MessageSquare,
+  CheckCircle, Users, Send, Loader2, User, Share2, MapPinned, Wrench, Clock, Paintbrush,
+  Pencil, Trash2, Package, MapPin, Eye, Plus, AlertTriangle, List, LayoutGrid,
+  Layers, Check, XCircle
+} from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
+import { Header } from '../../components/layout/Header';
+import { propuestasService, PropuestaComentario, ConflictoVentaError } from '../../services/propuestas.service';
+import { solicitudesService, UserOption } from '../../services/solicitudes.service';
+import { Propuesta, Catorcena } from '../../types';
+import { formatCurrency, formatDate } from '../../lib/utils';
+import { AssignInventarioModal } from './AssignInventarioModal';
+import { PruebasColorModal } from '../pruebas-color/PruebasColorModal';
+import { puedeGestionarPruebaColor } from '../../services/pruebasColor.service';
+import PropuestasVersionarioView, {
+  AVAILABLE_GROUPINGS as VERSIONARIO_GROUPINGS,
+  DEFAULT_GROUPINGS as VERSIONARIO_DEFAULT_GROUPINGS,
+  MAX_GROUPINGS as VERSIONARIO_MAX_GROUPINGS,
+  GROUPINGS_STORAGE_KEY as VERSIONARIO_GROUPINGS_KEY,
+  loadGroupingsFromStorage as loadVersionarioGroupings,
+  type GroupByField as VersionarioGroupByField,
+} from './PropuestasVersionarioView';
+import { UserAvatar } from '../../components/ui/user-avatar';
+import { useAuthStore } from '../../store/authStore';
+import { useThemeStore } from '../../store/themeStore';
+import { getPermissions } from '../../lib/permissions';
+import { useSocketEquipos, useSocketPropuestas } from '../../hooks/useSocket';
+import { HistorialFilterPopover, type HistorialFilterValues } from '../../components/HistorialFilterPopover';
+import { ConfirmModal } from '../../components/ui/confirm-modal';
+import { monthLabelShort } from '../../lib/periodos';
+
+function getMonthShort(dateStr: string): string {
+  return monthLabelShort(dateStr) || '-';
+}
+
+// Status badge colors — dos mapas estáticos. El dark-mode toggle sigue
+// funcionando porque al cambiar `isDark` el componente re-renderiza y
+// `getStatusColor` selecciona el mapa correcto. Antes se construía un objeto
+// completo por cada fila renderizada.
+type StatusColor = { bg: string; text: string; border: string };
+
+const STATUS_COLORS_DARK: Record<string, StatusColor> = {
+  'Abierto': { bg: 'bg-blue-500/20', text: 'text-blue-300', border: 'border-blue-500/30' },
+  'Ajuste Cto-Cliente': { bg: 'bg-orange-500/20', text: 'text-orange-300', border: 'border-orange-500/30' },
+  'Ajuste Inventario': { bg: 'bg-rose-500/20', text: 'text-rose-300', border: 'border-rose-500/30' },
+  'Ajuste Comercial': { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' },
+  'Pase a ventas': { bg: 'bg-emerald-500/20', text: 'text-emerald-300', border: 'border-emerald-500/30' },
+  'Atendido': { bg: 'bg-cyan-500/20', text: 'text-cyan-300', border: 'border-cyan-500/30' },
+  'Liberada': { bg: 'bg-teal-500/20', text: 'text-teal-300', border: 'border-teal-500/30' },
+  // Legacy (datos históricos)
+  'Pendiente': { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' },
+  'Por aprobar': { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' },
+  'Activa': { bg: 'bg-green-500/20', text: 'text-green-300', border: 'border-green-500/30' },
+  'Aprobada': { bg: 'bg-green-500/20', text: 'text-green-300', border: 'border-green-500/30' },
+  'Rechazada': { bg: 'bg-red-500/20', text: 'text-red-300', border: 'border-red-500/30' },
+  'Descartada': { bg: 'bg-zinc-500/20', text: 'text-zinc-400', border: 'border-zinc-500/30' },
+};
+
+const STATUS_COLORS_LIGHT: Record<string, StatusColor> = {
+  'Abierto': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-500/30' },
+  'Ajuste Cto-Cliente': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-500/30' },
+  'Ajuste Inventario': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-500/30' },
+  'Ajuste Comercial': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-500/30' },
+  'Pase a ventas': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-500/30' },
+  'Atendido': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-500/30' },
+  'Liberada': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-500/30' },
+  'Pendiente': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-500/30' },
+  'Por aprobar': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-500/30' },
+  'Activa': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-500/30' },
+  'Aprobada': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-500/30' },
+  'Rechazada': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-500/30' },
+  'Descartada': { bg: 'bg-zinc-50', text: 'text-zinc-600', border: 'border-zinc-500/30' },
+};
+
+const DEFAULT_STATUS_COLOR_DARK: StatusColor = { bg: 'bg-violet-500/20', text: 'text-violet-300', border: 'border-violet-500/30' };
+const DEFAULT_STATUS_COLOR_LIGHT: StatusColor = { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-500/30' };
+
+const getStatusColor = (status: string, isDark: boolean): StatusColor => {
+  const map = isDark ? STATUS_COLORS_DARK : STATUS_COLORS_LIGHT;
+  return map[status] || (isDark ? DEFAULT_STATUS_COLOR_DARK : DEFAULT_STATUS_COLOR_LIGHT);
+};
+
+const STATUS_OPTIONS = ['Atendido', 'Abierto', 'Ajuste Cto-Cliente', 'Ajuste Inventario', 'Ajuste Comercial', 'Pase a ventas', 'Liberada', 'Rechazada'];
+
+// Estatus que SOLO puede asignar el sistema, nunca un usuario. 'Liberada' es el
+// registro de que el job de liberación automática (criterio 30 días) quitó las
+// reservas; ponerlo a mano dejaría el estatus mintiendo sobre lo que pasó.
+// Sigue en STATUS_OPTIONS para poder filtrar el listado por él y para pintar su
+// color; solo se excluye del selector de cambio de estado. Salir de 'Liberada'
+// sí se permite (el estado actual se muestra deshabilitado como "(actual)").
+const STATUS_SOLO_SISTEMA = ['Liberada', 'Ajuste Inventario'];
+
+// Chart colors for dynamic status
+const CHART_COLORS = [
+  '#8b5cf6', // violet-500
+  '#d946ef', // fuchsia-500
+  '#ec4899', // pink-500
+  '#f43f5e', // rose-500
+  '#f59e0b', // amber-500
+  '#10b981', // emerald-500
+  '#06b6d4', // cyan-500
+  '#3b82f6', // blue-500
+];
+
+// Custom Tooltip for Chart
+const CustomChartTooltip = ({ active, payload, isDark }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className={`${isDark ? 'bg-zinc-900/90 border-zinc-700/50' : 'bg-white border-gray-200'} border p-3 rounded-xl shadow-xl backdrop-blur-xl`}>
+        <p className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium mb-1`}>{payload[0].name}</p>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: payload[0].payload.fill }} />
+          <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-sm`}>
+            {payload[0].value} propuestas ({payload[0].payload.percent}%)
+          </span>
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
+// Filter Chip Component with Search
+function FilterChip({
+  label,
+  options,
+  value,
+  onChange,
+  onClear,
+  isDark
+}: {
+  label: string;
+  options: string[];
+  value: string;
+  onChange: (value: string) => void;
+  onClear: () => void;
+  isDark: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const filteredOptions = useMemo(() => {
+    if (!searchTerm) return options;
+    return options.filter(opt =>
+      opt.toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [options, searchTerm]);
+
+  const handleClose = () => {
+    setOpen(false);
+    setSearchTerm('');
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${value
+          ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
+          : isDark
+            ? 'bg-zinc-800/80 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600'
+            : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'
+          }`}
+      >
+        <span>{value || label}</span>
+        {value ? (
+          <X className={`h-3 w-3 ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`} onClick={(e) => { e.stopPropagation(); onClear(); }} />
+        ) : (
+          <ChevronDown className="h-3 w-3" />
+        )}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={handleClose} />
+          <div className={`absolute top-full left-0 mt-1.5 z-50 w-64 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-gray-200 bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+            <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <input
+                type="text"
+                placeholder={`Buscar ${label.toLowerCase()}...`}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className={`w-full px-3 py-1.5 text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500/50 focus:border-purple-500/50`}
+                autoFocus
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+            <div className="max-h-52 overflow-auto">
+              {filteredOptions.length === 0 ? (
+                <div className={`px-3 py-3 text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} text-center`}>
+                  {options.length === 0 ? 'Sin opciones' : 'No se encontraron resultados'}
+                </div>
+              ) : (
+                filteredOptions.map((option) => (
+                  <button
+                    key={option}
+                    onClick={() => { onChange(option); handleClose(); }}
+                    className={`w-full px-3 py-2 text-left text-xs transition-colors ${value === option
+                      ? isDark ? 'bg-purple-500/20 text-purple-300' : 'bg-purple-50 text-purple-700'
+                      : isDark
+                        ? 'text-zinc-400 hover:bg-zinc-800 hover:text-white'
+                        : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+                      }`}
+                  >
+                    {option}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className={`px-3 py-1.5 border-t ${isDark ? 'border-zinc-800 text-zinc-500' : 'border-gray-200 text-gray-400'} text-[10px]`}>
+              {filteredOptions.length} de {options.length} opciones
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Advanced Filter Types and Config
+type FilterOperator = '=' | '!=' | 'contains' | 'not_contains' | '>' | '<' | '>=' | '<=';
+
+interface AdvancedFilterCondition {
+  id: string;
+  field: string;
+  operator: FilterOperator;
+  value: string;
+  connector: 'Y' | 'O';
+}
+
+interface FilterFieldConfig {
+  field: string;
+  label: string;
+  type: 'string' | 'number';
+}
+
+const PROPUESTA_FILTER_FIELDS: FilterFieldConfig[] = [
+  { field: 'id', label: 'ID', type: 'number' },
+  { field: 'cliente_nombre', label: 'Cliente', type: 'string' },
+  { field: 'descripcion', label: 'Descripción', type: 'string' },
+  { field: 'formatos', label: 'Formato', type: 'string' },
+  { field: 'inversion', label: 'Inversión', type: 'number' },
+  { field: 'asignado', label: 'Asignado', type: 'string' },
+  { field: 'status', label: 'Status', type: 'string' },
+];
+
+const FILTER_OPERATORS: { value: FilterOperator; label: string; forTypes: ('string' | 'number')[] }[] = [
+  { value: '=', label: 'Igual a', forTypes: ['string', 'number'] },
+  { value: '!=', label: 'Diferente de', forTypes: ['string', 'number'] },
+  { value: 'contains', label: 'Contiene', forTypes: ['string'] },
+  { value: 'not_contains', label: 'No contiene', forTypes: ['string'] },
+  { value: '>', label: 'Mayor que', forTypes: ['number'] },
+  { value: '<', label: 'Menor que', forTypes: ['number'] },
+  { value: '>=', label: 'Mayor o igual', forTypes: ['number'] },
+  { value: '<=', label: 'Menor o igual', forTypes: ['number'] },
+];
+
+// Function to apply advanced filters to data
+function evalCondition<T>(item: T, filter: AdvancedFilterCondition): boolean {
+  const fieldValue = (item as Record<string, unknown>)[filter.field];
+  const filterValue = filter.value;
+  if (!filterValue) return true;
+  if (fieldValue === null || fieldValue === undefined) {
+    return filter.operator === '!=' || filter.operator === 'not_contains';
+  }
+  const strValue = String(fieldValue).toLowerCase();
+  const strFilterValue = filterValue.toLowerCase();
+  switch (filter.operator) {
+    case '=': return strValue === strFilterValue;
+    case '!=': return strValue !== strFilterValue;
+    case 'contains': return strValue.includes(strFilterValue);
+    case 'not_contains': return !strValue.includes(strFilterValue);
+    case '>': return Number(fieldValue) > Number(filterValue);
+    case '<': return Number(fieldValue) < Number(filterValue);
+    case '>=': return Number(fieldValue) >= Number(filterValue);
+    case '<=': return Number(fieldValue) <= Number(filterValue);
+    default: return true;
+  }
+}
+
+function applyAdvancedFilters<T>(data: T[], filters: AdvancedFilterCondition[]): T[] {
+  if (filters.length === 0) return data;
+  return data.filter(item => {
+    let result = evalCondition(item, filters[0]);
+    for (let i = 1; i < filters.length; i++) {
+      const val = evalCondition(item, filters[i]);
+      if (filters[i].connector === 'O') result = result || val;
+      else result = result && val;
+    }
+    return result;
+  });
+}
+
+// Period Filter Popover Component
+function PeriodFilterPopover({
+  catorcenasData,
+  yearInicio,
+  yearFin,
+  catorcenaInicio,
+  catorcenaFin,
+  onApply,
+  onClear,
+  isDark
+}: {
+  catorcenasData: { years: number[]; data: Catorcena[] } | undefined;
+  yearInicio: number | undefined;
+  yearFin: number | undefined;
+  catorcenaInicio: number | undefined;
+  catorcenaFin: number | undefined;
+  onApply: (yearInicio: number, yearFin: number, catorcenaInicio?: number, catorcenaFin?: number) => void;
+  onClear: () => void;
+  isDark: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tempYearInicio, setTempYearInicio] = useState<number | undefined>(yearInicio);
+  const [tempYearFin, setTempYearFin] = useState<number | undefined>(yearFin);
+  const [tempCatorcenaInicio, setTempCatorcenaInicio] = useState<number | undefined>(catorcenaInicio);
+  const [tempCatorcenaFin, setTempCatorcenaFin] = useState<number | undefined>(catorcenaFin);
+
+  useEffect(() => {
+    setTempYearInicio(yearInicio);
+    setTempYearFin(yearFin);
+    setTempCatorcenaInicio(catorcenaInicio);
+    setTempCatorcenaFin(catorcenaFin);
+  }, [yearInicio, yearFin, catorcenaInicio, catorcenaFin]);
+
+  const years = catorcenasData?.years || [];
+
+  const yearInicioOptions = useMemo(() => {
+    if (tempYearFin) return years.filter(y => y <= tempYearFin);
+    return years;
+  }, [years, tempYearFin]);
+
+  const yearFinOptions = useMemo(() => {
+    if (tempYearInicio) return years.filter(y => y >= tempYearInicio);
+    return years;
+  }, [years, tempYearInicio]);
+
+  const catorcenasInicioOptions = useMemo(() => {
+    if (!catorcenasData?.data || !tempYearInicio) return [];
+    const catorcenas = catorcenasData.data.filter(c => c.a_o === tempYearInicio);
+    if (tempYearInicio === tempYearFin && tempCatorcenaFin) {
+      return catorcenas.filter(c => c.numero_catorcena <= tempCatorcenaFin);
+    }
+    return catorcenas;
+  }, [catorcenasData, tempYearInicio, tempYearFin, tempCatorcenaFin]);
+
+  const catorcenasFinOptions = useMemo(() => {
+    if (!catorcenasData?.data || !tempYearFin) return [];
+    const catorcenas = catorcenasData.data.filter(c => c.a_o === tempYearFin);
+    if (tempYearInicio === tempYearFin && tempCatorcenaInicio) {
+      return catorcenas.filter(c => c.numero_catorcena >= tempCatorcenaInicio);
+    }
+    return catorcenas;
+  }, [catorcenasData, tempYearFin, tempYearInicio, tempCatorcenaInicio]);
+
+  const isActive = yearInicio !== undefined && yearFin !== undefined && catorcenaInicio !== undefined && catorcenaFin !== undefined;
+  const canApply = tempYearInicio !== undefined && tempYearFin !== undefined && tempCatorcenaInicio !== undefined && tempCatorcenaFin !== undefined;
+
+  const handleApply = () => {
+    if (canApply) {
+      onApply(tempYearInicio!, tempYearFin!, tempCatorcenaInicio, tempCatorcenaFin);
+      setOpen(false);
+    }
+  };
+
+  const handleClear = () => {
+    setTempYearInicio(undefined);
+    setTempYearFin(undefined);
+    setTempCatorcenaInicio(undefined);
+    setTempCatorcenaFin(undefined);
+    onClear();
+    setOpen(false);
+  };
+
+  const getDisplayText = () => {
+    if (!isActive) return 'Periodo';
+    let text = `${yearInicio}`;
+    if (catorcenaInicio) text += `/C${catorcenaInicio}`;
+    text += ` - ${yearFin}`;
+    if (catorcenaFin) text += `/C${catorcenaFin}`;
+    return text;
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 ${isActive
+          ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
+          : isDark
+            ? 'bg-zinc-800/80 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600'
+            : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'
+          }`}
+      >
+        <Calendar className="h-3 w-3" />
+        <span>{getDisplayText()}</span>
+        {isActive ? (
+          <X className={`h-3 w-3 ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`} onClick={(e) => { e.stopPropagation(); handleClear(); }} />
+        ) : (
+          <ChevronDown className="h-3 w-3" />
+        )}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className={`absolute top-full left-0 mt-1.5 z-50 w-80 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-gray-200 bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+            <div className={`p-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'} flex items-center gap-2`}>
+                <Calendar className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
+                Filtro de Periodo
+              </h3>
+              <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mt-1`}>Todos los campos son obligatorios</p>
+            </div>
+
+            <div className="p-3 space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Año Inicio *</label>
+                  <select
+                    value={tempYearInicio || ''}
+                    onChange={(e) => {
+                      const val = e.target.value ? parseInt(e.target.value) : undefined;
+                      setTempYearInicio(val);
+                      setTempCatorcenaInicio(undefined);
+                      if (val && tempYearFin && val > tempYearFin) {
+                        setTempYearFin(undefined);
+                        setTempCatorcenaFin(undefined);
+                      }
+                    }}
+                    className={`w-full px-2 py-1.5 text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500/50`}
+                  >
+                    <option value="">Seleccionar</option>
+                    {yearInicioOptions.map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Cat. Inicio *</label>
+                  <select
+                    value={tempCatorcenaInicio || ''}
+                    onChange={(e) => {
+                      const val = e.target.value ? parseInt(e.target.value) : undefined;
+                      setTempCatorcenaInicio(val);
+                      if (val && tempYearInicio === tempYearFin && tempCatorcenaFin && val > tempCatorcenaFin) {
+                        setTempCatorcenaFin(undefined);
+                      }
+                    }}
+                    disabled={!tempYearInicio}
+                    className={`w-full px-2 py-1.5 text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500/50 disabled:opacity-50`}
+                  >
+                    <option value="">Seleccionar</option>
+                    {catorcenasInicioOptions.map(c => (
+                      <option key={c.id} value={c.numero_catorcena}>Cat. {c.numero_catorcena}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Año Fin *</label>
+                  <select
+                    value={tempYearFin || ''}
+                    onChange={(e) => {
+                      const val = e.target.value ? parseInt(e.target.value) : undefined;
+                      setTempYearFin(val);
+                      setTempCatorcenaFin(undefined);
+                      if (val && tempYearInicio && val < tempYearInicio) {
+                        setTempYearInicio(undefined);
+                        setTempCatorcenaInicio(undefined);
+                      }
+                    }}
+                    className={`w-full px-2 py-1.5 text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500/50`}
+                  >
+                    <option value="">Seleccionar</option>
+                    {yearFinOptions.map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Cat. Fin *</label>
+                  <select
+                    value={tempCatorcenaFin || ''}
+                    onChange={(e) => {
+                      const val = e.target.value ? parseInt(e.target.value) : undefined;
+                      setTempCatorcenaFin(val);
+                      if (val && tempYearInicio === tempYearFin && tempCatorcenaInicio && val < tempCatorcenaInicio) {
+                        setTempCatorcenaInicio(undefined);
+                      }
+                    }}
+                    disabled={!tempYearFin}
+                    className={`w-full px-2 py-1.5 text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500/50 disabled:opacity-50`}
+                  >
+                    <option value="">Seleccionar</option>
+                    {catorcenasFinOptions.map(c => (
+                      <option key={c.id} value={c.numero_catorcena}>Cat. {c.numero_catorcena}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className={`p-3 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex items-center justify-between gap-2`}>
+              <button
+                onClick={handleClear}
+                className={`px-3 py-1.5 text-xs ${isDark ? 'text-zinc-400 hover:text-white' : 'text-gray-500 hover:text-gray-900'} transition-colors`}
+              >
+                Limpiar
+              </button>
+              <button
+                onClick={handleApply}
+                disabled={!canApply}
+                className={`px-4 py-1.5 text-xs bg-purple-600 hover:bg-purple-700 ${isDark ? 'disabled:bg-zinc-700 disabled:text-zinc-500' : 'disabled:bg-gray-200 disabled:text-gray-400'} text-white rounded-lg font-medium transition-colors`}
+              >
+                Aplicar Filtro
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Group Header for table
+function GroupHeader({
+  groupName,
+  count,
+  expanded,
+  onToggle,
+  isDark
+}: {
+  groupName: string;
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+  isDark: boolean;
+}) {
+  return (
+    <tr
+      onClick={onToggle}
+      className={`${isDark ? 'bg-purple-500/10 border-b border-purple-500/20 hover:bg-purple-500/20' : 'bg-purple-50 border-b border-purple-200 hover:bg-purple-100'} cursor-pointer transition-colors`}
+    >
+      <td colSpan={11} className="px-4 py-3">
+        <div className="flex items-center gap-2">
+          {expanded ? (
+            <ChevronDown className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
+          ) : (
+            <ChevronRight className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
+          )}
+          <span className={`font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{groupName || 'Sin asignar'}</span>
+          <span className={`px-2 py-0.5 rounded-full text-xs ${isDark ? 'bg-purple-500/20 text-purple-300' : 'bg-purple-100 text-purple-700'}`}>
+            {count} propuestas
+          </span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ============ STATUS MODAL WITH COMMENTS ============
+interface StatusModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  propuesta: Propuesta | null;
+  onStatusChange: () => void;
+  allowedStatuses?: string[] | null; // null = todos, array = solo esos
+}
+
+function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatuses }: StatusModalProps) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  // Filtrar opciones de estatus según permisos
+  const selectableStatuses = STATUS_OPTIONS.filter(s => !STATUS_SOLO_SISTEMA.includes(s));
+  const availableStatuses = allowedStatuses ? selectableStatuses.filter(s => allowedStatuses.includes(s)) : selectableStatuses;
+  const queryClient = useQueryClient();
+  const [newComment, setNewComment] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('');
+  const [showRechazoConfirm, setShowRechazoConfirm] = useState(false);
+  const commentsEndRef = useRef<HTMLDivElement>(null);
+
+  // Query para obtener las caras de la propuesta y verificar autorizaciones pendientes
+  const { data: caras } = useQuery({
+    queryKey: ['propuesta-caras', propuesta?.id],
+    queryFn: () => propuestasService.getCaras(propuesta!.id),
+    enabled: isOpen && !!propuesta,
+  });
+
+  // Verificar si hay caras pendientes de autorización
+  const pendientesDg = caras?.filter(c => c.autorizacion_dg === 'pendiente').length || 0;
+  const pendientesDcm = caras?.filter(c => c.autorizacion_dcm === 'pendiente').length || 0;
+  const tienePendientes = pendientesDg > 0 || pendientesDcm > 0;
+
+  // Feedback 2026-08-15: circuitos en 'correccion' o 'rechazado' tambien
+  // bloquean el avance (Pase a ventas / Aprobada). Antes solo se checaba
+  // 'pendiente' y una cara en correccion dejaba pasar sin alerta.
+  const correccionDg = caras?.filter(c => c.autorizacion_dg === 'correccion').length || 0;
+  const correccionDcm = caras?.filter(c => c.autorizacion_dcm === 'correccion').length || 0;
+  const rechazadasDg = caras?.filter(c => c.autorizacion_dg === 'rechazado').length || 0;
+  const rechazadasDcm = caras?.filter(c => c.autorizacion_dcm === 'rechazado').length || 0;
+  const tieneCorreccion = correccionDg > 0 || correccionDcm > 0;
+  const tieneRechazadas = rechazadasDg > 0 || rechazadasDcm > 0;
+  const bloqueaAvance = tienePendientes || tieneCorreccion || tieneRechazadas;
+
+  // Obtener propuesta fresca para verificar cliente_id (que almacena el CUIC)
+  const { data: propuestaFresh } = useQuery({
+    queryKey: ['propuesta-fresh', propuesta?.id],
+    queryFn: () => propuestasService.getById(propuesta!.id),
+    enabled: isOpen && !!propuesta,
+  });
+  const cuicActual = propuestaFresh?.cliente_id ?? propuesta?.cuic;
+  const esClienteLead = !cuicActual || cuicActual === 0;
+
+  // Query para obtener las reservas y verificar si están completas
+  const { data: reservas } = useQuery({
+    queryKey: ['propuesta-reservas-modal', propuesta?.id],
+    queryFn: () => propuestasService.getReservasForModal(propuesta!.id),
+    enabled: isOpen && !!propuesta,
+  });
+
+  // Verificar si todas las caras tienen sus reservas completas. Desde el ajuste
+  // 2026-08-25 esto es SOLO informativo (aviso amber): reservas incompletas (de
+  // menos o de más) ya no bloquean el Pase a ventas / Aprobada.
+  const reservasIncompletas = useMemo(() => {
+    if (!caras || !reservas) return false;
+    // Mensual = Gran Formato / Mi Macro: solo Flujo, sin Contraflujo. El modal
+    // de asignación ya colapsa F+CF -> Flujo, y el back valida igual (regla
+    // 93d70d9). Sin esta normalización aquí, propuestas mensuales 100%
+    // reservadas pero con caras_flujo+caras_contraflujo en BD se marcan como
+    // incompletas y bloquean el botón "Pase a ventas".
+    const esMensual = propuesta?.tipo_periodo === 'mensual';
+    return caras.some(cara => {
+      // Artículos sin requisito de reservas — siempre completos:
+      // - IM (Impresión) y ESP/ES- (Ejecución Especial): nunca requieren inventario.
+      // - sufijo "-QR" (Gestión QTO, Querétaro/Celaya sin inventario disponible):
+      //   reservar es OPCIONAL — pase a ventas funciona con o sin reservas.
+      const articulo = ((cara as any).articulo || '').toUpperCase();
+      if (articulo.startsWith('IM') || articulo.startsWith('ESP') || articulo.startsWith('ES-') || articulo.endsWith('-QR')) return false;
+
+      const caraReservas = (reservas as any[]).filter(r => r.solicitud_cara_id === cara.id);
+      // Bonificacion is determined by estatus='Bonificado', not by tipo_de_cara
+      const bonificacionReservado = caraReservas.filter(r => r.estatus === 'Bonificado').length;
+      const nonBonificacion = caraReservas.filter(r => r.estatus !== 'Bonificado');
+      const rawFlujoReservado = nonBonificacion.filter(r => r.tipo_de_cara === 'A' || String(r.tipo_de_cara).startsWith('Flujo')).length;
+      const rawContraReservado = nonBonificacion.filter(r => r.tipo_de_cara === 'B' || String(r.tipo_de_cara).startsWith('Contraflujo')).length;
+      // BF/CF/CT: caras_flujo y caras_contraflujo son el split INTERNO de la
+      // bonificación (KPI buscador), no caras requeridas. Si las contamos como
+      // requeridas, el badge "incompleto" se dispara aunque tenga sus N reservas.
+      const articuloUpper = (cara.articulo || '').toUpperCase();
+      const esBonifSplit = articuloUpper.startsWith('BF') || articuloUpper.startsWith('CF') || articuloUpper.startsWith('CT');
+      const rawFlujoRequerido = esBonifSplit ? 0 : (Number(cara.caras_flujo) || 0);
+      const rawContraRequerido = esBonifSplit ? 0 : (Number(cara.caras_contraflujo) || 0);
+      const bonificacionRequerido = Number(cara.bonificacion) || 0;
+
+      const flujoReservado = esMensual ? rawFlujoReservado + rawContraReservado : rawFlujoReservado;
+      const contraflujoReservado = esMensual ? 0 : rawContraReservado;
+      const flujoRequerido = esMensual ? rawFlujoRequerido + rawContraRequerido : rawFlujoRequerido;
+      const contraflujoRequerido = esMensual ? 0 : rawContraRequerido;
+
+      return flujoReservado !== flujoRequerido || contraflujoReservado !== contraflujoRequerido || bonificacionReservado !== bonificacionRequerido;
+    });
+  }, [caras, reservas, propuesta?.tipo_periodo]);
+
+  const { data: comments, refetch: refetchComments } = useQuery({
+    queryKey: ['propuesta-comments', propuesta?.id],
+    queryFn: () => propuestasService.getComments(propuesta!.id),
+    enabled: isOpen && !!propuesta,
+    staleTime: 60000, // 1 minuto - evita refetches innecesarios
+  });
+
+  // Reset comments when propuesta changes
+  useEffect(() => {
+    if (isOpen && propuesta?.id) {
+      queryClient.invalidateQueries({ queryKey: ['propuesta-comments', propuesta.id] });
+    }
+  }, [propuesta?.id, isOpen, queryClient]);
+
+  const addCommentMutation = useMutation({
+    mutationFn: ({ id, comentario }: { id: number; comentario: string }) =>
+      propuestasService.addComment(id, comentario),
+    onSuccess: () => {
+      setNewComment('');
+      refetchComments();
+    },
+  });
+
+  const updateStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      propuestasService.updateStatus(id, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['propuestas'] });
+      queryClient.invalidateQueries({ queryKey: ['propuestas-stats'] });
+      onStatusChange();
+    },
+    onError: (err: any) => {
+      // El backend devuelve 400 con mensaje claro cuando bloquea el cambio
+      // (campaña activa ya creada, caras pendientes de autorización, cliente sin CUIC,
+      // reservas incompletas, etc.). Antes de este onError la mutación silenciaba
+      // el error y el usuario veía "nada" al darle al botón — ticket #419.
+      const backendError = err?.response?.data?.error
+        || err?.message
+        || 'No se pudo cambiar el estatus de la propuesta.';
+      alert(backendError);
+    },
+  });
+
+  useEffect(() => {
+    if (propuesta) {
+      setSelectedStatus(propuesta.status);
+    }
+  }, [propuesta]);
+
+  useEffect(() => {
+    commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [comments]);
+
+  const handleAddComment = () => {
+    if (!newComment.trim() || !propuesta) return;
+    addCommentMutation.mutate({ id: propuesta.id, comentario: newComment });
+  };
+
+  const handleChangeStatus = () => {
+    if (!propuesta || selectedStatus === propuesta.status) return;
+    // Ajuste feedback 2026-08-19: salvaguarda en el handler para que ni
+    // aunque se salte el disabled del boton se abra el modal de rechazo /
+    // se dispare el mutation cuando hay autorizacion abierta.
+    if (bloqueaAvance && (selectedStatus === 'Aprobada' || selectedStatus === 'Pase a ventas' || selectedStatus === 'Rechazada' || selectedStatus === 'Cancelada')) {
+      return;
+    }
+    if (selectedStatus === 'Rechazada') {
+      setShowRechazoConfirm(true);
+      return;
+    }
+    updateStatusMutation.mutate({ id: propuesta.id, status: selectedStatus });
+  };
+
+  const handleConfirmRechazo = () => {
+    if (!propuesta) return;
+    setShowRechazoConfirm(false);
+    updateStatusMutation.mutate({ id: propuesta.id, status: selectedStatus });
+  };
+
+  if (!isOpen || !propuesta) return null;
+
+  const statusColor = getStatusColor(propuesta.status, isDark);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col`}>
+        {/* Header */}
+        <div className={`flex items-center justify-between px-6 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+          <div className="flex items-center gap-3">
+            <MessageSquare className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
+            <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Estado y Comentarios</h2>
+            <span className={`px-2 py-1 rounded-full text-xs ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
+              {propuesta.status}
+            </span>
+          </div>
+          <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`} />
+          </button>
+        </div>
+
+        {/* Status Selector */}
+        <div className={`px-6 py-4 border-b ${isDark ? 'border-zinc-800 bg-zinc-800/30' : 'border-gray-200 bg-gray-50'}`}>
+          {/* Alerta de autorizaciones pendientes / en correccion / rechazadas */}
+          {bloqueaAvance && (
+            <div className={`mb-4 p-3 rounded-lg ${isDark ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'} border flex items-start gap-3`}>
+              <AlertTriangle className={`h-5 w-5 ${isDark ? 'text-amber-400' : 'text-amber-600'} flex-shrink-0 mt-0.5`} />
+              <div>
+                <p className={`text-sm font-medium ${isDark ? 'text-amber-200' : 'text-amber-800'}`}>Autorización abierta</p>
+                <p className={`text-xs mt-1 ${isDark ? 'text-amber-300/70' : 'text-amber-700'}`}>
+                  {tienePendientes && (<>
+                    {pendientesDg + pendientesDcm} pendiente(s)
+                    {pendientesDg > 0 && ` — DG: ${pendientesDg}`}
+                    {pendientesDcm > 0 && `${pendientesDg > 0 ? ',' : ' —'} DCM: ${pendientesDcm}`}.{' '}
+                  </>)}
+                  {tieneCorreccion && (<>
+                    {correccionDg + correccionDcm} en corrección
+                    {correccionDg > 0 && ` — DG: ${correccionDg}`}
+                    {correccionDcm > 0 && `${correccionDg > 0 ? ',' : ' —'} DCM: ${correccionDcm}`}.{' '}
+                  </>)}
+                  {tieneRechazadas && (<>
+                    {rechazadasDg + rechazadasDcm} rechazada(s)
+                    {rechazadasDg > 0 && ` — DG: ${rechazadasDg}`}
+                    {rechazadasDcm > 0 && `${rechazadasDg > 0 ? ',' : ' —'} DCM: ${rechazadasDcm}`}.{' '}
+                  </>)}
+                  No se puede cambiar a "Pase a ventas", "Aprobada", "Rechazada" ni "Cancelada" hasta que todas las caras estén autorizadas.
+                </p>
+              </div>
+            </div>
+          )}
+          {/* Ajuste 2026-08-25: reservas incompletas YA NO bloquean el avance
+              (Pase a ventas / Aprobada) — el aviso queda solo informativo. */}
+          {reservasIncompletas && (
+            <div className={`mb-4 p-3 rounded-lg ${isDark ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'} border flex items-start gap-3`}>
+              <AlertTriangle className={`h-5 w-5 ${isDark ? 'text-amber-400' : 'text-amber-600'} flex-shrink-0 mt-0.5`} />
+              <div>
+                <p className={`text-sm font-medium ${isDark ? 'text-amber-200' : 'text-amber-800'}`}>Reservas incompletas</p>
+                <p className={`text-xs mt-1 ${isDark ? 'text-amber-300/70' : 'text-amber-700'}`}>
+                  Hay circuitos sin sus reservas completas (de menos o de más). Aviso informativo: no impide cambiar a "Pase a ventas" ni "Aprobada".
+                </p>
+              </div>
+            </div>
+          )}
+          {esClienteLead && (
+            <div className={`mb-4 p-3 rounded-lg ${isDark ? 'bg-orange-500/10 border-orange-500/30' : 'bg-orange-50 border-orange-200'} border flex items-start gap-3`}>
+              <AlertTriangle className={`h-5 w-5 ${isDark ? 'text-orange-400' : 'text-orange-600'} flex-shrink-0 mt-0.5`} />
+              <div>
+                <p className={`text-sm font-medium ${isDark ? 'text-orange-200' : 'text-orange-800'}`}>Cliente Lead (CUIC 0)</p>
+                <p className={`text-xs mt-1 ${isDark ? 'text-orange-300/70' : 'text-orange-700'}`}>
+                  El cliente actual es un Cliente Lead sin CUIC válido. Edita la propuesta y asigna un cliente con CUIC antes de hacer "Pase a ventas".
+                </p>
+              </div>
+            </div>
+          )}
+          <label className={`block text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-2`}>Cambiar estado a:</label>
+          <div className="flex items-center gap-3">
+            <select
+              value={selectedStatus}
+              onChange={(e) => setSelectedStatus(e.target.value)}
+              className={`flex-1 px-4 py-2 rounded-lg ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
+            >
+              {/* Mostrar estado actual si no está en las opciones permitidas */}
+              {propuesta.status && !availableStatuses.includes(propuesta.status) && (
+                <option value={propuesta.status} disabled>{propuesta.status} (actual)</option>
+              )}
+              {availableStatuses.map(s => {
+                // Ajuste feedback 2026-08-19: bloquear tambien Rechazada /
+                // Cancelada cuando hay autorizacion abierta. El back ya
+                // rechaza estos casos (fix 2026-08-18) pero el UI seguia
+                // dejando pasar 'Rechazada' — se veia el mensaje amber
+                // pero el select y el boton "Actualizar" estaban activos.
+                // Ajuste 2026-08-25: reservasIncompletas ya NO bloquea el
+                // avance (Aprobada/Pase a ventas) — solo queda el aviso.
+                const bloqueaAvanceStatus = s === 'Aprobada' || s === 'Pase a ventas';
+                const bloqueaSalidaStatus = s === 'Rechazada' || s === 'Cancelada';
+                const isBlockedByAuth = bloqueaAvance && (bloqueaAvanceStatus || bloqueaSalidaStatus);
+                const isBlockedByCuic = esClienteLead && s === 'Pase a ventas';
+                const isBlocked = isBlockedByAuth || isBlockedByCuic;
+                const etiquetaExtra = isBlockedByCuic
+                  ? ' (Cliente Lead - CUIC 0)'
+                  : isBlockedByAuth
+                    ? ' (Autorización abierta)'
+                    : '';
+                return (
+                  <option
+                    key={s}
+                    value={s}
+                    disabled={isBlocked}
+                  >
+                    {s}{etiquetaExtra}
+                  </option>
+                );
+              })}
+            </select>
+            <button
+              onClick={handleChangeStatus}
+              disabled={selectedStatus === propuesta.status || updateStatusMutation.isPending
+                || (bloqueaAvance && (selectedStatus === 'Aprobada' || selectedStatus === 'Pase a ventas' || selectedStatus === 'Rechazada' || selectedStatus === 'Cancelada'))
+                || (esClienteLead && selectedStatus === 'Pase a ventas')}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed min-w-[120px] justify-center"
+            >
+              {updateStatusMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Actualizando...
+                </>
+              ) : (
+                'Actualizar'
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Comments List */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {comments && comments.length > 0 ? (
+            comments.slice().reverse().map((comment: PropuestaComentario) => (
+              <div key={comment.id} className="flex gap-3">
+                <UserAvatar nombre={comment.autor_nombre} foto_perfil={comment.autor_foto} size="lg" />
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{comment.autor_nombre}</span>
+                    <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                      {new Date(comment.creado_en).toLocaleDateString('es-ES', {
+                        day: 'numeric',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                  <div className={`${isDark ? 'bg-zinc-800/50 text-zinc-300' : 'bg-gray-50 text-gray-700'} rounded-xl px-4 py-3 text-sm`}>
+                    {comment.comentario}
+                  </div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className={`text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} py-8`}>
+              No hay comentarios aún
+            </div>
+          )}
+          <div ref={commentsEndRef} />
+        </div>
+
+        {/* New Comment Input */}
+        <div className={`px-6 py-4 border-t ${isDark ? 'border-zinc-800 bg-zinc-800/30' : 'border-gray-200 bg-gray-50'}`}>
+          <div className="flex items-end gap-3">
+            <textarea
+              value={newComment}
+              onChange={(e) => setNewComment(e.target.value)}
+              placeholder="Escribe un comentario..."
+              rows={2}
+              className={`flex-1 px-4 py-3 rounded-xl ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-white border-gray-200 text-gray-900 placeholder:text-gray-400'} border text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 resize-none`}
+            />
+            <button
+              onClick={handleAddComment}
+              disabled={!newComment.trim() || addCommentMutation.isPending}
+              className="p-3 rounded-xl bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {addCommentMutation.isPending ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+      <ConfirmModal
+        isOpen={showRechazoConfirm}
+        onClose={() => setShowRechazoConfirm(false)}
+        onConfirm={handleConfirmRechazo}
+        title="¿Rechazar propuesta?"
+        message="Esta acción no es reversible. Al rechazar la propuesta se liberará todo el inventario reservado y se eliminarán los grupos/circuitos de la propuesta."
+        confirmText="Sí, rechazar"
+        cancelText="Cancelar"
+        variant="danger"
+        isLoading={updateStatusMutation.isPending}
+      />
+    </div>
+  );
+}
+
+// ============ APPROVE MODAL ============
+interface ApproveModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  propuesta: Propuesta | null;
+  onSuccess: () => void;
+}
+
+// Puestos permitidos en el modal de aprobar propuesta
+const ALLOWED_PUESTOS_APROBAR = [
+  'Analista de Servicio al Cliente',
+  'Coordinador de Diseño',
+  'Diseñadores',
+  'Diseñador',
+  'Asesor Analista',
+];
+
+function ApproveModal({ isOpen, onClose, propuesta, onSuccess }: ApproveModalProps) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const queryClient = useQueryClient();
+  const [precio, setPrecio] = useState('');
+  const [selectedUsers, setSelectedUsers] = useState<{ id: number; nombre: string }[]>([]);
+  const [userSearch, setUserSearch] = useState('');
+
+  // NOTE: useSocketEquipos() ya lo monta PropuestasPage; no duplicar la
+  // suscripción al room aquí — antes había dos handlers escuchando los mismos
+  // eventos cuando el modal estaba abierto.
+
+  // Fetch all users to identify Tráfico users for exclusion from pre-selection
+  const { data: allUsers } = useQuery({
+    queryKey: ['solicitudes-users', 'all-users-approve'],
+    queryFn: () => solicitudesService.getUsers(undefined, false),
+    enabled: isOpen,
+  });
+
+  // Fetch team-filtered users for the selectable list
+  const { data: teamUsers } = useQuery({
+    queryKey: ['solicitudes-users', 'team-filtered-approve'],
+    queryFn: () => solicitudesService.getUsers(undefined, true),
+    enabled: isOpen,
+  });
+
+  // Caras de la propuesta — detectar circuitos que impiden avance por DG/DCM.
+  // Ajuste feedback 2026-08-18: antes solo se contaban 'rechazado'. Ahora
+  // tambien 'correccion' y 'pendiente' bloquean el boton (mismo criterio que
+  // el guard del back). Antes el usuario podia clickar 'Aprobar Propuesta'
+  // con una cara en correccion y el back devolvia 400 pero sin onError la
+  // UI no mostraba nada.
+  const { data: carasAprobar } = useQuery({
+    queryKey: ['propuesta-caras', propuesta?.id, 'approve-modal-bloqueo'],
+    queryFn: () => propuestasService.getCaras(propuesta!.id),
+    enabled: isOpen && !!propuesta,
+  });
+  const carasBloqueoAprobar = useMemo(() => {
+    const cs = carasAprobar || [];
+    const rechDg = cs.filter(c => c.autorizacion_dg === 'rechazado').length;
+    const rechDcm = cs.filter(c => c.autorizacion_dcm === 'rechazado').length;
+    const corrDg = cs.filter(c => c.autorizacion_dg === 'correccion').length;
+    const corrDcm = cs.filter(c => c.autorizacion_dcm === 'correccion').length;
+    const pendDg = cs.filter(c => c.autorizacion_dg === 'pendiente').length;
+    const pendDcm = cs.filter(c => c.autorizacion_dcm === 'pendiente').length;
+    const totalRech = rechDg + rechDcm;
+    const totalCorr = corrDg + corrDcm;
+    const totalPend = pendDg + pendDcm;
+    return {
+      rechDg, rechDcm, corrDg, corrDcm, pendDg, pendDcm,
+      totalRech, totalCorr, totalPend,
+      hasAny: totalRech > 0 || totalCorr > 0 || totalPend > 0,
+    };
+  }, [carasAprobar]);
+
+  const approveMutation = useMutation({
+    mutationFn: () => propuestasService.approve(propuesta!.id, {
+      precio_simulado: precio ? parseFloat(precio) : undefined,
+      asignados: selectedUsers.map(u => u.nombre).join(', '),
+      id_asignados: selectedUsers.map(u => u.id).join(','),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['propuestas'] });
+      queryClient.invalidateQueries({ queryKey: ['propuestas-stats'] });
+      queryClient.invalidateQueries({ queryKey: ['campanas'] });
+      onSuccess();
+      onClose();
+    },
+    // Ajuste feedback 2026-08-18: sin onError el usuario clickaba y "no
+    // pasaba nada" cuando el back devolvia 400 (ej. correccion pendiente).
+    // Ademas de ConflictoVentaError que ya se pinta abajo, mostramos alert
+    // para cualquier otro error del backend.
+    onError: (err: any) => {
+      if (err instanceof ConflictoVentaError) return; // ya se pinta abajo
+      const msg = err?.response?.data?.error || err?.message || 'No se pudo aprobar la propuesta.';
+      alert(msg);
+    },
+  });
+
+  // Initialize with: 1) Original assignees (except Tráfico) + 2) All team users with allowed positions
+  useEffect(() => {
+    if (propuesta && isOpen && allUsers && teamUsers) {
+      setPrecio(propuesta.precio_simulado?.toString() || propuesta.precio?.toString() || '');
+
+      const combinedUsers: { id: number; nombre: string }[] = [];
+      const addedIds = new Set<number>();
+
+      // Get IDs of Tráfico area/puesto users to exclude them
+      const traficoUserIds = new Set(
+        allUsers
+          .filter(u => {
+            const area = u.area?.toLowerCase() || '';
+            const puesto = u.puesto?.toLowerCase() || '';
+            return area.includes('tráfico') || area.includes('trafico') ||
+                   puesto.includes('tráfico') || puesto.includes('trafico');
+          })
+          .map(u => u.id)
+      );
+
+      // 1. Add original assigned users, excluding Tráfico
+      if (propuesta.asignado && propuesta.id_asignado) {
+        const nombres = propuesta.asignado.split(',').map(n => n.trim());
+        const ids = propuesta.id_asignado.split(',').map(id => parseInt(id.trim()));
+        ids.forEach((id, idx) => {
+          if (!traficoUserIds.has(id) && !addedIds.has(id) && nombres[idx]) {
+            combinedUsers.push({ id, nombre: nombres[idx] });
+            addedIds.add(id);
+          }
+        });
+      }
+
+      // 2. Add all team users with allowed positions (if not already added)
+      teamUsers.forEach(u => {
+        const hasAllowedPuesto = ALLOWED_PUESTOS_APROBAR.some(
+          puesto => u.puesto?.toLowerCase() === puesto.toLowerCase()
+        );
+        if (hasAllowedPuesto && !addedIds.has(u.id)) {
+          combinedUsers.push({ id: u.id, nombre: u.nombre });
+          addedIds.add(u.id);
+        }
+      });
+
+      setSelectedUsers(combinedUsers);
+    }
+  }, [propuesta, isOpen, allUsers, teamUsers]);
+
+  const filteredUsers = useMemo(() => {
+    if (!teamUsers) return [];
+    // Filter by allowed positions (from MY TEAM) and apply search filter
+    return teamUsers.filter((u: UserOption) => {
+      // Check if user has an allowed position
+      const hasAllowedPuesto = ALLOWED_PUESTOS_APROBAR.some(
+        puesto => u.puesto?.toLowerCase() === puesto.toLowerCase()
+      );
+      if (!hasAllowedPuesto) return false; // Only show users with allowed positions
+
+      // Apply search filter
+      return u.nombre.toLowerCase().includes(userSearch.toLowerCase()) ||
+        u.area?.toLowerCase().includes(userSearch.toLowerCase()) ||
+        u.puesto?.toLowerCase().includes(userSearch.toLowerCase());
+    });
+  }, [teamUsers, userSearch]);
+
+  const toggleUser = (user: UserOption) => {
+    setSelectedUsers(prev => {
+      const exists = prev.find(u => u.id === user.id);
+      if (exists) {
+        return prev.filter(u => u.id !== user.id);
+      } else {
+        return [...prev, { id: user.id, nombre: user.nombre }];
+      }
+    });
+  };
+
+  if (!isOpen || !propuesta) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-2 sm:p-4">
+      <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl w-full max-w-xl max-h-[92vh] sm:max-h-[85vh] overflow-hidden flex flex-col`}>
+        {/* Header */}
+        <div className={`flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} bg-gradient-to-r from-emerald-600/20 to-green-600/10`}>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+              <CheckCircle className="h-5 w-5 text-emerald-400" />
+            </div>
+            <div className="min-w-0">
+              <h2 className={`text-base sm:text-lg font-semibold truncate ${isDark ? 'text-white' : 'text-gray-900'}`}>Aprobar Propuesta</h2>
+              <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>#{propuesta.id}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className={`p-2 flex-shrink-0 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}>
+            <X className={`h-5 w-5 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-5">
+          {/* Asignados */}
+          <div>
+            <label className={`block text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-2`}>
+              <Users className="h-4 w-4 inline mr-1" />
+              Asignados ({selectedUsers.length})
+            </label>
+
+            {/* Selected users */}
+            {selectedUsers.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {selectedUsers.map(u => (
+                  <span
+                    key={u.id}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs border ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+                  >
+                    {u.nombre}
+                    <X
+                      className={`h-3 w-3 cursor-pointer ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`}
+                      onClick={() => setSelectedUsers(prev => prev.filter(x => x.id !== u.id))}
+                    />
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Search users */}
+            <input
+              type="text"
+              value={userSearch}
+              onChange={(e) => setUserSearch(e.target.value)}
+              placeholder="Buscar usuarios..."
+              className={`w-full px-4 py-2 rounded-lg ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
+            />
+
+            {/* Users list */}
+            <div className={`max-h-48 overflow-y-auto rounded-xl border ${isDark ? 'border-zinc-700 bg-zinc-800/50' : 'border-gray-200 bg-gray-50'}`}>
+              {filteredUsers.map((user: UserOption) => {
+                const isSelected = selectedUsers.some(u => u.id === user.id);
+                return (
+                  <button
+                    key={user.id}
+                    onClick={() => toggleUser(user)}
+                    className={`w-full flex items-center justify-between px-3 py-2 text-left ${isDark ? 'hover:bg-zinc-700/50' : 'hover:bg-gray-200'} transition-colors ${isSelected ? 'bg-emerald-500/10' : ''}`}
+                  >
+                    <div>
+                      <p className={`text-sm ${isDark ? 'text-white' : 'text-gray-900'}`}>{user.nombre}</p>
+                      <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{user.area} - {user.puesto}</p>
+                    </div>
+                    {isSelected && <CheckCircle className="h-4 w-4 text-emerald-400" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Info */}
+          <div className={`${isDark ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'} border rounded-xl p-4`}>
+            <p className={`text-sm font-medium mb-1 ${isDark ? 'text-amber-300' : 'text-amber-800'}`}>Al aprobar esta propuesta:</p>
+            <ul className={`text-xs space-y-1 ${isDark ? 'text-amber-200/80' : 'text-amber-700'}`}>
+              <li>• Se actualizarán las reservas de inventario</li>
+              <li>• La cotización y campaña se activarán</li>
+              <li>• Se crearán tareas de seguimiento</li>
+              <li>• Se notificará al creador de la solicitud</li>
+            </ul>
+          </div>
+        </div>
+
+        {carasBloqueoAprobar.hasAny && (() => {
+          const partes: string[] = [];
+          if (carasBloqueoAprobar.totalPend > 0) partes.push(`${carasBloqueoAprobar.totalPend} pendiente(s)`);
+          if (carasBloqueoAprobar.totalRech > 0) partes.push(`${carasBloqueoAprobar.totalRech} rechazado(s)`);
+          if (carasBloqueoAprobar.totalCorr > 0) partes.push(`${carasBloqueoAprobar.totalCorr} en corrección`);
+          return (
+            <div className={`mx-4 sm:mx-6 mb-3 p-3 rounded-lg border ${isDark ? 'bg-rose-500/10 border-rose-500/30 text-rose-200' : 'bg-rose-50 border-rose-200 text-rose-800'} text-sm flex items-start gap-2`}>
+              <XCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>
+                No se puede aprobar: hay circuitos que impiden el avance — {partes.join(', ')}. Corrige y espera la autorización antes de continuar.
+              </span>
+            </div>
+          );
+        })()}
+        {/* Conflicto de venta (409): piezas ya vendidas en otra campaña */}
+        {approveMutation.error instanceof ConflictoVentaError && (
+          <div className={`mx-4 sm:mx-6 mb-2 flex items-start gap-2 p-3 rounded-lg border ${isDark ? 'bg-red-900/20 border-red-500/30' : 'bg-red-50 border-red-200'}`}>
+            <AlertTriangle className="h-5 w-5 text-red-400 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className={`text-sm font-medium ${isDark ? 'text-red-200' : 'text-red-700'}`}>
+                No se pudo aprobar: {approveMutation.error.conflictos.length} pieza(s) ya se vendieron en otra campaña
+              </p>
+              <p className={`text-xs mt-1 break-words ${isDark ? 'text-red-300/70' : 'text-red-600/70'}`}>
+                {approveMutation.error.conflictos.map(c => c.codigoUnico || `espacio ${c.espacioId}`).join(', ')}
+              </p>
+              <p className={`text-xs mt-1 ${isDark ? 'text-red-300/70' : 'text-red-600/70'}`}>
+                Edita el inventario de la propuesta (esas piezas ya no aparecen disponibles) y reintenta.
+              </p>
+            </div>
+          </div>
+        )}
+        {/* Footer */}
+        <div className={`px-4 sm:px-6 py-3 sm:py-4 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3`}>
+          <button
+            onClick={onClose}
+            className={`w-full sm:w-auto px-4 py-2.5 sm:py-2 rounded-lg ${isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border-zinc-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200'} text-sm border`}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={() => approveMutation.mutate()}
+            disabled={approveMutation.isPending || carasBloqueoAprobar.hasAny}
+            title={carasBloqueoAprobar.hasAny
+              ? `Hay circuitos con autorización abierta (pendiente/corrección/rechazado). Espera a que dirección los resuelva.`
+              : undefined}
+            className="w-full sm:w-auto justify-center px-6 py-2.5 sm:py-2 rounded-lg bg-gradient-to-r from-emerald-600 to-green-600 text-white text-sm font-medium hover:from-emerald-500 hover:to-green-500 disabled:opacity-50 flex items-center gap-2"
+          >
+            {approveMutation.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Aprobando...
+              </>
+            ) : (
+              <>
+                <CheckCircle className="h-4 w-4" />
+                Aprobar Propuesta
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// Row component — extraído + memoizado para evitar re-renders de toda la tabla
+// cuando solo cambia algo del padre (typing en search, abrir filtros, etc.).
+// Solo se vuelve a renderizar si cambia el `item`, `isDark`, o algún flag de
+// permisos/rol. Los callbacks llegan como refs estables vía useCallback.
+const ROLES_LOCKED_BY_ABIERTO = ['Asesor Comercial', 'Director Comercial Aeropuerto', 'Asesor Comercial Aeropuerto'];
+
+interface PropuestaRowProps {
+  item: Propuesta & any;
+  index: number;
+  isDark: boolean;
+  userRol: string;
+  canEditStatusPerm: boolean;
+  canAprobarPerm: boolean;
+  canAsignarInventarioPerm: boolean;
+  canCompartirPerm: boolean;
+  canPruebaColor: boolean;
+  onStatus: (item: Propuesta) => void;
+  onApprove: (item: Propuesta) => void;
+  onAssign: (item: Propuesta) => void;
+  onShare: (id: number) => void;
+  onPruebaColor: (item: Propuesta) => void;
+}
+
+const PropuestaRow = React.memo(function PropuestaRow({
+  item,
+  index,
+  isDark,
+  userRol,
+  canEditStatusPerm,
+  canAprobarPerm,
+  canAsignarInventarioPerm,
+  canCompartirPerm,
+  canPruebaColor,
+  onStatus,
+  onApprove,
+  onAssign,
+  onShare,
+  onPruebaColor,
+}: PropuestaRowProps) {
+  const statusColor = getStatusColor(item.status, isDark);
+  const isActiva = item.status === 'Activa';
+  const isAprobada = item.status === 'Aprobada';
+  const isLockedByAbierto = ROLES_LOCKED_BY_ABIERTO.includes(userRol) && item.status === 'Abierto';
+  const isLocked = isActiva || isLockedByAbierto || isAprobada;
+
+  return (
+    <tr key={`prop-${item.id}-${index}`} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-200 hover:bg-gray-50'} transition-colors`}>
+      <td className="px-4 py-3">
+        <span className={`font-mono text-xs px-2 py-1 rounded-md ${isDark ? 'bg-purple-500/10 text-purple-300' : 'bg-purple-50 text-purple-700'}`}>#{(item as any).campania_id || item.id}</span>
+      </td>
+      <td className="px-4 py-3">
+        <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm`}>{formatDate(item.fecha)}</span>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-1.5">
+          <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-medium`}>{item.marca_nombre || item.articulo || '-'}</span>
+          {item.sap_database && (
+            <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${
+              item.sap_database === 'CIMU'
+                ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'
+                : item.sap_database === 'TEST'
+                  ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200'
+                  : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+            }`}>{item.sap_database}</span>
+          )}
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-1.5 align-middle">
+          <div className={`w-5 h-5 rounded-full ${isDark ? 'bg-zinc-700 text-zinc-300' : 'bg-gray-200 text-gray-700'} flex items-center justify-center text-[10px]`}>
+            <User className="h-3 w-3" />
+          </div>
+          <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-sm`}>{item.creador_nombre || item.usuario_nombre || '-'}</span>
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm truncate max-w-[250px] block`} title={item.campana_nombre || item.nombre_campania || '-'}>{item.campana_nombre || item.nombre_campania || '-'}</span>
+      </td>
+      <td className="px-4 py-3">
+        {item.asignado ? (() => {
+          const names = item.asignado.split(',').map((n: string) => n.trim()).filter(Boolean);
+          const preview = names.slice(0, 2).join(', ') + (names.length > 2 ? ` +${names.length - 2}` : '');
+          return (
+            <span
+              className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-xs cursor-default`}
+              title={names.join(', ')}
+            >
+              {preview}
+            </span>
+          );
+        })() : <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-xs`}>Sin asignar</span>}
+      </td>
+      <td className="px-4 py-3">
+        <span className={`font-medium ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>{formatCurrency(item.inversion)}</span>
+      </td>
+      <td className="px-4 py-3">
+        {item.tipo_periodo === 'mensual' && ((item as any).min_inicio_periodo || item.fecha_inicio) ? (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
+            <Calendar className="h-3 w-3" />
+            {getMonthShort((item as any).min_inicio_periodo || item.fecha_inicio)}
+          </span>
+        ) : item.catorcena_inicio ? (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
+            <Calendar className="h-3 w-3" />
+            Cat {item.catorcena_inicio} / {item.anio_inicio}
+          </span>
+        ) : (
+          <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-xs`}>-</span>
+        )}
+      </td>
+      <td className="px-4 py-3">
+        {item.tipo_periodo === 'mensual' && (item.max_inicio_periodo || item.fecha_fin) ? (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+            <Calendar className="h-3 w-3" />
+            {getMonthShort((item as any).max_inicio_periodo || item.fecha_fin)}
+          </span>
+        ) : item.catorcena_fin ? (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+            <Calendar className="h-3 w-3" />
+            Cat {item.catorcena_fin} / {item.anio_fin}
+          </span>
+        ) : (
+          <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-xs`}>-</span>
+        )}
+      </td>
+      <td className="px-4 py-3">
+        {canEditStatusPerm && !isLocked ? (
+          <button
+            onClick={() => onStatus(item)}
+            className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border} hover:opacity-80 transition-opacity cursor-pointer`}
+          >
+            {item.status}
+          </button>
+        ) : (
+          <span className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
+            {item.status}
+          </span>
+        )}
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-1">
+          {canAprobarPerm && (
+            <button
+              onClick={() => onApprove(item)}
+              disabled={item.status !== 'Pase a ventas' || isLocked}
+              className={`p-2 rounded-lg border transition-all ${item.status !== 'Pase a ventas' || isLocked
+                ? isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
+                : isDark ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 border-emerald-500/20 hover:border-emerald-500/40' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 hover:text-emerald-700 border-emerald-200 hover:border-emerald-300'
+                }`}
+              title={isLocked ? 'No disponible en este estatus' : (item.status !== 'Pase a ventas' ? 'Solo disponible con estatus Pase a ventas' : 'Aprobar propuesta')}
+            >
+              <CheckCircle className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <button
+            onClick={() => onAssign(item)}
+            disabled={canAsignarInventarioPerm && (item.status === 'Aprobada' || isLocked)}
+            className={`p-2 rounded-lg border transition-all ${canAsignarInventarioPerm && (item.status === 'Aprobada' || isLocked)
+              ? isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
+              : isDark ? 'bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 hover:text-fuchsia-300 border-fuchsia-500/20 hover:border-fuchsia-500/40' : 'bg-fuchsia-50 text-fuchsia-600 hover:bg-fuchsia-100 hover:text-fuchsia-700 border-fuchsia-200 hover:border-fuchsia-300'
+              }`}
+            title={canAsignarInventarioPerm ? (isLocked ? 'No disponible en este estatus' : (item.status === 'Aprobada' ? 'No disponible para propuestas aprobadas' : (item.status === 'Pase a ventas' ? 'Ver Inventario (solo lectura)' : 'Asignar a Inventario'))) : 'Ver Propuesta'}
+          >
+            {canAsignarInventarioPerm && item.status !== 'Pase a ventas' ? <MapPinned className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+          </button>
+          {canPruebaColor && (
+            <button
+              onClick={() => onPruebaColor(item)}
+              className={`p-2 rounded-lg border transition-all ${isDark
+                ? 'bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 hover:text-fuchsia-300 border-fuchsia-500/20 hover:border-fuchsia-500/40'
+                : 'bg-fuchsia-50 text-fuchsia-600 hover:bg-fuchsia-100 hover:text-fuchsia-700 border-fuchsia-200 hover:border-fuchsia-300'
+              }`}
+              title="Solicitar prueba de color"
+            >
+              <Paintbrush className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {canCompartirPerm && (
+            <button
+              disabled={(item.status !== 'Aprobada' && item.status !== 'Atendido' && item.status !== 'Pase a ventas') || isLocked}
+              onClick={() => !isLocked && (item.status === 'Aprobada' || item.status === 'Atendido' || item.status === 'Pase a ventas') && onShare(item.id)}
+              className={`p-2 rounded-lg border transition-all ${(item.status === 'Aprobada' || item.status === 'Atendido' || item.status === 'Pase a ventas') && !isLocked
+                ? isDark ? 'bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 hover:text-cyan-300 border-cyan-500/20 hover:border-cyan-500/40' : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700 border-cyan-200 hover:border-cyan-300'
+                : isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
+                }`}
+              title={isLocked ? 'No disponible en este estatus' : (item.status === 'Aprobada' || item.status === 'Atendido' || item.status === 'Pase a ventas' ? 'Compartir propuesta' : 'Solo disponible en status Aprobada o Pase a ventas')}
+            >
+              <Share2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+
+export function PropuestasPage() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const user = useAuthStore((state) => state.user);
+  const permissions = getPermissions(user?.rol);
+
+  // Socket para actualizar usuarios en tiempo real
+  useSocketEquipos();
+  // Socket para actualizar propuestas cuando cambian autorizaciones
+  useSocketPropuestas();
+  const [searchTags, setSearchTags] = useState<string[]>([]);
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearchTags, setDebouncedSearchTags] = useState<string[]>([]);
+  const [debouncedSearchInput, setDebouncedSearchInput] = useState('');
+  const [status, setStatus] = useState('');
+  const [tipoPeriodo, setTipoPeriodo] = useState('');
+  const [yearInicio, setYearInicio] = useState<number | undefined>(undefined);
+  const [yearFin, setYearFin] = useState<number | undefined>(undefined);
+  const [catorcenaInicio, setCatorcenaInicio] = useState<number | undefined>(undefined);
+  const [catorcenaFin, setCatorcenaFin] = useState<number | undefined>(undefined);
+  const [historialFilter, setHistorialFilter] = useState<HistorialFilterValues>({});
+  const [sortBy, setSortBy] = useState('fecha');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [groupBy, setGroupBy] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [advancedFilters, setAdvancedFilters] = useState<AdvancedFilterCondition[]>([]);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [comboboxOpen, setComboboxOpen] = useState<string | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const limit = 20;
+  const [activeView, setActiveView] = useState<'tabla' | 'versionario'>('tabla');
+  const [exportingLayout, setExportingLayout] = useState(false);
+  const [exportingOcupacion, setExportingOcupacion] = useState(false);
+  // Versionario (Desglose) grouping config — controlled here so the filter chip lives in the filters bar
+  const [versionarioGroupings, setVersionarioGroupings] = useState<VersionarioGroupByField[]>(() => loadVersionarioGroupings());
+  const [showVersionarioGroupConfig, setShowVersionarioGroupConfig] = useState(false);
+  useEffect(() => {
+    try { localStorage.setItem(VERSIONARIO_GROUPINGS_KEY, JSON.stringify(versionarioGroupings)); } catch { /* ignore */ }
+  }, [versionarioGroupings]);
+  const toggleVersionarioGrouping = (field: VersionarioGroupByField) => {
+    setVersionarioGroupings(prev => {
+      if (prev.includes(field)) {
+        if (prev.length === 1) return prev;
+        return prev.filter(f => f !== field);
+      }
+      if (prev.length < VERSIONARIO_MAX_GROUPINGS) return [...prev, field];
+      return [...prev.slice(1), field];
+    });
+  };
+  const resetVersionarioGroupings = () => setVersionarioGroupings(VERSIONARIO_DEFAULT_GROUPINGS);
+
+  // Modals
+  const [statusPropuesta, setStatusPropuesta] = useState<Propuesta | null>(null);
+  const [approvePropuesta, setApprovePropuesta] = useState<Propuesta | null>(null);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [pruebaColorPropuesta, setPruebaColorPropuesta] = useState<Propuesta | null>(null);
+  const puedePruebaColor = puedeGestionarPruebaColor(user?.rol);
+  const [selectedPropuestaForAssign, setSelectedPropuestaForAssign] = useState<Propuesta | null>(null);
+
+  // Handle URL params: viewId opens modal, search fills search bar
+  useEffect(() => {
+    const viewIdParam = searchParams.get('viewId');
+    const searchParam = searchParams.get('search');
+
+    if (viewIdParam) {
+      const id = parseInt(viewIdParam, 10);
+      if (!isNaN(id)) {
+        // Fetch propuesta and open modal
+        propuestasService.getById(id).then((propuesta) => {
+          setSelectedPropuestaForAssign(propuesta);
+          setShowAssignModal(true);
+        }).catch(console.error);
+      }
+      setSearchParams({}, { replace: true });
+    } else if (searchParam) {
+      setSearchTags([searchParam]);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+
+  // Add search tag on Enter/Tab
+  const addSearchTag = (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed && !searchTags.includes(trimmed)) {
+      setSearchTags(prev => [...prev, trimmed]);
+    }
+    setSearchInput('');
+  };
+
+  const removeSearchTag = (tag: string) => {
+    setSearchTags(prev => prev.filter(t => t !== tag));
+  };
+
+  // Debounce conjunto de tags + input en un solo timer. Antes había dos
+  // efectos paralelos que provocaban renders dobles si ambos cambiaban a la
+  // vez (típico al presionar Enter para crear un tag — se actualizan ambos).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTags(searchTags);
+      setDebouncedSearchInput(searchInput);
+      setPage(1);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchTags, searchInput]);
+
+  // Catorcenas son casi estáticas: staleTime alto evita refetches al navegar
+  // entre páginas que usen esta misma queryKey.
+  const { data: catorcenasData } = useQuery({
+    queryKey: ['catorcenas'],
+    queryFn: () => solicitudesService.getCatorcenas(),
+    staleTime: 1000 * 60 * 30, // 30 min
+    gcTime: 1000 * 60 * 60,    // 1 h
+  });
+
+  // Combine debounced tags + debounced input into all active search terms
+  const allSearchTerms = useMemo(() => {
+    const terms = [...debouncedSearchTags];
+    if (debouncedSearchInput.trim()) terms.push(debouncedSearchInput.trim());
+    return terms;
+  }, [debouncedSearchTags, debouncedSearchInput]);
+
+  // Search se manda al backend; el controller separa por '|' (no espacios),
+  // por lo que cada tag viaja como UNA frase. Esto evita que palabras cortas
+  // ("y", "de") generen un OR que matchee la mayoría de los registros.
+  const serverSearch = allSearchTerms.length > 0 ? allSearchTerms.join('|') : undefined;
+  const needsAllData = !!groupBy || advancedFilters.length > 0;
+  const effectiveLimit = needsAllData ? 200 : limit;
+
+  // El listado oculta 'Rechazada' por default. PERO si el usuario agrega un
+  // filtro avanzado sobre el campo 'status' (p.ej. status = Rechazada), dejamos
+  // que ese filtro controle el estatus: pedimos al backend TODO (sin excluir
+  // rechazadas) y el filtro cliente-side se encarga de acotar. Así se pueden
+  // ver las rechazadas a voluntad sin perder el default de ocultarlas.
+  const statusInAdvanced = useMemo(
+    () => advancedFilters.some(f => f.field === 'status' && f.value.trim() !== ''),
+    [advancedFilters]
+  );
+  const excludeRechazadas = !statusInAdvanced;
+
+  // Si el filtro de historial pide "cambió a Rechazada", desactivamos el
+  // exclude por default — si no, el filtro daria 0 porque la pagina oculta
+  // todo lo que tiene status='Rechazada' actual.
+  const effectiveExcludeRechazadas = (
+    historialFilter.modo === 'cambio_estatus' && historialFilter.estatusValor === 'Rechazada'
+  ) ? false : excludeRechazadas;
+
+  // Stats: WS invalida en cambios reales; staleTime corto evita refetches en
+  // re-renders del padre. Pasamos `search` para que total/chart reflejen los
+  // resultados filtrados aunque estemos en la página 1 de N, y `historialFilter`
+  // + `effectiveExcludeRechazadas` para que los KPIs no queden en un universo
+  // distinto al del listado.
+  const { data: stats } = useQuery({
+    queryKey: ['propuestas-stats', status, yearInicio, yearFin, catorcenaInicio, catorcenaFin, tipoPeriodo, serverSearch, historialFilter, effectiveExcludeRechazadas],
+    queryFn: () => propuestasService.getStats({
+      status: status || undefined,
+      yearInicio,
+      yearFin,
+      catorcenaInicio,
+      catorcenaFin,
+      tipoPeriodo: tipoPeriodo || undefined,
+      search: serverSearch,
+      excludeRechazadas: effectiveExcludeRechazadas,
+      ...historialFilter,
+    }),
+    staleTime: 1000 * 30,
+  });
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['propuestas', needsAllData ? 1 : page, status, serverSearch, yearInicio, yearFin, catorcenaInicio, catorcenaFin, sortBy, sortOrder, groupBy, tipoPeriodo, needsAllData, historialFilter, effectiveExcludeRechazadas],
+    queryFn: () =>
+      propuestasService.getAll({
+        page: needsAllData ? 1 : page,
+        limit: effectiveLimit,
+        status: status || undefined,
+        search: serverSearch,
+        yearInicio,
+        yearFin,
+        catorcenaInicio,
+        catorcenaFin,
+        soloAtendidas: true,
+        tipoPeriodo: tipoPeriodo || undefined,
+        excludeRechazadas: effectiveExcludeRechazadas,
+        ...historialFilter,
+      }),
+    staleTime: 1000 * 30, // 30 s — WS invalida en cambios reales
+    placeholderData: (prev) => prev, // mantiene la tabla anterior al paginar/filtrar
+  });
+
+  // 'Rechazada' se oculta del chip simple de Status (las propuestas rechazadas
+  // están ocultas por default). Sigue disponible en el filtro avanzado para
+  // quien quiera verlas explícitamente.
+  const allStatuses = STATUS_OPTIONS.filter(s => s !== 'Rechazada');
+
+  const hasPeriodFilter = yearInicio !== undefined && yearFin !== undefined;
+  const hasActiveFilters = !!(status || tipoPeriodo || hasPeriodFilter || groupBy || sortBy !== 'fecha' || advancedFilters.length > 0 || searchTags.length > 0);
+
+  // Get unique values for each field (for advanced filter dropdowns).
+  // Solo se calcula cuando el panel de filtros avanzados está abierto: evita
+  // recorrer 7 campos × N filas en cada render del padre mientras el panel
+  // no es visible.
+  const getUniqueFieldValues = useMemo(() => {
+    const valuesMap: Record<string, string[]> = {};
+    if (!showAdvancedFilters || !data?.data) return valuesMap;
+
+    PROPUESTA_FILTER_FIELDS.forEach(fieldConfig => {
+      const values = new Set<string>();
+      data.data.forEach(item => {
+        const val = item[fieldConfig.field as keyof Propuesta];
+        if (val !== null && val !== undefined && val !== '') {
+          values.add(String(val));
+        }
+      });
+      // El campo 'status' siempre ofrece todos los estatus conocidos (incl.
+      // Rechazada), aunque por default estén ocultos del listado: así el usuario
+      // puede seleccionarlos en el filtro avanzado para verlos.
+      if (fieldConfig.field === 'status') {
+        STATUS_OPTIONS.forEach(s => values.add(s));
+      }
+      valuesMap[fieldConfig.field] = Array.from(values).sort();
+    });
+    return valuesMap;
+  }, [showAdvancedFilters, data?.data]);
+
+  // Apply advanced filters (cliente-side). El search ya lo aplicó el backend
+  // sobre los campos ampliados (descripcion, marca, razon_social, cuic,
+  // asignado, articulo, campania, creador) — re-filtrar en cliente solo
+  // ocultaría resultados que el backend ya validó, además de romper la
+  // paginación al filtrar únicamente la página visible.
+  const filteredData = useMemo(() => {
+    if (!data?.data) return [];
+    return applyAdvancedFilters(data.data, advancedFilters);
+  }, [data?.data, advancedFilters]);
+
+  // Sólo cuando hay filtros avanzados activos necesitamos recalcular stats en
+  // cliente (el backend no soporta esos operadores Y/O custom). El search va
+  // como queryKey en `propuestas-stats`, así que `stats` ya viene filtrado.
+  const needsClientFilter = advancedFilters.length > 0;
+  const effectiveStats = useMemo(() => {
+    if (needsClientFilter && data?.data) {
+      const byStatus: Record<string, number> = {};
+      filteredData.forEach(p => {
+        byStatus[p.status] = (byStatus[p.status] || 0) + 1;
+      });
+      return { total: filteredData.length, byStatus };
+    }
+    return stats || null;
+  }, [needsClientFilter, filteredData, data?.data, stats]);
+
+  // Advanced filter functions
+  const addAdvancedFilter = () => {
+    const newFilter: AdvancedFilterCondition = {
+      id: `filter-${Date.now()}`,
+      field: PROPUESTA_FILTER_FIELDS[0].field,
+      operator: '=',
+      value: '',
+      connector: 'Y',
+    };
+    setAdvancedFilters(prev => [...prev, newFilter]);
+  };
+
+  const updateAdvancedFilter = (id: string, updates: Partial<AdvancedFilterCondition>) => {
+    setAdvancedFilters(prev =>
+      prev.map(f => (f.id === id ? { ...f, ...updates } : f))
+    );
+  };
+
+  const removeAdvancedFilter = (id: string) => {
+    setAdvancedFilters(prev => prev.filter(f => f.id !== id));
+  };
+
+  const clearAdvancedFilters = () => {
+    setAdvancedFilters([]);
+  };
+
+  const clearAllFilters = () => {
+    setStatus('');
+    setTipoPeriodo('');
+    setYearInicio(undefined);
+    setYearFin(undefined);
+    setCatorcenaInicio(undefined);
+    setCatorcenaFin(undefined);
+    setHistorialFilter({});
+    setSortBy('fecha');
+    setSortOrder('desc');
+    setGroupBy('');
+    setExpandedGroups(new Set());
+    setAdvancedFilters([]);
+    setSearchTags([]);
+    setSearchInput('');
+    setPage(1);
+  };
+
+  // Chart data from dynamic stats
+  const chartData = useMemo(() => {
+    if (!effectiveStats?.byStatus) return null;
+    const entries = Object.entries(effectiveStats.byStatus);
+    if (entries.length === 0) return null;
+
+    return entries.map(([statusName, count], index) => ({
+      label: statusName,
+      value: count,
+      color: CHART_COLORS[index % CHART_COLORS.length],
+      percent: effectiveStats.total > 0 ? ((count / effectiveStats.total) * 100).toFixed(1) : '0',
+    }));
+  }, [effectiveStats]);
+
+  // Get current catorcena
+  const currentCatorcena = useMemo((): Catorcena | null => {
+    if (!catorcenasData?.data) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return catorcenasData.data.find(c => {
+      const inicio = new Date(c.fecha_inicio);
+      const fin = new Date(c.fecha_fin);
+      inicio.setHours(0, 0, 0, 0);
+      fin.setHours(23, 59, 59, 999);
+      return today >= inicio && today <= fin;
+    }) || null;
+  }, [catorcenasData]);
+
+  // No default catorcena filter — show all propuestas on load
+
+  // Group data — solo depende de filteredData y groupBy. `advancedFilters` y
+  // `allSearchTerms` ya están reflejados en filteredData; volver a listarlos
+  // como deps los hacía redundantes.
+  const groupedData = useMemo(() => {
+    if (!groupBy || filteredData.length === 0) return null;
+
+    const groupKey = groupBy as keyof Propuesta;
+    const groups: Record<string, Propuesta[]> = {};
+    filteredData.forEach(item => {
+      const key = String(item[groupKey] || 'Sin asignar');
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    });
+
+    return Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+  }, [filteredData, groupBy]);
+
+  const toggleGroup = (groupName: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupName)) {
+        next.delete(groupName);
+      } else {
+        next.add(groupName);
+      }
+      return next;
+    });
+  };
+
+  // Handle export Layout (versionario)
+  const handleExportLayout = async () => {
+    setExportingLayout(true);
+    try {
+      const exportData = await propuestasService.getVersionarioData({
+        status: status || undefined,
+        search: serverSearch,
+        yearInicio,
+        yearFin,
+        catorcenaInicio,
+        catorcenaFin,
+        tipoPeriodo: tipoPeriodo || undefined,
+        excludeRechazadas: effectiveExcludeRechazadas,
+        // El export debe salir con los mismos filtros que la vista, incluido
+        // el de Historial.
+        ...historialFilter,
+        page: 1,
+        limit: 100,
+      });
+      const { inventarios, propuestasInfo, carasInfo } = exportData;
+
+      const propMap = new Map(propuestasInfo.map((p: any) => [p.propuesta_id, p]));
+      // Index inventarios by propuesta+sc
+      const invMap = new Map<string, any[]>();
+      for (const inv of inventarios) {
+        const key = `${inv.propuesta_id}-${inv.solicitud_caras_id}`;
+        if (!invMap.has(key)) invMap.set(key, []);
+        invMap.get(key)!.push(inv);
+      }
+
+      const headers = [
+        'Campaña', 'Anunciante', 'Inversión Campaña', 'Operación', 'Código de contrato (Opcional)',
+        'Precio por cara (Opcional)', 'APS Global', 'CUIC', 'Articulo', 'Vendedor',
+        'Descripción (Opcional)', 'Inicio o Periodo', 'Fin o Segmento', 'Arte',
+        'Código de arte (Opcional)', 'Arte Url (Opcional)', 'Origen del arte (Opcional)',
+        'Unidad', 'Cara', 'Ciudad', 'Tipo de Distribución', 'Reproducciones', 'Notas',
+        'Estatus', 'Catorcena',
+      ];
+      const rows: string[][] = [];
+      const invExported = new Set<number>();
+
+      for (const cara of carasInfo) {
+        const info = propMap.get(cara.propuesta_id) as any;
+        if (!info) continue;
+        const key = `${cara.propuesta_id}-${cara.sc_id}`;
+        const items = invMap.get(key) || [];
+        const showInv = !invExported.has(cara.propuesta_id);
+        if (showInv) invExported.add(cara.propuesta_id);
+        const invStr = showInv && info.inversion ? `$${Number(info.inversion).toLocaleString('es-MX')}` : '0';
+        const periodo = `Catorcena #${String(cara.numero_catorcena).padStart(2, '0')}`;
+
+        if (items.length > 0) {
+          let firstRow = true;
+          for (const inv of items) {
+            const operacion = inv.cortesia ? 'CORTESIA' : (inv.estatus_reserva === 'Bonificado' || inv.estatus_reserva === 'Vendido bonificado') ? 'BONIFICACION' : 'RENTA';
+            const precio = inv.tarifa_publica_sc || inv.tarifa_publica || 0;
+            rows.push([
+              info.campana_nombre || info.descripcion || '', info.anunciante || '',
+              firstRow ? invStr : '0', operacion, '0',
+              precio ? `$${Number(precio).toLocaleString('es-MX')}` : '0',
+              String(info.propuesta_id), String(info.cuic || ''),
+              inv.articulo || '', info.vendedor || '', info.descripcion || '',
+              'Catorcenas ' + (cara.anio_catorcena || ''), periodo,
+              '', '', '', '',
+              inv.codigo_unico || '', inv.tipo_de_cara || '', inv.plaza || inv.estado || '',
+              inv.tradicional_digital || inv.tipo_medio || '', '0', '',
+              info.status || '', cara.numero_catorcena ? `Cat ${String(cara.numero_catorcena).padStart(2, '0')} / ${cara.anio_catorcena || ''}` : '',
+            ]);
+            firstRow = false;
+          }
+        } else {
+          rows.push([
+            info.campana_nombre || info.descripcion || '', info.anunciante || '',
+            invStr, '', '0', '0',
+            String(info.propuesta_id), String(info.cuic || ''),
+            cara.articulo || '', info.vendedor || '', info.descripcion || '',
+            'Catorcenas ' + (cara.anio_catorcena || ''), periodo,
+            '', '', '', '', '', '', cara.ciudad || '', '', '0', '',
+            info.status || '', cara.numero_catorcena ? `Cat ${String(cara.numero_catorcena).padStart(2, '0')} / ${cara.anio_catorcena || ''}` : '',
+          ]);
+        }
+      }
+
+      if (rows.length === 0) return;
+      const esc = (val: string) => `"${String(val).replace(/"/g, '""')}"`;
+      const csvContent = [headers.map(esc).join(','), ...rows.map(row => row.map(esc).join(','))].join('\n');
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `propuestas_versionario_${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+    } finally {
+      setExportingLayout(false);
+    }
+  };
+
+  // Export "Orden de Montaje (Ocupacion)" — formato inspirado en el de Campañas
+  // (Plaza, Tipo, Asesor, APS Global/Especifico, CUIC, Fechas, Cliente, Marca,
+  // Campana, Articulo, Negociacion, Caras, Tarifa, Monto Total). Adaptado para
+  // propuestas: 1 fila por circuito reservado (inv) — cuenta de caras tomada
+  // de inv.caras_totales (fallback 1) y monto = caras * tarifa.
+  const handleExportOcupacion = async () => {
+    setExportingOcupacion(true);
+    try {
+      const exportData = await propuestasService.getVersionarioData({
+        status: status || undefined,
+        search: serverSearch,
+        yearInicio,
+        yearFin,
+        catorcenaInicio,
+        catorcenaFin,
+        tipoPeriodo: tipoPeriodo || undefined,
+        excludeRechazadas: effectiveExcludeRechazadas,
+        // El export debe salir con los mismos filtros que la vista, incluido
+        // el de Historial.
+        ...historialFilter,
+        page: 1,
+        limit: 100,
+      });
+      const { inventarios, propuestasInfo } = exportData;
+      const propMap = new Map(propuestasInfo.map((p: any) => [p.propuesta_id, p]));
+
+      const fmtPeriodo = (num: number | null | undefined, anio: number | null | undefined) => {
+        if (!num) return '';
+        return `Cat ${String(num).padStart(2, '0')} / ${anio || ''}`;
+      };
+
+      const headers = [
+        'Plaza', 'Tipo', 'Vendedor', 'APS Global', 'APS Específico', 'CUIC',
+        'Fecha Inicio', 'Fecha Fin', 'Anunciante', 'Campaña', 'Artículo',
+        'Negociación', 'Caras', 'Tarifa', 'Monto Total',
+      ];
+
+      const rows: (string | number)[][] = [];
+      for (const inv of inventarios as any[]) {
+        const info = propMap.get(inv.propuesta_id) as any;
+        if (!info) continue;
+        const caras = Number(inv.caras_totales) || 1;
+        const tarifa = Number(inv.tarifa_publica_sc) || 0;
+        const monto = caras * tarifa;
+        const negociacion = inv.cortesia
+          ? 'CORTESIA'
+          : (inv.estatus_reserva === 'Bonificado' || inv.estatus_reserva === 'Vendido bonificado')
+            ? 'BONIFICACION'
+            : 'RENTA';
+        rows.push([
+          inv.plaza || inv.estado || '',
+          inv.tipo_medio || inv.tradicional_digital || '',
+          info.vendedor || '',
+          String(info.propuesta_id),
+          inv.aps_especifico ? String(inv.aps_especifico) : '',
+          String(info.cuic || ''),
+          fmtPeriodo(info.catorcena_inicio_num, info.catorcena_inicio_anio),
+          fmtPeriodo(info.catorcena_fin_num, info.catorcena_fin_anio),
+          info.anunciante || '',
+          info.campana_nombre || info.nombre_campania || info.descripcion || '',
+          inv.articulo || '',
+          negociacion,
+          caras,
+          tarifa,
+          monto,
+        ]);
+      }
+
+      if (rows.length === 0) {
+        alert('No hay datos para exportar en formato Ocupación.');
+        return;
+      }
+
+      // Generar Excel (XLSX) — mismo formato que el de Campañas
+      const XLSX = await import('xlsx');
+      const wsData = [headers, ...rows];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Ocupacion');
+      XLSX.writeFile(wb, `propuestas_orden_montaje_ocupacion_${new Date().toISOString().split('T')[0]}.xlsx`);
+    } catch (err) {
+      console.error('Error exportando Ocupacion:', err);
+      alert(`Error exportando Ocupación: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExportingOcupacion(false);
+    }
+  };
+
+  // Handle export CSV - exports only visible/filtered data
+  const handleExportCSV = () => {
+    const dataToExport = hasLocalFilters ? filteredData : (data?.data || []);
+
+    if (dataToExport.length === 0) return;
+
+    const headers = ['ID', 'Fecha Creación', 'Marca', 'Creador', 'Campaña', 'Asignados', 'Inversión', 'Inicio', 'Fin', 'Estatus'];
+    const rows = dataToExport.map((p: any) => {
+      const inicio = p.tipo_periodo === 'mensual' && (p.min_inicio_periodo || p.fecha_inicio)
+        ? getMonthShort(p.min_inicio_periodo || p.fecha_inicio)
+        : p.catorcena_inicio ? `Cat ${p.catorcena_inicio} / ${p.anio_inicio}` : '-';
+      const fin = p.tipo_periodo === 'mensual' && (p.max_inicio_periodo || p.fecha_fin)
+        ? getMonthShort(p.max_inicio_periodo || p.fecha_fin)
+        : p.catorcena_fin ? `Cat ${p.catorcena_fin} / ${p.anio_fin}` : '-';
+      return [
+        p.id,
+        formatDate(p.fecha),
+        p.marca_nombre || p.articulo || '',
+        p.creador_nombre || p.usuario_nombre || '',
+        p.campana_nombre || p.nombre_campania || '',
+        p.asignado || '',
+        p.inversion || 0,
+        inicio,
+        fin,
+        p.status
+      ];
+    });
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+    ].join('\n');
+
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `propuestas_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  };
+
+  // Callbacks estables para el `PropuestaRow` memoizado. Mantienen identidad
+  // entre renders del padre para que `React.memo` no fuerce re-render.
+  const handleRowStatus = React.useCallback((p: Propuesta) => setStatusPropuesta(p), []);
+  const handleRowApprove = React.useCallback((p: Propuesta) => setApprovePropuesta(p), []);
+  const handleRowAssign = React.useCallback((p: Propuesta) => {
+    setSelectedPropuestaForAssign(p);
+    setShowAssignModal(true);
+  }, []);
+  const handleRowShare = React.useCallback((id: number) => {
+    navigate(`/propuestas/compartir/${id}`);
+  }, [navigate]);
+  const handleRowPruebaColor = React.useCallback((p: Propuesta) => setPruebaColorPropuesta(p), []);
+
+  // Calcular paginación basada en si hay filtros locales activos
+  // El search ya viaja al backend, así que la paginación del servidor sigue
+  // siendo correcta. Sólo cuando hay filtros avanzados activos (cliente-side)
+  // forzamos página única con el conteo local.
+  const hasLocalFilters = advancedFilters.length > 0;
+  const totalPages = hasLocalFilters ? 1 : (data?.pagination?.totalPages || 1);
+  const total = hasLocalFilters ? filteredData.length : (data?.pagination?.total ?? 0);
+
+  return (
+    <div className="min-h-screen">
+      <Header title="Propuestas" />
+
+      <div className="p-3 md:p-6 space-y-4 md:space-y-5">
+        {/* Dashboard Grid - Same style as Solicitudes */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+
+          {/* Main KPI: Total */}
+          <div className={`col-span-1 md:col-span-2 lg:col-span-1 rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-5 flex flex-col justify-between relative overflow-hidden group`}>
+            <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none group-hover:bg-purple-500/20 transition-all duration-500" />
+            <div>
+              <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>Total Propuestas</p>
+              <h3 className={`text-4xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} tracking-tight`}>
+                {effectiveStats?.total.toLocaleString() ?? '0'}
+              </h3>
+            </div>
+            <div className="mt-4 flex items-center gap-2">
+              <span className={`text-xs px-2 py-1 rounded-full ${isDark ? 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50' : 'bg-gray-100 text-gray-700 border-gray-200'} border`}>
+                {(status || allSearchTerms.length > 0 || advancedFilters.length > 0 || hasPeriodFilter || tipoPeriodo) ? 'Filtrado' : 'Todas las catorcenas'}
+              </span>
+            </div>
+          </div>
+
+          {/* Chart Card */}
+          <div className={`col-span-1 md:col-span-2 lg:col-span-2 rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-4 flex items-center relative overflow-hidden`}>
+
+            {chartData ? (
+              <div className="w-full h-[140px] flex items-center">
+                <div className="h-full min-w-[140px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={chartData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={40}
+                        outerRadius={55}
+                        paddingAngle={4}
+                        dataKey="value"
+                        stroke="none"
+                      >
+                        {chartData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip content={<CustomChartTooltip isDark={isDark} />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Legend / List */}
+                <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-2 pl-4 h-full overflow-y-auto custom-scrollbar auto-rows-min content-start">
+                  {chartData.map((item, i) => (
+                    <div key={i} className={`flex items-center gap-2 p-2 rounded-lg ${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} border min-w-0`}>
+                      <div className="w-2 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
+                      <div className="min-w-0">
+                        <div className={`text-sm font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.value}</div>
+                        <div className={`text-[10px] ${isDark ? 'text-zinc-400' : 'text-gray-500'} uppercase tracking-wide truncate`} title={item.label}>{item.label}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className={`w-full h-[140px] flex items-center justify-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>
+                Cargando datos...
+              </div>
+            )}
+          </div>
+
+          {/* KPI: Por Aprobar Priority */}
+          <div className={`col-span-1 rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-5 flex flex-col justify-between relative overflow-hidden group`}>
+            <div className="absolute bottom-0 right-0 w-24 h-24 bg-amber-500/10 rounded-full blur-2xl -mr-5 -mb-5 pointer-events-none group-hover:bg-amber-500/20 transition-all duration-500" />
+            <div>
+              <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>En Ajuste</p>
+              <div className="flex items-baseline gap-2">
+                <h3 className={`text-3xl font-bold ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+                  {((effectiveStats?.byStatus['Ajuste Cto-Cliente'] || 0) + (effectiveStats?.byStatus['Ajuste Comercial'] || 0)).toLocaleString()}
+                </h3>
+                <span className={`text-xs font-medium ${isDark ? 'text-amber-500/80' : 'text-amber-600'}`}>Atención requerida</span>
+              </div>
+            </div>
+
+            {/* Progress bar visual */}
+            <div className={`mt-4 w-full h-1.5 ${isDark ? 'bg-zinc-800' : 'bg-gray-100'} rounded-full overflow-hidden`}>
+              <div
+                className="h-full bg-gradient-to-r from-amber-500 to-orange-500"
+                style={{ width: `${Math.min(100, (((effectiveStats?.byStatus['Ajuste Cto-Cliente'] || 0) + (effectiveStats?.byStatus['Ajuste Comercial'] || 0)) / (effectiveStats?.total || 1)) * 100)}%` }}
+              />
+            </div>
+          </div>
+
+        </div>
+
+        {/* Control Bar */}
+        <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'border-gray-200 bg-white'} backdrop-blur-xl p-4 relative z-30`}>
+          <div className="flex flex-col gap-4">
+            {/* Top Row: Search + Filter Toggle + Export */}
+            <div className="flex flex-col lg:flex-row items-start lg:items-center gap-4">
+              {/* Search with Tags */}
+              <div className={`relative flex-1 w-full lg:max-w-xl flex items-center flex-wrap gap-1.5 min-h-[44px] px-3 py-1.5 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900/80 hover:border-purple-500/40' : 'border-gray-200 bg-gray-50 hover:border-gray-300'} focus-within:ring-2 focus-within:ring-purple-500/30 focus-within:border-purple-500/40 transition-all`}>
+                <Search className={`h-4 w-4 shrink-0 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+                {searchTags.map((tag) => (
+                  <span
+                    key={tag}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-purple-100 text-purple-700 border border-purple-200'}`}
+                  >
+                    {tag}
+                    <button
+                      onClick={() => removeSearchTag(tag)}
+                      className={`rounded-full p-0.5 transition-colors ${isDark ? 'hover:bg-purple-500/30' : 'hover:bg-purple-200'}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  type="text"
+                  placeholder={searchTags.length === 0 ? 'Buscar artículo, descripción, asignado... (Enter para agregar)' : 'Agregar filtro...'}
+                  className={`flex-1 min-w-[120px] bg-transparent border-none outline-none text-sm ${isDark ? 'text-white placeholder:text-zinc-500' : 'text-gray-900 placeholder:text-gray-400'}`}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === 'Tab') && searchInput.trim()) {
+                      e.preventDefault();
+                      addSearchTag(searchInput);
+                    }
+                    if (e.key === 'Backspace' && !searchInput && searchTags.length > 0) {
+                      removeSearchTag(searchTags[searchTags.length - 1]);
+                    }
+                  }}
+                />
+                {searchTags.length > 0 && (
+                  <button
+                    onClick={() => { setSearchTags([]); setSearchInput(''); }}
+                    className={`shrink-0 p-1 rounded-full transition-colors ${isDark ? 'text-zinc-400 hover:text-white hover:bg-zinc-700' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-200'}`}
+                    title="Limpiar búsqueda"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter Toggle */}
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${showFilters || hasActiveFilters
+                  ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
+                  : isDark
+                    ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800'
+                    : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200'
+                  }`}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                Filtros
+                {hasActiveFilters && (
+                  <span className={`w-2 h-2 rounded-full ${isDark ? 'bg-purple-400' : 'bg-purple-500'}`} />
+                )}
+              </button>
+
+              {/* View Toggle - idéntico a campañas */}
+              <button
+                onClick={() => setActiveView('tabla')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  activeView === 'tabla'
+                    ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-100 text-purple-700 border border-purple-200'
+                    : isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'
+                }`}
+              >
+                <List className="h-4 w-4" />
+                Vista Tabla
+              </button>
+              <button
+                onClick={() => setActiveView('versionario')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  activeView === 'versionario'
+                    ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-100 text-purple-700 border border-purple-200'
+                    : isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'
+                }`}
+              >
+                <LayoutGrid className="h-4 w-4" />
+                Desglose
+              </button>
+
+              {/* Botones de export */}
+              {activeView === 'versionario' ? (
+                <>
+                  <button
+                    onClick={handleExportLayout}
+                    disabled={exportingLayout || exportingOcupacion}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title="Exporta CSV en formato Layout (Campaña, Anunciante, Inversión, APS, etc.)"
+                  >
+                    {exportingLayout ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {exportingLayout ? 'Generando...' : 'Exportar Layout'}
+                  </button>
+                  <button
+                    onClick={handleExportOcupacion}
+                    disabled={exportingLayout || exportingOcupacion}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title="Exporta Excel formato Orden de Montaje (Plaza, Tipo, Vendedor, APS, CUIC, Caras, Tarifa, Monto)"
+                  >
+                    {exportingOcupacion ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {exportingOcupacion ? 'Generando...' : 'Exportar Ocupación'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleExportCSV}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all`}
+                >
+                  <Download className="h-4 w-4" />
+                  Exportar CSV
+                </button>
+              )}
+            </div>
+
+            {/* Filters Row (Expandable) */}
+            {showFilters && (
+              <div className={`flex flex-wrap items-center gap-2 pt-3 border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-200'} relative z-50`}>
+                {/* Advanced Filter Button with Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                      advancedFilters.length > 0
+                        ? 'bg-purple-600 text-white'
+                        : isDark
+                          ? 'bg-purple-900/50 hover:bg-purple-900/70 border border-purple-500/30 text-purple-300'
+                          : 'bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700'
+                    }`}
+                    title="Filtros avanzados"
+                  >
+                    <Filter className="h-3.5 w-3.5" />
+                    <span>Filtrar</span>
+                    {advancedFilters.length > 0 && (
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] ${isDark ? 'bg-purple-800' : 'bg-purple-700'}`}>
+                        {advancedFilters.length}
+                      </span>
+                    )}
+                  </button>
+                  {showAdvancedFilters && (
+                    <div className={`absolute left-0 top-full mt-1 z-[100] w-[520px] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-gray-200'} border rounded-xl shadow-2xl p-4`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <span className={`text-sm font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>Filtros avanzados</span>
+                        <button
+                          onClick={() => setShowAdvancedFilters(false)}
+                          className={`${isDark ? 'text-zinc-500 hover:text-white' : 'text-gray-400 hover:text-gray-900'}`}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="space-y-2 max-h-[300px] overflow-visible pr-1">
+                        {advancedFilters.map((filter, index) => (
+                          <div key={filter.id} className="flex items-center gap-2">
+                            {index > 0 && (
+                              <button
+                                onClick={() => {
+                                  const updated = [...advancedFilters];
+                                  updated[index] = { ...updated[index], connector: updated[index].connector === 'Y' ? 'O' : 'Y' };
+                                  setAdvancedFilters(updated);
+                                }}
+                                className={`text-[10px] font-bold w-8 rounded px-1 py-0.5 transition-colors ${filter.connector === 'O' ? (isDark ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30' : 'bg-amber-100 text-amber-700 hover:bg-amber-200') : (isDark ? 'bg-purple-500/20 text-purple-300 hover:bg-purple-500/30' : 'bg-purple-100 text-purple-700 hover:bg-purple-200')}`}
+                                title={`Click para cambiar a ${filter.connector === 'Y' ? 'O' : 'Y'}`}
+                              >
+                                {filter.connector}
+                              </button>
+                            )}
+                            {index === 0 && <span className="w-8"></span>}
+                            <select
+                              value={filter.field}
+                              onChange={(e) => updateAdvancedFilter(filter.id, { field: e.target.value })}
+                              className={`w-[120px] text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5`}
+                            >
+                              {PROPUESTA_FILTER_FIELDS.map((f) => (
+                                <option key={f.field} value={f.field}>{f.label}</option>
+                              ))}
+                            </select>
+                            <select
+                              value={filter.operator}
+                              onChange={(e) => updateAdvancedFilter(filter.id, { operator: e.target.value as FilterOperator })}
+                              className={`w-[100px] text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5`}
+                            >
+                              {FILTER_OPERATORS.filter(op => {
+                                const fieldConfig = PROPUESTA_FILTER_FIELDS.find(f => f.field === filter.field);
+                                return fieldConfig && op.forTypes.includes(fieldConfig.type);
+                              }).map((op) => (
+                                <option key={op.value} value={op.value}>{op.label}</option>
+                              ))}
+                            </select>
+                            <div className="flex-1 relative">
+                              <input
+                                type="text"
+                                value={filter.value}
+                                placeholder="Escribir o seleccionar..."
+                                onChange={(e) => {
+                                  updateAdvancedFilter(filter.id, { value: e.target.value });
+                                  setComboboxOpen(filter.id);
+                                }}
+                                onClick={() => setComboboxOpen(filter.id)}
+                                onFocus={() => setComboboxOpen(filter.id)}
+                                onBlur={() => setTimeout(() => setComboboxOpen(null), 200)}
+                                className={`w-full text-xs ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded px-2 py-1.5`}
+                              />
+                              {comboboxOpen === filter.id && (() => {
+                                const allOptions = getUniqueFieldValues[filter.field] || [];
+                                const filtered = filter.value
+                                  ? allOptions.filter(val => val.toLowerCase().includes(filter.value.toLowerCase()))
+                                  : allOptions;
+                                return filtered.length > 0 ? (
+                                  <div className={`absolute left-0 top-full mt-1 w-full max-h-[200px] overflow-y-auto z-[300] rounded border shadow-xl ${isDark ? 'bg-zinc-800 border-zinc-600' : 'bg-white border-gray-200'}`}>
+                                    {filtered.map((val) => (
+                                      <button
+                                        key={val}
+                                        type="button"
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => {
+                                          updateAdvancedFilter(filter.id, { value: val });
+                                          setComboboxOpen(null);
+                                        }}
+                                        className={`w-full text-left px-2.5 py-1.5 text-xs cursor-pointer transition-colors ${isDark ? 'text-white hover:bg-purple-600/40' : 'text-gray-900 hover:bg-purple-50'} ${filter.value === val ? (isDark ? 'bg-purple-600/30 font-medium' : 'bg-purple-100 font-medium') : ''}`}
+                                      >
+                                        {val}
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null;
+                              })()}
+                            </div>
+                            <button
+                              onClick={() => removeAdvancedFilter(filter.id)}
+                              className="text-red-400 hover:text-red-300 p-1"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        {advancedFilters.length === 0 && (
+                          <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} text-center py-4`}>
+                            Sin filtros avanzados. Haz clic en "Añadir" para crear uno.
+                          </p>
+                        )}
+                      </div>
+                      <div className={`flex items-center justify-between mt-3 pt-3 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+                        <button
+                          onClick={addAdvancedFilter}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-purple-600 hover:bg-purple-700 text-white rounded-lg"
+                        >
+                          <Plus className="h-3 w-3" />
+                          Añadir
+                        </button>
+                        <button
+                          onClick={clearAdvancedFilters}
+                          disabled={advancedFilters.length === 0}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors border ${isDark ? 'text-red-400 hover:text-red-300 hover:bg-red-900/30 border-red-500/30' : 'text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200'}`}
+                        >
+                          Limpiar
+                        </button>
+                      </div>
+                      {advancedFilters.length > 0 && (
+                        <div className={`mt-2 pt-2 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+                          <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                            {filteredData.length} de {data?.data?.length || 0} registros
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+
+                {/* Status Filter */}
+                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>Status:</span>
+                <FilterChip
+                  label="Status"
+                  options={allStatuses}
+                  value={status}
+                  onChange={(val) => { setStatus(val); setPage(1); }}
+                  onClear={() => { setStatus(''); setPage(1); }}
+                  isDark={isDark}
+                />
+
+                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+
+                {/* Tipo Periodo Filter */}
+                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>Periodo:</span>
+                <FilterChip
+                  label="Tipo Periodo"
+                  options={['catorcena', 'mensual']}
+                  value={tipoPeriodo}
+                  onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
+                  onClear={() => { setTipoPeriodo(''); setPage(1); }}
+                  isDark={isDark}
+                />
+
+                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+
+                {/* Current Catorcena Indicator */}
+                {currentCatorcena && (
+                  <>
+                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                      <Clock className="h-3 w-3" />
+                      <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
+                    </div>
+                    <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+                  </>
+                )}
+
+                {/* Period Filter */}
+                <PeriodFilterPopover
+                  catorcenasData={catorcenasData}
+                  yearInicio={yearInicio}
+                  yearFin={yearFin}
+                  catorcenaInicio={catorcenaInicio}
+                  catorcenaFin={catorcenaFin}
+                  isDark={isDark}
+                  onApply={(yi, yf, ci, cf) => {
+                    setYearInicio(yi);
+                    setYearFin(yf);
+                    setCatorcenaInicio(ci);
+                    setCatorcenaFin(cf);
+                    setPage(1);
+                  }}
+                  onClear={() => {
+                    setYearInicio(undefined);
+                    setYearFin(undefined);
+                    setCatorcenaInicio(undefined);
+                    setCatorcenaFin(undefined);
+                    setPage(1);
+                  }}
+                />
+
+                {/* Historial Filter (cambios de estatus / creacion por fecha) */}
+                <HistorialFilterPopover
+                  values={historialFilter}
+                  isDark={isDark}
+                  estatusOptions={['Atendido', 'Pase a ventas', 'Liberada', 'Rechazada', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Abierto']}
+                  onApply={(v) => { setHistorialFilter(v); setPage(1); }}
+                  onClear={() => { setHistorialFilter({}); setPage(1); }}
+                />
+
+                {/* Divider */}
+                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700/50' : 'bg-gray-200'} mx-1`} />
+
+                {/* Sort Options */}
+                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>
+                  <ArrowUpDown className="h-3 w-3 inline mr-1" />
+                  Ordenar:
+                </span>
+                <FilterChip
+                  label="Campo"
+                  options={['fecha', 'precio', 'inversion', 'status']}
+                  value={sortBy}
+                  onChange={(val) => { setSortBy(val); setPage(1); }}
+                  onClear={() => { setSortBy('fecha'); setPage(1); }}
+                  isDark={isDark}
+                />
+                <button
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs transition-all ${isDark ? 'bg-zinc-800/80 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'}`}
+                >
+                  {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+                </button>
+
+                {/* Group By — Tabla: FilterChip single. Desglose: multi-select max 4. */}
+                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700/50' : 'bg-gray-200'} mx-1`} />
+                {activeView === 'tabla' ? (
+                  <FilterChip
+                    label="Agrupar"
+                    options={['status', 'asignado', 'asesor', 'creador_nombre']}
+                    value={groupBy}
+                    onChange={(val) => { setGroupBy(val); setExpandedGroups(new Set()); }}
+                    onClear={() => { setGroupBy(''); setExpandedGroups(new Set()); }}
+                    isDark={isDark}
+                  />
+                ) : (
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowVersionarioGroupConfig(!showVersionarioGroupConfig)}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs transition-all border ${
+                        isDark ? 'bg-purple-500/10 text-purple-300 border-purple-500/30 hover:bg-purple-500/20' : 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                      }`}
+                    >
+                      <Layers className="h-3 w-3" />
+                      Agrupar
+                      {versionarioGroupings.length > 0 && (
+                        <span className="px-1 py-0.5 rounded bg-purple-600 text-white text-[10px]">
+                          {versionarioGroupings.length}
+                        </span>
+                      )}
+                    </button>
+                    {showVersionarioGroupConfig && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setShowVersionarioGroupConfig(false)} />
+                        <div className={`absolute right-0 top-full mt-1 z-20 ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-purple-200'} border rounded-lg shadow-xl p-2 min-w-[240px]`}>
+                          <p className={`text-[10px] uppercase tracking-wide px-2 py-1 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                            Agrupar por (max {VERSIONARIO_MAX_GROUPINGS})
+                          </p>
+                          {VERSIONARIO_GROUPINGS.map(({ field, label }) => {
+                            const idx = versionarioGroupings.indexOf(field);
+                            const isActive = idx !== -1;
+                            const orderColors = ['text-purple-400', 'text-pink-400', 'text-cyan-400', 'text-amber-400'];
+                            return (
+                              <button
+                                key={field}
+                                onClick={() => toggleVersionarioGrouping(field)}
+                                className={`w-full flex items-center gap-2 px-2 py-1.5 text-xs rounded ${isDark ? 'hover:bg-purple-900/30' : 'hover:bg-purple-100'} transition-colors ${
+                                  isActive ? (isDark ? 'text-purple-300' : 'text-purple-700') : (isDark ? 'text-zinc-400' : 'text-gray-500')
+                                }`}
+                              >
+                                <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${
+                                  isActive ? 'bg-purple-600 border-purple-600' : isDark ? 'border-purple-500/50' : 'border-purple-300'
+                                }`}>
+                                  {isActive && <Check className="h-3 w-3 text-white" />}
+                                </div>
+                                <span className="flex-1 text-left">{label}</span>
+                                {isActive && (
+                                  <span className={`text-[10px] font-bold ${orderColors[idx] || 'text-purple-400'}`}>
+                                    {idx + 1}°
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                          <div className={`border-t ${isDark ? 'border-purple-900/30' : 'border-purple-200'} mt-2 pt-2`}>
+                            <button
+                              onClick={resetVersionarioGroupings}
+                              className={`w-full text-xs ${isDark ? 'text-zinc-400 hover:text-zinc-200' : 'text-gray-500 hover:text-gray-800'} py-1 text-center`}
+                            >
+                              Restaurar predeterminados
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Clear All */}
+                {hasActiveFilters && (
+                  <>
+                    <div className={`h-4 w-px ${isDark ? 'bg-zinc-700/50' : 'bg-gray-200'} mx-1`} />
+                    <button
+                      onClick={clearAllFilters}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs transition-all border ${isDark ? 'bg-red-500/10 text-red-400 border-red-500/30 hover:bg-red-500/20' : 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'}`}
+                    >
+                      <X className="h-3 w-3" />
+                      Limpiar todo
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Versionario View */}
+        {activeView === 'versionario' && (
+          <PropuestasVersionarioView
+            isDark={isDark}
+            filters={{
+              status: status || undefined,
+              // Mismo `serverSearch` que usa la tabla: si hay tags Y texto
+              // escrito, viajan los dos (antes el texto se perdia).
+              search: serverSearch,
+              yearInicio,
+              yearFin,
+              catorcenaInicio,
+              catorcenaFin,
+              tipoPeriodo: tipoPeriodo || undefined,
+              // effective*: si el filtro de historial pide "cambio a Rechazada"
+              // hay que dejar de excluirlas, igual que en la tabla.
+              excludeRechazadas: effectiveExcludeRechazadas,
+              // Filtro de Historial — el desglose lo ignoraba por completo, por
+              // eso la vista seguia mostrando casi todas las catorcenas.
+              ...historialFilter,
+            }}
+            advancedFilters={advancedFilters}
+            activeGroupings={versionarioGroupings}
+          />
+        )}
+
+        {/* Table */}
+        {activeView === 'tabla' && <div className={`rounded-2xl border backdrop-blur-xl overflow-hidden shadow-xl ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90 shadow-purple-500/5' : 'border-gray-200 bg-white shadow-gray-200/50'}`}>
+          {/* Pagination (top) */}
+          {!groupBy && data?.pagination && totalPages > 1 && (
+            <div className={`flex items-center justify-between border-b px-4 py-3 ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-gray-200 bg-gray-50'}`}>
+              <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>
+                Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{totalPages}</span>
+                <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-gray-400'}`}>({total} total)</span>
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage(Math.max(1, page - 1))}
+                  disabled={page === 1}
+                  className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
+                >
+                  Anterior
+                </button>
+                <button
+                  onClick={() => setPage(Math.min(totalPages, page + 1))}
+                  disabled={page === totalPages}
+                  className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1100px]">
+              <thead>
+                <tr className={`border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/30 via-fuchsia-900/20 to-purple-900/30' : 'border-gray-200 bg-gray-50'}`}>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>ID</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Fecha Creación</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Marca</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Creador</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Campaña</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Asignados</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Inversión</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Inicio</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Fin</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Estatus</th>
+                  <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-purple-300' : 'text-gray-600'}`}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-12 text-center">
+                      <div className="flex flex-col items-center gap-3">
+                        <div className={`w-8 h-8 border-2 rounded-full animate-spin ${isDark ? 'border-purple-500/30 border-t-purple-500' : 'border-purple-200 border-t-purple-600'}`} />
+                        <span className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Cargando propuestas...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : !data?.data || data.data.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-12 text-center">
+                      <div className="flex flex-col items-center gap-3">
+                        <div className={`inline-flex items-center justify-center w-12 h-12 rounded-full ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'}`}>
+                          <FileText className={`w-6 h-6 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+                        </div>
+                        <span className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>No se encontraron propuestas</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : groupedData ? (
+                  // Grouped view
+                  groupedData.map(([groupName, items]) => (
+                    <React.Fragment key={groupName}>
+                      <GroupHeader
+                        groupName={groupName}
+                        count={items.length}
+                        expanded={expandedGroups.has(groupName)}
+                        onToggle={() => toggleGroup(groupName)}
+                        isDark={isDark}
+                      />
+                      {expandedGroups.has(groupName) && items.map((item, idx) => (
+                        <PropuestaRow
+                          key={`prop-${item.id}-${idx}`}
+                          item={item}
+                          index={idx}
+                          isDark={isDark}
+                          userRol={user?.rol || ''}
+                          canEditStatusPerm={permissions.canEditPropuestaStatus}
+                          canAprobarPerm={permissions.canAprobarPropuesta}
+                          canAsignarInventarioPerm={permissions.canAsignarInventario}
+                          canCompartirPerm={permissions.canCompartirPropuesta}
+                          canPruebaColor={puedePruebaColor}
+                          onStatus={handleRowStatus}
+                          onApprove={handleRowApprove}
+                          onAssign={handleRowAssign}
+                          onShare={handleRowShare}
+                          onPruebaColor={handleRowPruebaColor}
+                        />
+                      ))}
+                    </React.Fragment>
+                  ))
+                ) : filteredData.length === 0 && hasLocalFilters ? (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-12 text-center">
+                      <span className={`text-sm ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>No se encontraron propuestas con los filtros aplicados</span>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredData.map((item, idx) => (
+                    <PropuestaRow
+                      key={`prop-${item.id}-${idx}`}
+                      item={item}
+                      index={idx}
+                      isDark={isDark}
+                      userRol={user?.rol || ''}
+                      canEditStatusPerm={permissions.canEditPropuestaStatus}
+                      canAprobarPerm={permissions.canAprobarPropuesta}
+                      canAsignarInventarioPerm={permissions.canAsignarInventario}
+                      canCompartirPerm={permissions.canCompartirPropuesta}
+                      canPruebaColor={puedePruebaColor}
+                      onStatus={handleRowStatus}
+                      onApprove={handleRowApprove}
+                      onAssign={handleRowAssign}
+                      onShare={handleRowShare}
+                      onPruebaColor={handleRowPruebaColor}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {!groupBy && data?.pagination && totalPages > 1 && (
+            <div className={`flex items-center justify-between border-t px-4 py-3 ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-gray-200 bg-gray-50'}`}>
+              <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>
+                Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{totalPages}</span>
+                <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-gray-400'}`}>({total} total)</span>
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage(Math.max(1, page - 1))}
+                  disabled={page === 1}
+                  className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
+                >
+                  Anterior
+                </button>
+                <button
+                  onClick={() => setPage(Math.min(totalPages, page + 1))}
+                  disabled={page === totalPages}
+                  className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
+        </div>}
+      </div>
+
+      {/* Modals — lazy-mount: el componente solo existe en el árbol cuando
+          la propuesta seleccionada es no-nula. Evita que sus useState/useRef/
+          useEffect (y subscripciones WS) corran cuando el modal está cerrado. */}
+      {statusPropuesta && (
+        <StatusModal
+          isOpen={!!statusPropuesta}
+          onClose={() => setStatusPropuesta(null)}
+          propuesta={statusPropuesta}
+          onStatusChange={() => {
+            queryClient.invalidateQueries({ queryKey: ['propuestas'] });
+            queryClient.invalidateQueries({ queryKey: ['propuestas-stats'] });
+          }}
+          allowedStatuses={permissions.allowedPropuestaStatuses}
+        />
+      )}
+
+      {approvePropuesta && (
+        <ApproveModal
+          isOpen={!!approvePropuesta}
+          onClose={() => setApprovePropuesta(null)}
+          propuesta={approvePropuesta}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['propuestas'] });
+            queryClient.invalidateQueries({ queryKey: ['propuestas-stats'] });
+          }}
+        />
+      )}
+
+      {selectedPropuestaForAssign && (
+        <AssignInventarioModal
+          isOpen={showAssignModal}
+          onClose={() => { setShowAssignModal(false); queryClient.invalidateQueries({ queryKey: ['propuesta-caras', selectedPropuestaForAssign?.id] }); queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', selectedPropuestaForAssign?.id] }); queryClient.invalidateQueries({ queryKey: ['propuesta-fresh'] }); queryClient.invalidateQueries({ queryKey: ['propuestas'] }); setSelectedPropuestaForAssign(null); }}
+          propuesta={selectedPropuestaForAssign}
+          readOnly={!permissions.canAsignarInventario || selectedPropuestaForAssign.status === 'Pase a ventas'}
+        />
+      )}
+
+      {pruebaColorPropuesta && (
+        <PruebasColorModal
+          isOpen={!!pruebaColorPropuesta}
+          onClose={() => setPruebaColorPropuesta(null)}
+          propuestaId={pruebaColorPropuesta.id}
+          contextoNombre={pruebaColorPropuesta.nombre_campania || undefined}
+        />
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,136 @@
+import api from '../lib/api';
+import { ApiResponse, AuthResponse } from '../types';
+
+export interface AssignmentsData {
+  solicitudes: Array<{ id: number; razon_social: string | null; marca_nombre: string | null; status: string }>;
+  propuestas: Array<{ id: number; solicitud_id: number; status: string; articulo: string | null }>;
+  tareas: Array<{ id: number; titulo: string | null; estatus: string | null; campania_id: number | null }>;
+}
+
+export interface Reassignment {
+  type: 'solicitud' | 'propuesta' | 'tarea';
+  id: number;
+  newUserId: number;
+}
+
+export interface EquipoUsuario {
+  id: number;
+  nombre: string;
+  color: string | null;
+  rol_equipo: string | null;
+}
+
+export interface EquipoAdmin {
+  id: number;
+  nombre: string;
+  color: string | null;
+}
+
+export interface UsuarioAdmin {
+  id: number;
+  nombre: string;
+  email: string;
+  area: string | null;
+  puesto: string | null;
+  rol: string;
+  foto_perfil: string | null;
+  created_at: string | null;
+  total_equipos?: number;
+  equipos_admin?: EquipoAdmin[];
+  equipos?: EquipoUsuario[];
+}
+
+export interface UpdateUsuarioInput {
+  nombre?: string;
+  correo_electronico?: string;
+  area?: string;
+  puesto?: string;
+  rol?: string;
+}
+
+export interface CreateUsuarioInput {
+  nombre: string;
+  correo_electronico: string;
+  password: string;
+  area: string;
+  puesto: string;
+  rol: string;
+  foto_perfil?: string;
+}
+
+export const usuariosService = {
+  async getAll(): Promise<UsuarioAdmin[]> {
+    const response = await api.get<ApiResponse<UsuarioAdmin[]>>('/usuarios');
+
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener usuarios');
+    }
+
+    return response.data.data;
+  },
+
+  async create(data: CreateUsuarioInput): Promise<UsuarioAdmin> {
+    try {
+      const response = await api.post<ApiResponse<UsuarioAdmin>>('/usuarios', data);
+
+      if (!response.data.success || !response.data.data) {
+        throw new Error(response.data.error || 'Error al crear usuario');
+      }
+
+      return response.data.data;
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error.message || 'Error al crear usuario';
+      throw new Error(message);
+    }
+  },
+
+  async update(id: number, data: UpdateUsuarioInput): Promise<UsuarioAdmin> {
+    const response = await api.put<ApiResponse<UsuarioAdmin>>(`/usuarios/${id}`, data);
+
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al actualizar usuario');
+    }
+
+    return response.data.data;
+  },
+
+  async adminResetPassword(id: number, nuevaPassword: string): Promise<void> {
+    const response = await api.patch<ApiResponse<null>>(`/usuarios/${id}/reset-password`, { nuevaPassword });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al restablecer contraseña');
+    }
+  },
+
+  async deleteMany(ids: number[]): Promise<void> {
+    const response = await api.delete<ApiResponse<null>>('/usuarios', { data: { ids } });
+
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al eliminar usuarios');
+    }
+  },
+
+  async getAssignments(id: number): Promise<AssignmentsData> {
+    const response = await api.get<ApiResponse<AssignmentsData>>(`/usuarios/${id}/assignments`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener asignaciones');
+    }
+    return response.data.data;
+  },
+
+  async reassign(id: number, reassignments: Reassignment[]): Promise<void> {
+    const response = await api.post<ApiResponse<null>>(`/usuarios/${id}/reassign`, { reassignments });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al reasignar');
+    }
+  },
+
+  async impersonate(id: number): Promise<AuthResponse> {
+    const response = await api.post<ApiResponse<AuthResponse>>(`/usuarios/${id}/impersonate`);
+
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al impersonar usuario');
+    }
+
+    return response.data.data;
+  },
+};

@@ -1,0 +1,424 @@
+import api from '../lib/api';
+import { Solicitud, SolicitudStats, PaginatedResponse, ApiResponse, Catorcena } from '../types';
+
+export interface SolicitudesParams {
+  page?: number;
+  limit?: number;
+  status?: string;
+  search?: string;
+  yearInicio?: number;
+  yearFin?: number;
+  catorcenaInicio?: number;
+  catorcenaFin?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  groupBy?: string;
+  tipoPeriodo?: string;
+  cambioEstatusDesde?: string;
+  cambioEstatusHasta?: string;
+  creacionDesde?: string;
+  creacionHasta?: string;
+  // Nuevo filtro unificado (HistorialFilterPopover)
+  modo?: 'creacion' | 'cambio_estatus';
+  fechaDesde?: string;
+  fechaHasta?: string;
+  estatusValor?: string;
+  excludeRechazadas?: boolean;
+}
+
+export interface CatorcenasResponse {
+  success: boolean;
+  data: Catorcena[];
+  years: number[];
+}
+
+export interface UserOption {
+  id: number;
+  nombre: string;
+  area: string;
+  puesto: string;
+  user_role?: string;
+}
+
+export interface PlazaInfo {
+  plaza: string;
+  estados: string[];
+  ciudades: string[];
+}
+
+export interface InventarioFilters {
+  estados: string[];
+  ciudades: { ciudad: string; estado: string; plaza?: string | null }[];
+  formatos: string[];
+  nse: string[];
+  plazas?: PlazaInfo[];
+}
+
+export interface InventarioOptions {
+  formatos: string[];
+  tipos: string[];
+  nse: string[];
+}
+
+export interface SolicitudCaraInput {
+  // ID en solicitudCaras (BD). Solo se envía en edición para caras existentes.
+  // Permite al back hacer diff-based (update in place) en lugar de
+  // delete-all+recreate (fix bug de Ana, solicitud 81311, 2026-07-29).
+  id?: number;
+  ciudad: string;
+  estado: string;
+  tipo: string;
+  flujo?: string;
+  bonificacion?: number;
+  caras: number;
+  nivel_socioeconomico: string;
+  formato: string;
+  costo: number;
+  tarifa_publica?: number;
+  inicio_periodo: string;
+  fin_periodo: string;
+  caras_flujo?: number;
+  caras_contraflujo?: number;
+  descuento?: number;
+  autorizacion_dg?: string;
+  autorizacion_dcm?: string;
+  grupo_rt_bf?: number | null;
+  grupo_masivo_id?: number | null;
+}
+
+export interface CreateSolicitudInput {
+  // Client data
+  cliente_id: number;
+  cuic: number | string;
+  razon_social: string;
+  unidad_negocio?: string;
+  marca_id?: number;
+  marca_nombre?: string;
+  asesor?: string;
+  producto_id?: number;
+  producto_nombre?: string;
+  agencia?: string;
+  categoria_id?: number;
+  categoria_nombre?: string;
+  // Campaign data
+  nombre_campania: string;
+  descripcion: string;
+  notas?: string;
+  presupuesto?: number;
+  // Articulo
+  articulo: string;
+  // Asignados
+  asignados: { id: number; nombre: string }[];
+  // Dates
+  fecha_inicio: string;
+  fecha_fin: string;
+  // File
+  archivo?: string;
+  tipo_archivo?: string;
+  // IMU
+  IMU: boolean;
+  // Caras
+  caras: SolicitudCaraInput[];
+}
+
+export const solicitudesService = {
+  async getAll(params: SolicitudesParams = {}): Promise<PaginatedResponse<Solicitud>> {
+    const response = await api.get<PaginatedResponse<Solicitud>>('/solicitudes', { params });
+    return response.data;
+  },
+
+  async getById(id: number): Promise<Solicitud> {
+    const response = await api.get<ApiResponse<Solicitud>>(`/solicitudes/${id}`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener solicitud');
+    }
+    return response.data.data;
+  },
+
+  async updateStatus(id: number, status: string): Promise<Solicitud> {
+    const response = await api.patch<ApiResponse<Solicitud>>(`/solicitudes/${id}/status`, { status });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al actualizar status');
+    }
+    return response.data.data;
+  },
+
+  async delete(id: number): Promise<void> {
+    const response = await api.delete<ApiResponse<null>>(`/solicitudes/${id}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al eliminar solicitud');
+    }
+  },
+
+  async getStats(params: Omit<SolicitudesParams, 'page' | 'limit' | 'sortBy' | 'sortOrder' | 'groupBy'> = {}): Promise<SolicitudStats> {
+    const response = await api.get<ApiResponse<SolicitudStats>>('/solicitudes/stats', { params });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener estadisticas');
+    }
+    return response.data.data;
+  },
+
+  async getCatorcenas(year?: number): Promise<CatorcenasResponse> {
+    const response = await api.get<CatorcenasResponse>('/solicitudes/catorcenas', {
+      params: year ? { year } : {}
+    });
+    return response.data;
+  },
+
+  async exportAll(params: Omit<SolicitudesParams, 'page' | 'limit'> = {}): Promise<Solicitud[]> {
+    const response = await api.get<ApiResponse<Solicitud[]>>('/solicitudes/export', { params });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al exportar solicitudes');
+    }
+    return response.data.data;
+  },
+
+  async getUsers(area?: string, filterByTeam: boolean = true): Promise<UserOption[]> {
+    const response = await api.get<ApiResponse<UserOption[]>>('/solicitudes/users', {
+      params: {
+        ...(area && { area }),
+        filterByTeam: filterByTeam.toString(),
+      },
+    });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener usuarios');
+    }
+    return response.data.data;
+  },
+
+  async getInventarioFilters(): Promise<InventarioFilters> {
+    const response = await api.get<ApiResponse<InventarioFilters>>('/solicitudes/inventario-filters');
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener filtros de inventario');
+    }
+    return response.data.data;
+  },
+
+  async getFormatosByCiudades(ciudades: string[]): Promise<string[]> {
+    if (ciudades.length === 0) return [];
+    const response = await api.get<ApiResponse<string[]>>('/solicitudes/formatos-by-ciudades', {
+      params: { ciudades: ciudades.join(',') },
+    });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener formatos');
+    }
+    return response.data.data;
+  },
+
+  async getInventarioOptions(estados?: string[], ciudades?: string[]): Promise<InventarioOptions> {
+    const params: Record<string, string> = {};
+    if (estados && estados.length > 0) params.estados = estados.join(',');
+    if (ciudades && ciudades.length > 0) params.ciudades = ciudades.join(',');
+    const response = await api.get<ApiResponse<InventarioOptions>>('/solicitudes/inventario-options', { params });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener opciones de inventario');
+    }
+    return response.data.data;
+  },
+
+  async getNextId(): Promise<number> {
+    const response = await api.get<ApiResponse<{ nextId: number }>>('/solicitudes/next-id');
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener próximo ID');
+    }
+    return response.data.data.nextId;
+  },
+
+  async create(data: CreateSolicitudInput): Promise<{ solicitud: Solicitud }> {
+    const response = await api.post<ApiResponse<{ solicitud: Solicitud }>>('/solicitudes', data);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al crear solicitud');
+    }
+    return response.data.data;
+  },
+
+  async update(id: number, data: CreateSolicitudInput): Promise<void> {
+    const response = await api.put<ApiResponse<void>>(`/solicitudes/${id}`, data);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al actualizar solicitud');
+    }
+  },
+
+  async getFullDetails(id: number): Promise<SolicitudFullDetails> {
+    const response = await api.get<ApiResponse<SolicitudFullDetails>>(`/solicitudes/${id}`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener detalles de solicitud');
+    }
+    return response.data.data;
+  },
+
+  async atender(id: number, asignados?: { id: number; nombre: string }[]): Promise<void> {
+    const response = await api.post<ApiResponse<void>>(`/solicitudes/${id}/atender`, { asignados });
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al atender solicitud');
+    }
+  },
+
+  async getComments(id: number): Promise<Comentario[]> {
+    const response = await api.get<ApiResponse<Comentario[]>>(`/solicitudes/${id}/comments`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener comentarios');
+    }
+    return response.data.data;
+  },
+
+  async addComment(id: number, comentario: string): Promise<Comentario> {
+    const response = await api.post<ApiResponse<Comentario>>(`/solicitudes/${id}/comments`, { comentario });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al agregar comentario');
+    }
+    return response.data.data;
+  },
+
+  async uploadArchivo(id: number, file: File): Promise<{ url: string }> {
+    const formData = new FormData();
+    formData.append('archivo', file);
+    const response = await api.post<ApiResponse<{ url: string }>>(`/solicitudes/${id}/archivo`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al subir archivo');
+    }
+    return response.data.data;
+  },
+
+  async uploadGenericFile(file: File): Promise<{ url: string; filename: string }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post<ApiResponse<{ url: string; filename: string; originalName: string; size: number; mimetype: string }>>(
+      '/uploads/arte',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      }
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al subir archivo');
+    }
+    return response.data.data;
+  },
+
+  async evaluarAutorizacion(data: {
+    ciudad?: string;
+    estado?: string;
+    formato: string;
+    tipo?: string;
+    caras: number;
+    bonificacion?: number;
+    costo: number;
+    tarifa_publica?: number;
+    articulo?: string | null;
+  }): Promise<{
+    estado: 'aprobado' | 'pendiente_dcm' | 'pendiente_dg';
+    autorizacion_dg: 'aprobado' | 'pendiente' | 'rechazado';
+    autorizacion_dcm: 'aprobado' | 'pendiente' | 'rechazado';
+    motivo?: string;
+    tarifa_efectiva?: number;
+    total_caras?: number;
+  }> {
+    const response = await api.post<ApiResponse<{
+      estado: 'aprobado' | 'pendiente_dcm' | 'pendiente_dg';
+      autorizacion_dg: 'aprobado' | 'pendiente' | 'rechazado';
+      autorizacion_dcm: 'aprobado' | 'pendiente' | 'rechazado';
+      motivo?: string;
+      tarifa_efectiva?: number;
+      total_caras?: number;
+    }>>('/solicitudes/evaluar-autorizacion', data);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al evaluar autorización');
+    }
+    return response.data.data;
+  },
+};
+
+// Types for full details
+export interface SolicitudCara {
+  id: number;
+  idquote: string;
+  ciudad: string;
+  estados: string;
+  tipo: string;
+  flujo: string;
+  bonificacion: number;
+  caras: number;
+  nivel_socioeconomico: string;
+  formato: string;
+  costo: number;
+  tarifa_publica: number;
+  inicio_periodo: string;
+  fin_periodo: string;
+  caras_flujo: number;
+  caras_contraflujo: number;
+  articulo: string;
+  descuento: number;
+  autorizacion_dg?: string;
+  autorizacion_dcm?: string;
+  grupo_rt_bf?: number | null;
+}
+
+export interface Comentario {
+  id: number;
+  autor_id: number;
+  autor_nombre: string;
+  autor_foto?: string | null;
+  comentario: string;
+  creado_en: string;
+  campania_id: number;
+  solicitud_id: number;
+}
+
+export interface Historial {
+  id: number;
+  tipo: string;
+  ref_id: number;
+  accion: string;
+  fecha_hora: string;
+  detalles: string;
+}
+
+export interface SolicitudFullDetails {
+  solicitud: Solicitud;
+  propuesta: {
+    id: number;
+    cliente_id: number;
+    fecha: string;
+    status: string;
+    descripcion: string;
+    notas: string;
+    solicitud_id: number;
+    asignado: string;
+    id_asignado: string;
+    inversion: number;
+    articulo: string;
+  } | null;
+  cotizacion: {
+    id: number;
+    nombre_campania: string;
+    numero_caras: number;
+    fecha_inicio: string;
+    fecha_fin: string;
+    frontal: number;
+    cruzada: number;
+    nivel_socioeconomico: string;
+    bonificacion: number;
+    precio: number;
+    articulo: string;
+  } | null;
+  campania: {
+    id: number;
+    nombre: string;
+    fecha_inicio: string;
+    fecha_fin: string;
+    total_caras: string;
+    bonificacion: number;
+    status: string;
+    articulo: string;
+  } | null;
+  caras: SolicitudCara[];
+  comentarios: Comentario[];
+  historial: Historial[];
+}

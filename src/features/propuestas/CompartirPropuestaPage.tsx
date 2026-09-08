@@ -1,0 +1,1933 @@
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { useState, useMemo, useRef, useCallback, memo } from 'react';
+import {
+  ArrowLeft, Share2, Download, FileText, Map as MapIcon, Copy, Check, Loader2,
+  ChevronDown, ChevronRight, Filter, ArrowUpDown, Layers, FileSpreadsheet, ExternalLink, X, Maximize2, Eye, EyeOff
+} from 'lucide-react';
+import { GoogleMap, useLoadScript, Marker, Circle, Autocomplete, InfoWindow } from '@react-google-maps/api';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { propuestasService, InventarioReservado, PropuestaFullDetails } from '../../services/propuestas.service';
+import { formatCurrency, formatDate } from '../../lib/utils';
+import { toNum, applyNumberFormats, FMT_COORD } from '../../utils/excelFormat';
+import { useThemeStore } from '../../store/themeStore';
+
+// Config UNICA de Google Maps (mismo id/key/libraries en toda la app) para
+// que el script se inyecte una sola vez. Ver src/config/googleMaps.ts.
+import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
+
+// Purple Brand Colors for Compartir
+const PURPLE_PRIMARY = '#8B5CF6';
+const PURPLE_DARK = '#6D28D9';
+const PURPLE_LIGHT = '#A78BFA';
+const PURPLE_ACCENT = '#C084FC';
+
+// Dark map styles with IMU colors
+const DARK_MAP_STYLES = [
+  { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
+  { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#1a1a2e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#60a5fa' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2d2d44' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0f0f1a' }] },
+];
+
+interface POIMarker {
+  id: string;
+  position: { lat: number; lng: number };
+  name: string;
+  range: number;
+}
+
+// Helper functions
+const MESES_LABEL = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
+function formatInicioPeriodo(item: InventarioReservado, tipoPeriodo?: string): string {
+  // El periodo (catorcena vs mes) lo manda el tipoPeriodo de la propuesta.
+  // Los circuitos digitales son catorcenales (reservas de 13 días, una catorcena
+  // c/u) y deben mostrar su catorcena — NO forzar a mes. (Ticket #414: tráfico
+  // veía las caras digitales como mensuales cuando son catorcenales.)
+  if (tipoPeriodo === 'mensual' && item.inicio_periodo) {
+    const parts = item.inicio_periodo.split(/[-T]/);
+    if (parts.length >= 2) {
+      const month = parseInt(parts[1]) - 1;
+      if (month >= 0 && month < 12) return `${MESES_LABEL[month]} ${parts[0]}`;
+    }
+  }
+  if (item.numero_catorcena && item.anio_catorcena) {
+    return `Cat ${item.numero_catorcena} / ${item.anio_catorcena}`;
+  }
+  return 'Sin asignar';
+}
+
+// Clave estable de catorcena de una fila (mensual usa "YYYY-MM"; catorcenal usa
+// "YYYY-NN"). Debe coincidir EXACTO con catKeyOf() de ClientePropuestaMapPage para que
+// el alcance compartido por URL (?periodos / ?sel) reconstruya el mismo subconjunto.
+function catKeyOf(item: InventarioReservado, tipoPeriodo?: string): string {
+  if (tipoPeriodo === 'mensual' && item.inicio_periodo) return item.inicio_periodo.substring(0, 7);
+  if (item.numero_catorcena && item.anio_catorcena) return `${item.anio_catorcena}-${item.numero_catorcena}`;
+  return 'sin';
+}
+
+// Tarifa BRUTA por cara (costo/caras). El campo tarifa_publica viene diluido por
+// las bonificadas (= costo/(renta+bonif)); multiplicarlo x caras_renta cuenta doble
+// la bonificacion y da inversion de MENOS. La inversion correcta = tarifa_bruta_sc x
+// caras_totales (= costo bruto, lo que paga el cliente). Las bonificadas ya van diluidas.
+function tarifaBruta(item: InventarioReservado): number {
+  return Number((item as any).tarifa_bruta_sc) || Number(item.tarifa_publica) || 0;
+}
+function inversionBruta(item: InventarioReservado): number {
+  return tarifaBruta(item) * (Number(item.caras_totales) || 0);
+}
+
+// Filter types (from CampanaDetailPage)
+type FilterOperator = '=' | '!=' | 'contains' | 'not_contains' | '>' | '<' | '>=' | '<=';
+
+interface FilterCondition {
+  id: string;
+  field: string;
+  operator: FilterOperator;
+  value: string;
+}
+
+interface FilterFieldConfig {
+  field: string;
+  label: string;
+  type: 'string' | 'number';
+}
+
+const FILTER_FIELDS: FilterFieldConfig[] = [
+  { field: 'codigo_unico', label: 'Codigo', type: 'string' },
+  { field: 'plaza', label: 'Plaza', type: 'string' },
+  { field: 'tipo_de_cara', label: 'Tipo', type: 'string' },
+  { field: 'formato', label: 'Formato', type: 'string' },
+  { field: 'articulo', label: 'Articulo', type: 'string' },
+  { field: 'numero_catorcena', label: 'Catorcena', type: 'number' },
+  { field: 'caras_totales', label: 'Caras', type: 'number' },
+  { field: 'tarifa_publica', label: 'Tarifa', type: 'number' },
+];
+
+const FILTER_OPERATORS: { value: FilterOperator; label: string; forTypes: ('string' | 'number')[] }[] = [
+  { value: '=', label: 'Igual a', forTypes: ['string', 'number'] },
+  { value: '!=', label: 'Diferente de', forTypes: ['string', 'number'] },
+  { value: 'contains', label: 'Contiene', forTypes: ['string'] },
+  { value: 'not_contains', label: 'No contiene', forTypes: ['string'] },
+  { value: '>', label: 'Mayor que', forTypes: ['number'] },
+  { value: '<', label: 'Menor que', forTypes: ['number'] },
+  { value: '>=', label: 'Mayor o igual', forTypes: ['number'] },
+  { value: '<=', label: 'Menor o igual', forTypes: ['number'] },
+];
+
+// Resumen types
+interface ResumenArticuloGroup {
+  articulo: string;
+  items: InventarioReservado[];
+  totalCaras: number;
+  totalBonificadas: number;
+  totalInversion: number;
+  formatos: string[];
+  tipos: string[];
+  plazas: string[];
+}
+
+interface ResumenCatorcenaGroup {
+  catorcena: string;
+  articulos: ResumenArticuloGroup[];
+  totalCaras: number;
+  totalBonificadas: number;
+  totalInversion: number;
+  fechaInicio: string | null;
+  fechaFin: string | null;
+}
+
+const MESES_CORTOS_COM = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+function formatDayMonthCom(dateStr: string | null | undefined): string {
+  if (!dateStr) return '';
+  const parts = String(dateStr).split(/[-T]/);
+  if (parts.length < 3) return '';
+  const day = parseInt(parts[2]).toString();
+  const month = parseInt(parts[1]) - 1;
+  return month >= 0 && month < 12 ? `${day} ${MESES_CORTOS_COM[month]}` : '';
+}
+
+function applyFilters<T>(data: T[], filters: FilterCondition[]): T[] {
+  if (filters.length === 0) return data;
+  return data.filter(item => {
+    return filters.every(filter => {
+      const fieldValue = (item as Record<string, unknown>)[filter.field];
+      const filterValue = filter.value;
+      if (fieldValue === null || fieldValue === undefined) {
+        return filter.operator === '!=' || filter.operator === 'not_contains';
+      }
+      const strValue = String(fieldValue).toLowerCase();
+      const strFilterValue = filterValue.toLowerCase();
+      switch (filter.operator) {
+        case '=': return strValue === strFilterValue;
+        case '!=': return strValue !== strFilterValue;
+        case 'contains': return strValue.includes(strFilterValue);
+        case 'not_contains': return !strValue.includes(strFilterValue);
+        case '>': return Number(fieldValue) > Number(filterValue);
+        case '<': return Number(fieldValue) < Number(filterValue);
+        case '>=': return Number(fieldValue) >= Number(filterValue);
+        case '<=': return Number(fieldValue) <= Number(filterValue);
+        default: return true;
+      }
+    });
+  });
+}
+
+// Marker memoizado: solo se re-renderiza si cambia SU item/selección. Sin esto,
+// cada toggle de checkbox recreaba las ~5010 instancias de google.maps.Marker en el
+// hilo principal (freeze/crash en propuestas grandes). Con memo + onSelect estable,
+// togglear un item solo actualiza los markers cuyo isSelected cambió.
+const MapMarker = memo(function MapMarker({ item, isSelected, onSelect }: {
+  item: InventarioReservado;
+  isSelected: boolean;
+  onSelect: (item: InventarioReservado) => void;
+}) {
+  if (!item.latitud || !item.longitud) return null;
+  return (
+    <Marker
+      position={{ lat: item.latitud, lng: item.longitud }}
+      onClick={() => onSelect(item)}
+      icon={{
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: isSelected ? 10 : 7,
+        fillColor: isSelected
+          ? '#22c55e' // Verde si está seleccionado
+          : String(item.tipo_de_cara).startsWith('Flujo') ? '#ef4444' : String(item.tipo_de_cara).startsWith('Contraflujo') ? '#3b82f6' : '#a855f7',
+        fillOpacity: isSelected ? 1 : 0.9,
+        strokeColor: '#fff',
+        strokeWeight: isSelected ? 3 : 1.5,
+      }}
+    />
+  );
+});
+
+// Fila de detalle memoizada: togglear un checkbox solo re-renderiza la fila afectada,
+// no las miles de filas de los grupos expandidos.
+const DetailRow = memo(function DetailRow({ item, isSelected, isDark, onToggle }: {
+  item: InventarioReservado;
+  isSelected: boolean;
+  isDark: boolean;
+  onToggle: (key: string) => void;
+}) {
+  const inv = inversionBruta(item);
+  const key = item.rsv_ids;
+  return (
+    <tr onClick={() => onToggle(key)} className={`cursor-pointer transition-colors ${isSelected ? 'bg-purple-500/10' : 'hover:bg-purple-500/5'}`}>
+      <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+        <input type="checkbox" checked={isSelected} onChange={() => onToggle(key)} className="checkbox-purple" />
+      </td>
+      <td className={`px-3 py-2 font-mono text-xs ${isDark ? 'text-blue-300' : 'text-blue-600'}`}>{item.codigo_unico}</td>
+      <td className={`px-3 py-2 text-xs ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{item.plaza || '-'}</td>
+      <td className={`px-3 py-2 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
+        {item.mueble || '-'}
+        {item.tipo_de_mueble && item.tipo_de_mueble?.toUpperCase() !== item.mueble?.toUpperCase() && (
+          <span className={`block text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>{item.tipo_de_mueble}</span>
+        )}
+      </td>
+      <td className={`px-3 py-2 text-center font-semibold text-xs ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.caras_totales}</td>
+      <td className={`px-3 py-2 text-right text-xs font-mono ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>{item.latitud?.toFixed(6) || '-'}</td>
+      <td className={`px-3 py-2 text-right text-xs font-mono ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>{item.longitud?.toFixed(6) || '-'}</td>
+      <td className={`px-3 py-2 text-right text-xs ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>{formatCurrency(tarifaBruta(item))}</td>
+      <td className={`px-3 py-2 text-right font-medium text-xs ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>{formatCurrency(inv)}</td>
+    </tr>
+  );
+});
+
+export function CompartirPropuestaPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const propuestaId = id ? parseInt(id, 10) : 0;
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
+
+  // States
+  const [copied, setCopied] = useState(false);
+  const [expandedResumen, setExpandedResumen] = useState<Set<string>>(new Set());
+  const [filterText, setFilterText] = useState('');
+  const [filterPeriodo, setFilterPeriodo] = useState('');
+  const [sortField, setSortField] = useState<string>('');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [selectedCatorcenas, setSelectedCatorcenas] = useState<Set<string>>(new Set());
+
+  // rsv_ids es único por fila (id de inventario se repite entre catorcenas), úsalo como llave de selección
+  const itemKey = (i: InventarioReservado): string => i.rsv_ids;
+
+  // Filter states
+  const [filters, setFilters] = useState<FilterCondition[]>([]);
+  const [showFilters, setShowFilters] = useState(false);
+
+  // POI states
+  const [poiMarkers, setPoiMarkers] = useState<POIMarker[]>([]);
+  const [searchRange, setSearchRange] = useState(300);
+  const [poiSearch, setPoiSearch] = useState('');
+  const [selectedMarker, setSelectedMarker] = useState<InventarioReservado | null>(null);
+  // El mapa embebido pinta un marker por inventario (miles en propuestas grandes) y es
+  // lo más pesado de la página. Colapsado por default: así los checkboxes van fluidos y
+  // el mapa solo se monta cuando el usuario lo pide. ("Ver Mapa"/"Expandir Mapa" siguen
+  // abriendo el visor completo aparte.)
+  const [showMap, setShowMap] = useState(false);
+
+  // Google Maps
+  const { isLoaded } = useLoadScript(GOOGLE_MAPS_LOADER_OPTIONS);
+
+  // Queries
+  const { data: details, isLoading: loadingDetails } = useQuery({
+    queryKey: ['propuesta-full', propuestaId],
+    queryFn: () => propuestasService.getFullDetails(propuestaId),
+    enabled: propuestaId > 0,
+  });
+
+  const { data: inventario, isLoading: loadingInventario } = useQuery({
+    queryKey: ['propuesta-inventario', propuestaId],
+    queryFn: () => propuestasService.getInventarioReservado(propuestaId),
+    enabled: propuestaId > 0,
+  });
+
+  const tipoPeriodo = (details?.cotizacion as any)?.tipo_periodo || 'catorcena';
+
+  // Leyenda de contexto: la misma vista sirve para compartir desde PROPUESTAS
+  // ("Circuitos Muestra") y desde CAMPAÑAS ("Circuitos Confirmados"). La decide
+  // el punto de entrada vía ?ctx=campana (lo agrega CampanasPage al navegar), NO
+  // los datos: una propuesta con campaña compartida desde Propuestas sigue siendo
+  // muestra. Aplica en UI, PDF (pie de TODAS las páginas, no removible), Excel
+  // (todas las hojas) y se propaga a los enlaces públicos del cliente.
+  const esCampana = searchParams.get('ctx') === 'campana';
+  const leyendaCircuitos = esCampana ? 'Circuitos Confirmados' : 'Circuitos Muestra';
+
+  // Master catorcena-filtered inventario (affects everything: KPIs, charts, map, resumen)
+  const catorcenaFilteredInventario = useMemo(() => {
+    if (!inventario) return [];
+    if (selectedCatorcenas.size === 0) return inventario as InventarioReservado[];
+    return (inventario as InventarioReservado[]).filter(i => selectedCatorcenas.has(catKeyOf(i, tipoPeriodo)));
+  }, [inventario, selectedCatorcenas, tipoPeriodo]);
+
+  // Computed data
+  const kpis = useMemo(() => {
+    if (!catorcenaFilteredInventario.length) return { total: 0, renta: 0, bonificadas: 0, inversion: 0 };
+
+    // Calculate from actual reserved/sold inventory (real data)
+    const renta = catorcenaFilteredInventario.reduce((sum, i) => sum + Number(i.caras_renta || 0), 0);
+    const bonificadas = catorcenaFilteredInventario.reduce((sum, i) => sum + Number(i.caras_bonificadas || 0), 0);
+    const total = renta + bonificadas;
+
+    // Inversion BRUTA = tarifa_bruta_sc (costo/caras) x caras_totales = costo.
+    // Las bonificadas ya van diluidas en la tarifa; NO se multiplica por caras_renta
+    // (eso contaba doble la bonificacion y daba inversion de menos, el bug del $299).
+    const inversion = catorcenaFilteredInventario.reduce((sum, i) => sum + inversionBruta(i), 0);
+
+    return { total, renta, bonificadas, inversion };
+  }, [catorcenaFilteredInventario]);
+
+  // Charts data (respond to catorcena filter)
+  const chartCiudades = useMemo(() => {
+    if (!catorcenaFilteredInventario.length) return [];
+    const counts: Record<string, number> = {};
+    catorcenaFilteredInventario.forEach(i => {
+      const ciudad = i.plaza || 'Sin ciudad';
+      counts[ciudad] = (counts[ciudad] || 0) + (Number(i.caras_totales) || 0);
+    });
+    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 10);
+  }, [catorcenaFilteredInventario]);
+
+  const chartFormatos = useMemo(() => {
+    if (!catorcenaFilteredInventario.length) return [];
+    const counts: Record<string, number> = {};
+    catorcenaFilteredInventario.forEach(i => {
+      const formato = i.mueble || 'Otros';
+      counts[formato] = (counts[formato] || 0) + (Number(i.caras_totales) || 0);
+    });
+    return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  }, [catorcenaFilteredInventario]);
+
+  // Markers visibles en el mapa (con coords y respetando la selección). Memoizado para
+  // no reconstruir el arreglo salvo que cambie el inventario filtrado o la selección.
+  const visibleMarkers = useMemo(() => {
+    return catorcenaFilteredInventario.filter(i =>
+      i.latitud && i.longitud && (selectedItems.size === 0 || selectedItems.has(i.rsv_ids))
+    );
+  }, [catorcenaFilteredInventario, selectedItems]);
+
+  // En el mapa EMBEBIDO: si hay demasiados pines (>2000) y no hay selección, no pintarlos
+  // todos (traba el navegador). Se piden que seleccione circuitos primero. NO aplica a
+  // "Expandir Mapa" (visor aparte), que sí muestra todo sin selección.
+  const MAX_PINES_INLINE = 2000;
+  const demasiadosPines = selectedItems.size === 0 && visibleMarkers.length > MAX_PINES_INLINE;
+
+  // Map center (responds to catorcena filter)
+  const mapCenter = useMemo(() => {
+    if (!catorcenaFilteredInventario.length) return { lat: 20.6597, lng: -103.3496 };
+    const validItems = catorcenaFilteredInventario.filter(i => i.latitud && i.longitud);
+    if (validItems.length === 0) return { lat: 20.6597, lng: -103.3496 };
+    const avgLat = validItems.reduce((sum, i) => sum + i.latitud, 0) / validItems.length;
+    const avgLng = validItems.reduce((sum, i) => sum + i.longitud, 0) / validItems.length;
+    return { lat: avgLat, lng: avgLng };
+  }, [catorcenaFilteredInventario]);
+
+  // Filtered inventario (used by resumen)
+  // Available periods for dropdown
+  const periodoOptions = useMemo(() => {
+    const set = new Map<string, string>();
+
+    if (tipoPeriodo === 'mensual') {
+      // For monthly: derive unique months from inventory inicio_periodo
+      if (inventario) {
+        (inventario as InventarioReservado[]).forEach(i => {
+          if (i.inicio_periodo) {
+            const key = i.inicio_periodo.substring(0, 7); // "YYYY-MM"
+            if (!set.has(key)) {
+              const parts = i.inicio_periodo.split('-');
+              const label = parts.length >= 2 ? `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}` : key;
+              set.set(key, label);
+            }
+          }
+        });
+      }
+    } else {
+      // Catorcena mode: generate full range from propuesta
+      const catInicio = details?.propuesta?.catorcena_inicio;
+      const anioInicio = details?.propuesta?.anio_inicio;
+      const catFin = details?.propuesta?.catorcena_fin;
+      const anioFin = details?.propuesta?.anio_fin;
+
+      if (catInicio && anioInicio && catFin && anioFin) {
+        let year = anioInicio;
+        let cat = catInicio;
+        while (year < anioFin || (year === anioFin && cat <= catFin)) {
+          const key = `${year}-${cat}`;
+          set.set(key, `Cat ${cat} / ${year}`);
+          cat++;
+          if (cat > 26) { cat = 1; year++; }
+        }
+      }
+      if (inventario) {
+        (inventario as InventarioReservado[]).forEach(i => {
+          if (i.numero_catorcena && i.anio_catorcena) {
+            const key = `${i.anio_catorcena}-${i.numero_catorcena}`;
+            if (!set.has(key)) set.set(key, `Cat ${i.numero_catorcena} / ${i.anio_catorcena}`);
+          }
+        });
+      }
+    }
+
+    return Array.from(set.entries()).map(([value, label]) => ({ value, label })).sort((a, b) => a.value.localeCompare(b.value));
+  }, [inventario, details, tipoPeriodo]);
+
+  const filteredInventario = useMemo(() => {
+    let filtered = catorcenaFilteredInventario;
+    if (filterPeriodo) {
+      if (tipoPeriodo === 'mensual') {
+        filtered = filtered.filter(i => i.inicio_periodo?.substring(0, 7) === filterPeriodo);
+      } else {
+        const [year, num] = filterPeriodo.split('-').map(Number);
+        filtered = filtered.filter(i => i.numero_catorcena === num && i.anio_catorcena === year);
+      }
+    }
+    if (filters.length > 0) {
+      filtered = applyFilters(filtered, filters);
+    }
+    if (filterText) {
+      const search = filterText.toLowerCase();
+      filtered = filtered.filter(i =>
+        i.codigo_unico?.toLowerCase().includes(search) ||
+        i.plaza?.toLowerCase().includes(search) ||
+        i.ubicacion?.toLowerCase().includes(search) ||
+        i.mueble?.toLowerCase().includes(search) ||
+        i.formato?.toLowerCase().includes(search) ||
+        i.articulo?.toLowerCase().includes(search)
+      );
+    }
+    if (sortField) {
+      filtered = [...filtered].sort((a, b) => {
+        const aVal = String(a[sortField as keyof InventarioReservado] || '');
+        const bVal = String(b[sortField as keyof InventarioReservado] || '');
+        return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+      });
+    }
+    return filtered;
+  }, [catorcenaFilteredInventario, filters, filterText, filterPeriodo, sortField, sortOrder]);
+
+  // Resumen de Caras (grouped by catorcena > articulo from filtered data)
+  const resumenCaras = useMemo((): ResumenCatorcenaGroup[] => {
+    if (filteredInventario.length === 0) return [];
+
+    const catorcenaMap = new Map<string, Map<string, InventarioReservado[]>>();
+
+    filteredInventario.forEach(item => {
+      const catKey = formatInicioPeriodo(item, tipoPeriodo);
+      const artKey = item.articulo || 'Sin articulo';
+      if (!catorcenaMap.has(catKey)) catorcenaMap.set(catKey, new Map());
+      const artMap = catorcenaMap.get(catKey)!;
+      if (!artMap.has(artKey)) artMap.set(artKey, []);
+      artMap.get(artKey)!.push(item);
+    });
+
+    return Array.from(catorcenaMap.entries()).map(([catorcena, artMap]) => {
+      const articulos: ResumenArticuloGroup[] = Array.from(artMap.entries()).map(([articulo, items]) => ({
+        articulo,
+        items,
+        totalCaras: items.reduce((sum, i) => sum + (Number(i.caras_renta) || 0), 0),
+        totalBonificadas: items.reduce((sum, i) => sum + (Number(i.caras_bonificadas) || 0), 0),
+        totalInversion: items.reduce((sum, i) => sum + inversionBruta(i), 0),
+        formatos: [...new Set(items.map(i => i.mueble || 'N/A'))],
+        tipos: [...new Set(items.map(i => i.tradicional_digital || 'N/A'))],
+        plazas: [...new Set(items.map(i => i.plaza || 'N/A'))],
+      }));
+      const allItems = articulos.flatMap(a => a.items);
+      const fechas = allItems.map(i => i.inicio_periodo).filter(Boolean).sort() as string[];
+      const fechasFin = allItems.map(i => i.fin_periodo).filter(Boolean).sort() as string[];
+      return {
+        catorcena,
+        articulos,
+        totalCaras: articulos.reduce((sum, a) => sum + a.totalCaras, 0),
+        totalBonificadas: articulos.reduce((sum, a) => sum + (a.totalBonificadas || 0), 0),
+        totalInversion: articulos.reduce((sum, a) => sum + a.totalInversion, 0),
+        fechaInicio: fechas.length ? fechas[0] : null,
+        fechaFin: fechasFin.length ? fechasFin[fechasFin.length - 1] : null,
+      };
+    });
+  }, [filteredInventario, tipoPeriodo]);
+
+  // Period display — usa fechas GLOBALES de cotización (no caras)
+  const periodoInicio = useMemo(() => {
+    if (tipoPeriodo === 'mensual') {
+      const dateStr = details?.cotizacion?.fecha_inicio;
+      if (dateStr) {
+        const parts = String(dateStr).split(/[-T]/);
+        if (parts.length >= 2) return `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}`;
+      }
+      return 'N/A';
+    }
+    if (details?.propuesta?.catorcena_inicio && details?.propuesta?.anio_inicio) {
+      return `Cat ${details.propuesta.catorcena_inicio} / ${details.propuesta.anio_inicio}`;
+    }
+    if (!inventario) return 'N/A';
+    const catorcenas = inventario
+      .filter(i => i.numero_catorcena && i.anio_catorcena)
+      .map(i => ({ num: i.numero_catorcena!, year: i.anio_catorcena! }));
+    if (catorcenas.length > 0) {
+      const sorted = catorcenas.sort((a, b) => a.year !== b.year ? a.year - b.year : a.num - b.num);
+      return `Cat ${sorted[0].num} / ${sorted[0].year}`;
+    }
+    return 'N/A';
+  }, [details, inventario, tipoPeriodo]);
+
+  const periodoFin = useMemo(() => {
+    if (tipoPeriodo === 'mensual') {
+      const dateStr = details?.cotizacion?.fecha_fin;
+      if (dateStr) {
+        const parts = String(dateStr).split(/[-T]/);
+        if (parts.length >= 2) return `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}`;
+      }
+      return 'N/A';
+    }
+    if (details?.propuesta?.catorcena_fin && details?.propuesta?.anio_fin) {
+      return `Cat ${details.propuesta.catorcena_fin} / ${details.propuesta.anio_fin}`;
+    }
+    if (!inventario) return 'N/A';
+    const catorcenas = inventario
+      .filter(i => i.numero_catorcena && i.anio_catorcena)
+      .map(i => ({ num: i.numero_catorcena!, year: i.anio_catorcena! }));
+    if (catorcenas.length > 0) {
+      const sorted = catorcenas.sort((a, b) => a.year !== b.year ? a.year - b.year : a.num - b.num);
+      const last = sorted[sorted.length - 1];
+      return `Cat ${last.num} / ${last.year}`;
+    }
+    return 'N/A';
+  }, [details, inventario, tipoPeriodo]);
+
+  // Handlers
+  const handleCopyLink = () => {
+    const params = new URLSearchParams();
+    if (esCampana) {
+      params.set('ctx', 'campana');
+    }
+    if (selectedCatorcenas.size > 0) {
+      params.set('catorcenas', Array.from(selectedCatorcenas).join(','));
+    }
+    if (filters.length > 0) {
+      params.set('filters', JSON.stringify(filters.map(f => ({ field: f.field, operator: f.operator, value: f.value }))));
+    }
+    if (filterText) {
+      params.set('q', filterText);
+    }
+    if (filterPeriodo) {
+      params.set('periodo', filterPeriodo);
+    }
+    const qs = params.toString();
+    const publicUrl = `${window.location.origin}/cliente/propuesta/${propuestaId}${qs ? `?${qs}` : ''}`;
+    navigator.clipboard.writeText(publicUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadXLSX = () => {
+    if (!inventario) return;
+    // Si hay filas seleccionadas en los checkboxes, exportar SOLO esas. Si no hay
+    // selección, exportar todo el inventario.
+    const source = selectedItems.size > 0
+      ? inventario.filter(i => selectedItems.has(itemKey(i)))
+      : inventario;
+    if (source.length === 0) return;
+    import('xlsx').then(XLSX => {
+      // codigo_unico (completo) va ANTES de Clave (que es solo el prefijo).
+      const headers = ['codigo_unico', 'Clave', 'Plaza', 'Ubicación', 'Tipo de Cara', 'Formato', 'Tipo Inventario', 'Periodo', 'Lat', 'Long', 'NOTAS'];
+      const byPlaza: Record<string, typeof inventario> = {};
+      for (const i of source) {
+        const plaza = i.plaza || 'Sin Plaza';
+        if (!byPlaza[plaza]) byPlaza[plaza] = [];
+        byPlaza[plaza].push(i);
+      }
+      const wb = XLSX.utils.book_new();
+      for (const plaza of Object.keys(byPlaza).sort()) {
+        const rows = byPlaza[plaza].map(i => [
+          i.codigo_unico || '',
+          (i.codigo_unico || '').split('_')[0],
+          i.plaza || '',
+          i.ubicacion || '',
+          i.tipo_de_cara || '',
+          i.mueble || '',
+          i.tradicional_digital || '',
+          formatInicioPeriodo(i, tipoPeriodo),
+          toNum(i.latitud),
+          toNum(i.longitud),
+          ''
+        ]);
+        // Fila 1: leyenda de contexto en TODAS las hojas (para que no se pierda si
+        // borran alguna pestaña). Headers pasan a la fila 2 (headerRows = 2 abajo).
+        const ws = XLSX.utils.aoa_to_sheet([[leyendaCircuitos], headers, ...rows]);
+        // Lat (col 8) y Long (col 9) como celdas tipo número
+        applyNumberFormats(XLSX, ws, rows.length, { 8: FMT_COORD, 9: FMT_COORD }, 2);
+        const sheetName = plaza.substring(0, 31);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      }
+      const sufijo = selectedItems.size > 0 ? '_seleccion' : '';
+      XLSX.writeFile(wb, `reservas_propuesta_${propuestaId}${sufijo}.xlsx`);
+    });
+  };
+
+  // Download ALL items as KML
+  const handleDownloadKMLAll = () => {
+    if (!inventario) return;
+
+    const placemarks = inventario
+      .filter(i => i.latitud && i.longitud)
+      .map(i => `
+        <Placemark>
+          <name>${i.codigo_unico}</name>
+          <description>
+            <![CDATA[
+              Plaza: ${i.plaza || 'N/A'}<br/>
+              Tipo: ${i.tipo_de_cara || 'N/A'}<br/>
+              Formato: ${i.mueble || 'N/A'}<br/>
+              Caras: ${i.caras_totales}
+            ]]>
+          </description>
+          <Point>
+            <coordinates>${i.longitud},${i.latitud},0</coordinates>
+          </Point>
+        </Placemark>
+      `).join('');
+
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Reservas Propuesta ${propuestaId} - Todos</name>
+    ${placemarks}
+  </Document>
+</kml>`;
+
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reservas_propuesta_${propuestaId}_todos.kml`;
+    a.click();
+  };
+
+  // Download only SELECTED items as KML
+  const handleDownloadKMLSelected = () => {
+    if (!inventario || selectedItems.size === 0) return;
+
+    const itemsToExport = inventario.filter(i => selectedItems.has(itemKey(i)));
+
+    const placemarks = itemsToExport
+      .filter(i => i.latitud && i.longitud)
+      .map(i => `
+        <Placemark>
+          <name>${i.codigo_unico}</name>
+          <description>
+            <![CDATA[
+              Plaza: ${i.plaza || 'N/A'}<br/>
+              Tipo: ${i.tipo_de_cara || 'N/A'}<br/>
+              Formato: ${i.mueble || 'N/A'}<br/>
+              Caras: ${i.caras_totales}
+            ]]>
+          </description>
+          <Point>
+            <coordinates>${i.longitud},${i.latitud},0</coordinates>
+          </Point>
+        </Placemark>
+      `).join('');
+
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Reservas Propuesta ${propuestaId} - ${selectedItems.size} seleccionados</name>
+    ${placemarks}
+  </Document>
+</kml>`;
+
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reservas_propuesta_${propuestaId}_seleccionados.kml`;
+    a.click();
+  };
+
+  // Abrir el visor de mapa publico de QEB (pantalla completa, branding IMU) reflejando
+  // EXACTAMENTE lo que se seleccionó para compartir. Construye el mapa "a la medida":
+  //   - Seleccion de filas (checkboxes): ?sel=id@catorcena por cada reserva. La clave
+  //     compuesta evita arrastrar otras catorcenas del mismo inventario (un id se repite
+  //     entre catorcenas) — el bug que hacía que el mapa no respondiera a la seleccion.
+  //   - Solo chips de catorcena: ?periodos=YYYY-NN,... (compacto, no enumera cada pin).
+  //   - Sin nada seleccionado: sin params -> mapa completo.
+  const handleExpandMap = () => {
+    const base = catorcenaFilteredInventario; // respeta los chips de catorcena
+    const params = new URLSearchParams();
+    if (esCampana) {
+      params.set('ctx', 'campana');
+    }
+
+    if (selectedItems.size > 0) {
+      const chosen = base.filter(i => selectedItems.has(itemKey(i)) && i.latitud && i.longitud);
+      const sel = Array.from(new Set(chosen.map(i => `${i.id}@${catKeyOf(i, tipoPeriodo)}`)));
+      if (sel.length > 0) params.set('sel', sel.join(','));
+    } else if (selectedCatorcenas.size > 0) {
+      params.set('periodos', Array.from(selectedCatorcenas).join(','));
+    }
+
+    const qs = params.toString();
+    window.open(`/cliente/propuesta/${propuestaId}/mapa${qs ? `?${qs}` : ''}`, '_blank', 'noopener,noreferrer');
+  };
+
+  // Download KML for a specific group
+  const handleDownloadGroupKML = (groupName: string, items: InventarioReservado[]) => {
+    const placemarks = items
+      .filter(i => i.latitud && i.longitud)
+      .map(i => `
+        <Placemark>
+          <name>${i.codigo_unico}</name>
+          <description>
+            <![CDATA[
+              Plaza: ${i.plaza || 'N/A'}<br/>
+              Tipo: ${i.tipo_de_cara || 'N/A'}<br/>
+              Formato: ${i.mueble || 'N/A'}<br/>
+              Caras: ${i.caras_totales}<br/>
+              Periodo: ${tipoPeriodo === 'mensual' && i.inicio_periodo ? (() => { const parts = i.inicio_periodo.split('-'); return parts.length >= 2 ? `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}` : 'N/A'; })() : i.numero_catorcena ? `Cat ${i.numero_catorcena} / ${i.anio_catorcena}` : 'N/A'}
+            ]]>
+          </description>
+          <Point>
+            <coordinates>${i.longitud},${i.latitud},0</coordinates>
+          </Point>
+        </Placemark>
+      `).join('');
+
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>${groupName} - ${items.length} inventarios</name>
+    ${placemarks}
+  </Document>
+</kml>`;
+
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = groupName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    a.download = `grupo_${safeName}_propuesta_${propuestaId}.kml`;
+    a.click();
+  };
+
+  // Center map on group items
+  const handleShowGroupOnMap = (items: InventarioReservado[]) => {
+    const validItems = items.filter(i => i.latitud && i.longitud);
+    if (validItems.length === 0) return;
+
+    // Seleccionar y asegurar que el mapa esté visible (si estaba oculto se monta ahora).
+    setSelectedItems(new Set(items.map(itemKey)));
+    setShowMap(true);
+
+    // Si el mapa ya está montado, encuadrar al grupo. Si se acaba de revelar, su onLoad
+    // hará el fitBounds inicial.
+    if (!mapRef.current) return;
+    const bounds = new google.maps.LatLngBounds();
+    validItems.forEach(item => {
+      bounds.extend({ lat: item.latitud, lng: item.longitud });
+    });
+    mapRef.current.fitBounds(bounds, 50);
+  };
+
+  // Toggle item selection — useCallback estable (usa updater funcional, sin deps) para
+  // que MapMarker/DetailRow memoizados no se invaliden en cada render.
+  const toggleItemSelection = useCallback((key: string) => {
+    setSelectedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // Click en marker del mapa: selecciona y abre InfoWindow. Referencia estable.
+  const handleMarkerClick = useCallback((item: InventarioReservado) => {
+    setSelectedMarker(item);
+    toggleItemSelection(item.rsv_ids);
+  }, [toggleItemSelection]);
+
+  // Toggle select all in a group
+  const toggleGroupSelection = (items: InventarioReservado[]) => {
+    const groupKeys = items.map(itemKey);
+    const allSelected = groupKeys.every(key => selectedItems.has(key));
+    setSelectedItems(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        groupKeys.forEach(key => next.delete(key));
+      } else {
+        groupKeys.forEach(key => next.add(key));
+      }
+      return next;
+    });
+  };
+
+  // Select all
+  const toggleSelectAll = () => {
+    if (!inventario) return;
+    if (selectedItems.size === inventario.length) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(inventario.map(itemKey)));
+    }
+  };
+
+  const handleGeneratePDF = async () => {
+    // Dynamic import of jspdf
+    const { jsPDF } = await import('jspdf');
+    const autoTable = (await import('jspdf-autotable')).default;
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+    const marginX = 15;
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    let y = 15;
+
+    // IMU Brand Colors
+    const IMU_BLUE: [number, number, number] = [0, 84, 166]; // #0054A6
+    const IMU_GREEN: [number, number, number] = [122, 184, 0]; // #7AB800
+    const IMU_DARK: [number, number, number] = [0, 61, 122]; // Darker blue
+    const WHITE: [number, number, number] = [255, 255, 255];
+
+    // Píldora resaltada para la leyenda de contexto: ámbar = Circuitos Muestra,
+    // verde IMU = Circuitos Confirmados. Se pinta en el header (pág. 1) y en el
+    // pie de TODAS las páginas.
+    const LEY_BG: [number, number, number] = esCampana ? IMU_GREEN : [255, 193, 7];
+    const LEY_TX: [number, number, number] = esCampana ? WHITE : [102, 60, 0];
+    const drawLeyendaPill = (centerX: number, topY: number) => {
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      const h = 5.6;
+      const w = doc.getTextWidth(leyendaCircuitos) + 8;
+      doc.setFillColor(...LEY_BG);
+      doc.roundedRect(centerX - w / 2, topY, w, h, h / 2, h / 2, 'F');
+      doc.setTextColor(...LEY_TX);
+      doc.text(leyendaCircuitos, centerX, topY + h / 2 + 1.2, { align: 'center' });
+      return w;
+    };
+
+    // Header - Clean white background with colored accents
+    doc.setFillColor(...WHITE);
+    doc.rect(0, 0, pageWidth, 30, 'F');
+
+    // Top accent bar - green
+    doc.setFillColor(...IMU_GREEN);
+    doc.rect(0, 0, pageWidth, 3, 'F');
+
+    // Bottom accent bar - blue
+    doc.setFillColor(...IMU_BLUE);
+    doc.rect(0, 27, pageWidth, 3, 'F');
+
+    // IMU Logo - Load and add image with correct proportions
+    try {
+      const logoImg = new Image();
+      logoImg.src = '/logo-grupo-imu.png';
+      await new Promise((resolve, reject) => {
+        logoImg.onload = resolve;
+        logoImg.onerror = reject;
+        setTimeout(resolve, 1000);
+      });
+      if (logoImg.complete && logoImg.naturalWidth > 0) {
+        // Calculate aspect ratio to avoid squishing
+        const aspectRatio = logoImg.naturalWidth / logoImg.naturalHeight;
+        const logoHeight = 18;
+        const logoWidth = logoHeight * aspectRatio;
+        doc.addImage(logoImg, 'PNG', marginX, 6, logoWidth, logoHeight);
+      }
+    } catch {
+      // Fallback to styled text
+      doc.setFontSize(18);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(...IMU_BLUE);
+      doc.text('GRUPO IMU', marginX, 18);
+    }
+
+    // Title - centered
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...IMU_DARK);
+    doc.text('PROPUESTA DE CAMPAÑA PUBLICITARIA', pageWidth / 2, 14, { align: 'center' });
+
+    // "Documento Interno" + píldora resaltada con la leyenda, centrados como grupo
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    const diText = 'Documento Interno';
+    const diW = doc.getTextWidth(diText);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    const leyPillW = doc.getTextWidth(leyendaCircuitos) + 8;
+    const grupoStartX = (pageWidth - (diW + 4 + leyPillW)) / 2;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 100, 100);
+    doc.text(diText, grupoStartX, 20);
+    drawLeyendaPill(grupoStartX + diW + 4 + leyPillW / 2, 16.2);
+
+    // Right side info
+    const fechaActual = new Date().toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric' });
+    doc.setFontSize(8);
+    doc.setTextColor(80, 80, 80);
+    doc.text(fechaActual, pageWidth - marginX, 10, { align: 'right' });
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...IMU_BLUE);
+    doc.text(`Propuesta #${propuestaId}`, pageWidth - marginX, 16, { align: 'right' });
+
+    // Link styled as button
+    const clientViewUrl = `${window.location.origin}/cliente/propuesta/${propuestaId}${esCampana ? '?ctx=campana' : ''}`;
+    doc.setFillColor(...IMU_GREEN);
+    doc.roundedRect(pageWidth - marginX - 45, 19, 45, 6, 1, 1, 'F');
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...WHITE);
+    doc.textWithLink('Ver propuesta cliente >', pageWidth - marginX - 43, 23, { url: clientViewUrl });
+
+    y = 38;
+
+    // Client info section
+    doc.setFillColor(...IMU_BLUE);
+    doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
+    doc.setFontSize(10);
+    doc.setTextColor(...WHITE);
+    doc.text('INFORMACIÓN DEL CLIENTE', marginX + 5, y + 5);
+    y += 12;
+
+    const clientFields = [
+      ['Cliente', details?.solicitud?.cliente || 'N/A'],
+      ['Razón Social', details?.solicitud?.razon_social || 'N/A'],
+      ['Marca', details?.solicitud?.marca_nombre || 'N/A'],
+      ['Asesor', details?.solicitud?.asesor || 'N/A'],
+      ['Agencia', details?.solicitud?.agencia || 'N/A'],
+    ];
+
+    doc.setFontSize(9);
+    doc.setTextColor(60, 60, 60);
+    clientFields.forEach(([label, value], idx) => {
+      const x = marginX + (idx % 3) * 95;
+      const row = Math.floor(idx / 3);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(...IMU_BLUE);
+      doc.text(`${label}:`, x, y + row * 7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(60, 60, 60);
+      doc.text(String(value), x + 30, y + row * 7);
+    });
+    y += 22;
+
+    // Campaign info
+    doc.setFillColor(...IMU_BLUE);
+    doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
+    doc.setTextColor(...WHITE);
+    doc.text('DATOS DE LA PROPUESTA', marginX + 5, y + 5);
+    y += 12;
+
+    doc.setTextColor(60, 60, 60);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...IMU_BLUE);
+    doc.text('Nombre Campaña:', marginX, y);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(60, 60, 60);
+    doc.text(details?.cotizacion?.nombre_campania || 'N/A', marginX + 40, y);
+
+    // Periodo: en mensual usar fechas globales de cotización; en catorcena, derivar del inventario
+    let periodoText: string | null = null;
+    if (tipoPeriodo === 'mensual') {
+      const fi = details?.cotizacion?.fecha_inicio;
+      const ff = details?.cotizacion?.fecha_fin;
+      if (fi && ff) {
+        const partsI = String(fi).split(/[-T]/);
+        const partsF = String(ff).split(/[-T]/);
+        if (partsI.length >= 2 && partsF.length >= 2) {
+          const monthI = parseInt(partsI[1]);
+          const monthF = parseInt(partsF[1]);
+          const yearI = partsI[0];
+          const yearF = partsF[0];
+          periodoText = (yearI === yearF && monthI === monthF)
+            ? `${MESES_LABEL[monthI - 1]} ${yearI}`
+            : `${MESES_LABEL[monthI - 1]} ${yearI} - ${MESES_LABEL[monthF - 1]} ${yearF}`;
+        }
+      }
+    } else if (inventario && inventario.length > 0) {
+      const catorcenas = inventario
+        .filter(i => i.numero_catorcena && i.anio_catorcena)
+        .map(i => ({ num: i.numero_catorcena!, year: i.anio_catorcena! }));
+      if (catorcenas.length > 0) {
+        const sorted = catorcenas.sort((a, b) =>
+          a.year !== b.year ? a.year - b.year : a.num - b.num
+        );
+        const first = sorted[0];
+        const last = sorted[sorted.length - 1];
+        periodoText = (first.year === last.year && first.num === last.num)
+          ? `Cat ${first.num} / ${first.year}`
+          : `Cat ${first.num} / ${first.year} - Cat ${last.num} / ${last.year}`;
+      }
+    }
+    if (periodoText) {
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(...IMU_BLUE);
+      doc.text('Periodo:', marginX + 150, y);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(60, 60, 60);
+      doc.text(periodoText, marginX + 170, y);
+    }
+    y += 8;
+
+    //if (details?.propuesta?.descripcion) {
+      //doc.setFont('helvetica', 'bold');
+      //doc.setTextColor(...IMU_BLUE);
+      //doc.text('Descripción:', marginX, y);
+      //doc.setFont('helvetica', 'normal');
+      //doc.setTextColor(60, 60, 60);
+      //const desc = doc.splitTextToSize(details.propuesta.descripcion, pageWidth - marginX * 2 - 35);
+      //doc.text(desc, marginX + 28, y);
+      //y += desc.length * 5 + 2;
+    //}
+    //y += 8;
+
+    // KPIs with IMU colored boxes
+    doc.setFillColor(...IMU_BLUE);
+    doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
+    doc.setTextColor(...WHITE);
+    doc.text('RESUMEN DE MÉTRICAS', marginX + 5, y + 5);
+    y += 12;
+
+    const kpiData = [
+      { label: 'Total Caras', value: String(kpis.total), color: IMU_BLUE },
+      { label: 'En Renta', value: String(kpis.renta), color: IMU_GREEN },
+      { label: 'Bonificadas', value: String(kpis.bonificadas), color: [0, 150, 180] as [number, number, number] }, // Cyan
+      { label: 'Inversión Total', value: formatCurrency(kpis.inversion), color: [220, 160, 0] as [number, number, number] }, // Amber
+    ];
+
+    const kpiWidth = (pageWidth - marginX * 2 - 15) / 4;
+    kpiData.forEach((kpi, idx) => {
+      const x = marginX + idx * (kpiWidth + 5);
+      const isLast = idx === kpiData.length - 1;
+      const boxHeight = isLast ? 19 : 15;
+      doc.setFillColor(...kpi.color);
+      doc.roundedRect(x, y, kpiWidth, boxHeight, 2, 2, 'F');
+      doc.setFontSize(8);
+      doc.setTextColor(...WHITE);
+      doc.text(kpi.label, x + kpiWidth / 2, y + 5, { align: 'center' });
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text(kpi.value, x + kpiWidth / 2, y + 12, { align: 'center' });
+      if (isLast) {
+        doc.setFontSize(6);
+        doc.setFont('helvetica', 'italic');
+        doc.setTextColor(255, 255, 255, 150);
+        doc.text('*Precios más IVA', x + kpiWidth / 2, y + 17, { align: 'center' });
+      }
+    });
+    y += 25;
+
+    // Table grouped by Catorcena > Artículo (separate rows)
+    if (inventario && inventario.length > 0) {
+      // Group by catorcena first, then by articulo
+      const grouped: Record<string, Record<string, typeof inventario>> = {};
+      inventario.forEach(item => {
+        const catKey = formatInicioPeriodo(item, tipoPeriodo);
+        const artKey = item.articulo || 'Sin artículo';
+        if (!grouped[catKey]) grouped[catKey] = {};
+        if (!grouped[catKey][artKey]) grouped[catKey][artKey] = [];
+        grouped[catKey][artKey].push(item);
+      });
+
+      Object.entries(grouped).forEach(([catorcena, articulos]) => {
+        // === CATORCENA HEADER (separate section) ===
+        const allGroupItems = Object.values(articulos).flat();
+        const groupFechas = allGroupItems.map(i => i.inicio_periodo).filter(Boolean).sort() as string[];
+        const groupFechasFin = allGroupItems.map(i => i.fin_periodo).filter(Boolean).sort() as string[];
+        const groupFechaIni = groupFechas.length ? groupFechas[0] : null;
+        const groupFechaFin = groupFechasFin.length ? groupFechasFin[groupFechasFin.length - 1] : null;
+        const catHeaderLabel = tipoPeriodo === 'mensual' && groupFechaIni && groupFechaFin
+          ? `${catorcena}  |  ${formatDayMonthCom(groupFechaIni)} – ${formatDayMonthCom(groupFechaFin)}`
+          : catorcena;
+        doc.setFillColor(...IMU_BLUE);
+        doc.roundedRect(marginX, y, pageWidth - marginX * 2, 8, 1, 1, 'F');
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...WHITE);
+        doc.text(catHeaderLabel, marginX + 5, y + 5.5);
+        y += 10;
+
+        Object.entries(articulos).forEach(([articulo, items]) => {
+          // Calculate group totals
+          const groupCaras = items.reduce((sum, i) => sum + (Number(i.caras_renta) || 0), 0);
+          const groupBonif = items.reduce((sum, i) => sum + (Number(i.caras_bonificadas) || 0), 0);
+          const groupTarifa = items.reduce((sum, i) => sum + inversionBruta(i), 0);
+
+          // === ARTICULO SUB-HEADER ===
+          doc.setFillColor(...IMU_GREEN);
+          doc.roundedRect(marginX + 5, y, pageWidth - marginX * 2 - 10, 6, 1, 1, 'F');
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(...WHITE);
+          const groupTarifaUnit = items.length > 0 ? tarifaBruta(items[0]) : 0;
+          doc.text(`${articulo}`, marginX + 10, y + 4);
+          doc.setFont('helvetica', 'normal');
+          doc.text(`Renta: ${groupCaras}${groupBonif > 0 ? `  |  Bonif: ${groupBonif}` : ''}  |  Tarifa: ${formatCurrency(groupTarifaUnit)}  |  Inversion: ${formatCurrency(groupTarifa)}`, pageWidth - marginX - 10, y + 4, { align: 'right' });
+          y += 8;
+
+          // === TABLE FOR THIS ARTICULO ===
+          const tableData = items.map(i => [
+            String(i.id),
+            (i.ubicacion || '').substring(0, 50),
+            i.mueble || '',
+            i.municipio || '',
+            i.latitud?.toFixed(6) || '-',
+            i.longitud?.toFixed(6) || '-',
+          ]);
+
+          autoTable(doc, {
+            head: [['ID', 'Ubicación', 'Mueble', 'Municipio', 'Latitud', 'Longitud']],
+            body: tableData,
+            startY: y,
+            margin: { left: marginX + 5, right: marginX + 5 },
+            styles: { fontSize: 7, cellPadding: 2 },
+            headStyles: { fillColor: [230, 240, 250], textColor: IMU_BLUE, fontStyle: 'bold', fontSize: 7 },
+            alternateRowStyles: { fillColor: [250, 252, 255] },
+            columnStyles: {
+              0: { cellWidth: 18 },
+              1: { cellWidth: 70 },
+              2: { cellWidth: 35 },
+              3: { cellWidth: 35 },
+              4: { cellWidth: 28 },
+              5: { cellWidth: 28 },
+            },
+          });
+
+          y = (doc as any).lastAutoTable.finalY + 5;
+
+          // Check page break
+          if (y > pageHeight - 40) {
+            doc.addPage();
+            y = 20;
+          }
+        });
+
+        y += 5; // Extra space after catorcena group
+      });
+    }
+
+    // Footer on all pages
+    const totalPages = doc.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i);
+      doc.setFillColor(...IMU_GREEN);
+      doc.rect(0, pageHeight - 12, pageWidth, 1, 'F');
+      doc.setFillColor(...IMU_BLUE);
+      doc.rect(0, pageHeight - 11, pageWidth, 11, 'F');
+      doc.setTextColor(...WHITE);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Grupo IMU | Documento generado automaticamente', marginX, pageHeight - 4);
+      drawLeyendaPill(pageWidth / 2, pageHeight - 8.3);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(...WHITE);
+      doc.text(`Pagina ${i} de ${totalPages}`, pageWidth - marginX, pageHeight - 4, { align: 'right' });
+    }
+
+    doc.save(`Propuesta_Interna_${propuestaId}.pdf`);
+  };
+
+  const handlePOIPlaceChanged = () => {
+    const place = autocompleteRef.current?.getPlace();
+    if (place?.geometry?.location) {
+      const newMarker: POIMarker = {
+        id: `poi-${Date.now()}`,
+        position: { lat: place.geometry.location.lat(), lng: place.geometry.location.lng() },
+        name: place.name || 'POI',
+        range: searchRange,
+      };
+      setPoiMarkers(prev => [...prev, newMarker]);
+      mapRef.current?.setCenter(newMarker.position);
+      mapRef.current?.setZoom(15);
+      setPoiSearch('');
+    }
+  };
+
+  const toggleResumen = (key: string) => {
+    const next = new Set(expandedResumen);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setExpandedResumen(next);
+  };
+
+  const isLoading = loadingDetails || loadingInventario;
+  const COLORS = ['#8B5CF6', '#A78BFA', '#C084FC', '#DDD6FE', '#6D28D9', '#7C3AED']; // Purple palette
+
+  if (isLoading) {
+    return (
+      <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-gradient-to-br from-zinc-950 via-purple-950/20 to-zinc-950' : 'bg-white'}`}>
+        <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`min-h-screen ${isDark ? 'bg-gradient-to-br from-zinc-950 via-purple-950/20 to-zinc-950' : 'bg-white'}`}>
+      {/* Header */}
+      <header className={`sticky top-0 z-50 backdrop-blur ${isDark ? 'bg-gradient-to-r from-zinc-900/95 via-purple-900/20 to-zinc-900/95 border-b border-purple-500/20' : 'bg-white/95 border-b border-gray-200'}`}>
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            {/* Regreso explícito según el origen (ctx=campana), no navigate(-1):
+                el historial no siempre trae la pantalla correcta (p.ej. al entrar
+                por enlace directo) y desde Campañas debe volver a Campañas. */}
+            <button onClick={() => navigate(esCampana ? '/campanas' : '/propuestas')} className="p-2 hover:bg-purple-500/20 rounded-lg transition-colors">
+              <ArrowLeft className={`h-5 w-5 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`} />
+            </button>
+            <div>
+              <div className="flex items-center gap-2">
+                <Share2 className="h-5 w-5 text-purple-500" />
+                <h1 className="text-xl font-bold bg-gradient-to-r from-purple-500 to-pink-400 bg-clip-text text-transparent">Vista Compartir</h1>
+              </div>
+              <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Propuesta #{propuestaId}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <a
+              href={`/cliente/propuesta/${propuestaId}${esCampana ? '?ctx=campana' : ''}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-pink-500 to-purple-500 hover:from-pink-400 hover:to-purple-400 text-white rounded-lg text-sm font-medium transition-all shadow-lg shadow-purple-500/20"
+            >
+              <ExternalLink className="h-4 w-4" />
+              Ver en navegador
+            </a>
+            <a
+              href={`/cliente/propuesta/${propuestaId}/mapa${esCampana ? '?ctx=campana' : ''}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-400 hover:to-cyan-400 text-white rounded-lg text-sm font-medium transition-all shadow-lg shadow-blue-500/20"
+            >
+              <MapIcon className="h-4 w-4" />
+              Ver Mapa
+            </a>
+            <button
+              onClick={handleCopyLink}
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white rounded-lg text-sm font-medium transition-all shadow-lg shadow-purple-500/20"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? 'Copiado!' : 'Copiar Enlace'}
+            </button>
+            <button
+              onClick={handleDownloadKMLAll}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${isDark ? 'bg-zinc-800/80 hover:bg-purple-500/20 text-white border-purple-500/30' : 'bg-gray-100 hover:bg-gray-200 text-gray-900 border-gray-200'}`}
+              title="Descargar KML de todos los inventarios"
+            >
+              <MapIcon className="h-4 w-4" />
+              KML Todo
+            </button>
+            <button
+              onClick={handleGeneratePDF}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${isDark ? 'bg-zinc-800/80 hover:bg-purple-500/20 text-white border-purple-500/30' : 'bg-gray-100 hover:bg-gray-200 text-gray-900 border-gray-200'}`}
+            >
+              <FileText className="h-4 w-4" />
+              PDF
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        {/* Campaign Header */}
+        <div className={`rounded-2xl p-6 border shadow-xl ${isDark ? 'bg-gradient-to-r from-purple-900/40 via-violet-900/30 to-pink-900/20 border-purple-500/30 shadow-purple-500/10' : 'bg-gradient-to-r from-purple-50 via-violet-50 to-pink-50 border-gray-200 shadow-gray-200/50'}`}>
+          <div className="flex items-center gap-3 flex-wrap mb-2">
+            <h2 className={`text-2xl font-bold bg-gradient-to-r bg-clip-text text-transparent ${isDark ? 'from-white to-purple-200' : 'from-gray-900 to-purple-700'}`}>
+              {details?.cotizacion?.nombre_campania || 'Propuesta sin nombre'}
+            </h2>
+            <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${esCampana
+              ? (isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30' : 'bg-emerald-100 text-emerald-700 border-emerald-300')
+              : (isDark ? 'bg-amber-500/20 text-amber-300 border-amber-400/30' : 'bg-amber-100 text-amber-700 border-amber-300')
+            }`}>
+              {leyendaCircuitos}
+            </span>
+          </div>
+          <p className={isDark ? 'text-zinc-400' : 'text-gray-500'}>{details?.propuesta?.descripcion || 'Sin descripción'}</p>
+          <div className="flex gap-4 mt-4 text-sm">
+            <span className={isDark ? 'text-purple-300' : 'text-purple-600'}>
+              Inicio: <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{periodoInicio}</span>
+            </span>
+            <span className={isDark ? 'text-purple-300' : 'text-purple-600'}>
+              Fin: <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{periodoFin}</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Catorcena / Periodo Filter */}
+        {periodoOptions.length > 0 && (
+          <div className={`rounded-2xl p-4 border ${isDark ? 'bg-zinc-900/80 border-purple-500/20' : 'bg-gray-50 border-gray-200'}`}>
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className={`text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+                <Filter className="h-3.5 w-3.5 inline mr-1" />
+                Filtrar por {tipoPeriodo === 'mensual' ? 'periodo' : 'catorcena'}:
+              </span>
+              <button
+                onClick={() => setSelectedCatorcenas(new Set())}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                  selectedCatorcenas.size === 0
+                    ? 'bg-gradient-to-r from-purple-600 to-violet-600 text-white border-purple-500 shadow-lg shadow-purple-500/20'
+                    : isDark ? 'bg-zinc-800 text-zinc-400 border-purple-500/20 hover:bg-purple-500/20' : 'bg-white text-gray-600 border-gray-200 hover:bg-purple-50'
+                }`}
+              >
+                Todas
+              </button>
+              {periodoOptions.map(p => {
+                const isSelected = selectedCatorcenas.has(p.value);
+                return (
+                  <button
+                    key={p.value}
+                    onClick={() => {
+                      setSelectedCatorcenas(prev => {
+                        const next = new Set(prev);
+                        if (next.has(p.value)) {
+                          next.delete(p.value);
+                        } else {
+                          next.add(p.value);
+                        }
+                        return next;
+                      });
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                      isSelected
+                        ? 'bg-gradient-to-r from-purple-600 to-violet-600 text-white border-purple-500 shadow-lg shadow-purple-500/20'
+                        : isDark ? 'bg-zinc-800 text-zinc-400 border-purple-500/20 hover:bg-purple-500/20' : 'bg-white text-gray-600 border-gray-200 hover:bg-purple-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+              {selectedCatorcenas.size > 0 && (
+                <button
+                  onClick={() => setSelectedCatorcenas(new Set())}
+                  className="px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/20 rounded-lg transition-colors"
+                >
+                  <X className="h-3 w-3 inline mr-0.5" />
+                  Limpiar
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Client Info */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            { label: 'CUIC', value: details?.solicitud?.cuic },
+            { label: 'Cliente', value: details?.solicitud?.cliente },
+            { label: 'Razón Social', value: details?.solicitud?.razon_social },
+            { label: 'Marca', value: details?.solicitud?.marca_nombre },
+            { label: 'Asesor', value: details?.solicitud?.asesor },
+            { label: 'Agencia', value: details?.solicitud?.agencia },
+            { label: 'Producto', value: details?.solicitud?.producto_nombre },
+          ].map(({ label, value }) => (
+            <div key={label} className={`rounded-xl p-4 border transition-colors ${isDark ? 'bg-gradient-to-br from-zinc-900 to-zinc-900/80 border-purple-500/10 hover:border-purple-500/30' : 'bg-gray-50 border-gray-200 hover:border-purple-300'}`}>
+              <p className="text-xs text-purple-500/70">{label}</p>
+              <p className={`text-sm font-medium truncate ${isDark ? 'text-white' : 'text-gray-900'}`}>{value || 'N/A'}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className={`rounded-2xl p-6 border ${isDark ? 'bg-gradient-to-br from-zinc-900 to-purple-900/10 border-purple-500/20' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-lg font-semibold bg-gradient-to-r from-purple-500 to-pink-400 bg-clip-text text-transparent mb-4">Reservas por Ciudad</h3>
+            {chartCiudades.length > 0 ? (
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={chartCiudades} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#333' : '#e5e7eb'} />
+                  <XAxis type="number" stroke={isDark ? '#888' : '#9ca3af'} />
+                  <YAxis dataKey="name" type="category" stroke={isDark ? '#888' : '#9ca3af'} width={100} tick={{ fontSize: 11, fill: isDark ? '#888' : '#6b7280' }} />
+                  <Tooltip
+                    contentStyle={{ background: isDark ? '#18181b' : '#fff', border: `1px solid ${isDark ? '#333' : '#e5e7eb'}`, borderRadius: '8px' }}
+                    itemStyle={{ color: isDark ? '#e4e4e7' : '#1f2937' }}
+                    labelStyle={{ color: isDark ? '#a1a1aa' : '#6b7280', marginBottom: '4px' }}
+                    cursor={{ fill: 'rgba(168, 85, 247, 0.1)' }}
+                  />
+                  <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                    {chartCiudades.map((_, idx) => (
+                      <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className={`text-center py-10 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>No hay inventario reservado</p>
+            )}
+          </div>
+
+          <div className={`rounded-2xl p-6 border ${isDark ? 'bg-gradient-to-br from-zinc-900 to-purple-900/10 border-purple-500/20' : 'bg-gray-50 border-gray-200'}`}>
+            <h3 className="text-lg font-semibold bg-gradient-to-r from-purple-500 to-pink-400 bg-clip-text text-transparent mb-4">Reservas por Tipo</h3>
+            {chartFormatos.length > 0 ? (
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={chartFormatos}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={isDark ? '#333' : '#e5e7eb'} />
+                  <XAxis dataKey="name" stroke={isDark ? '#888' : '#9ca3af'} tick={{ fontSize: 10, fill: isDark ? '#888' : '#6b7280' }} />
+                  <YAxis stroke={isDark ? '#888' : '#9ca3af'} />
+                  <Tooltip
+                    contentStyle={{ background: isDark ? '#18181b' : '#fff', border: `1px solid ${isDark ? '#333' : '#e5e7eb'}`, borderRadius: '8px' }}
+                    itemStyle={{ color: isDark ? '#e4e4e7' : '#1f2937' }}
+                    labelStyle={{ color: isDark ? '#a1a1aa' : '#6b7280', marginBottom: '4px' }}
+                    cursor={{ fill: 'rgba(168, 85, 247, 0.1)' }}
+                  />
+                  <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                    {chartFormatos.map((_, idx) => (
+                      <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className={`text-center py-10 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>No hay inventario reservado</p>
+            )}
+          </div>
+        </div>
+
+        {/* KPIs */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: 'Total Caras', value: kpis.total, color: 'text-purple-500', bg: 'from-purple-500/20 to-purple-600/10' },
+            { label: 'En Renta', value: kpis.renta, color: 'text-violet-400', bg: 'from-pink-400/20 to-violet-400/10' },
+            { label: 'Bonificadas', value: kpis.bonificadas, color: 'text-pink-400', bg: 'from-pink-400/20 to-violet-400/10' },
+            { label: 'Inversión Total', value: formatCurrency(kpis.inversion), color: 'text-amber-400', bg: 'from-amber-500/20 to-amber-600/10', iva: true },
+          ].map(({ label, value, color, bg, iva }: any) => (
+            <div key={label} className={`bg-gradient-to-br ${bg} rounded-xl p-4 border border-purple-500/20 text-center`}>
+              <p className={`text-2xl font-bold ${color}`}>{value}</p>
+              <p className={`text-xs mt-1 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{label}</p>
+              {iva && <p className={`text-[9px] mt-0.5 italic ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>*Precios más IVA</p>}
+            </div>
+          ))}
+        </div>
+
+        {/* Resumen de Caras - Tabla principal */}
+        <div className={`rounded-2xl border overflow-hidden ${isDark ? 'bg-gradient-to-br from-zinc-900 to-purple-900/10 border-purple-500/20' : 'bg-white border-gray-200'}`}>
+          {/* Toolbar */}
+          <div className={`px-5 py-4 border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-600/10 to-violet-600/10' : 'border-gray-200 bg-gray-50'}`}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className={`text-sm font-semibold flex items-center gap-2 ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+                <Layers className="h-4 w-4" />
+                Resumen de Circuitos
+                <span className={`text-xs font-normal ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>({filteredInventario.length} inventarios)</span>
+              </h3>
+              <div className="flex items-center gap-2">
+                <button onClick={handleDownloadXLSX} className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white rounded-lg text-xs font-medium shadow-sm transition-colors">
+                  <FileSpreadsheet className="h-3.5 w-3.5" /> Excel
+                </button>
+                {selectedItems.size > 0 && (
+                  <button onClick={handleDownloadKMLSelected} className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white rounded-lg text-xs font-medium shadow-sm transition-colors" title={`Descargar KML de ${selectedItems.size} seleccionados`}>
+                    <MapIcon className="h-3.5 w-3.5" /> KML ({selectedItems.size})
+                  </button>
+                )}
+                <button onClick={handleExpandMap} className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-lg text-xs font-medium shadow-sm transition-colors" title={
+                  selectedItems.size > 0
+                    ? `Expandir mapa con ${selectedItems.size} seleccionados`
+                    : selectedCatorcenas.size > 0
+                      ? `Expandir mapa con ${selectedCatorcenas.size} ${tipoPeriodo === 'mensual' ? 'periodo(s)' : 'catorcena(s)'} seleccionada(s)`
+                      : 'Expandir mapa con todo el inventario'
+                }>
+                  <Maximize2 className="h-3.5 w-3.5" /> Expandir Mapa
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={inventario ? selectedItems.size === inventario.length && inventario.length > 0 : false}
+                  onChange={toggleSelectAll}
+                  className="checkbox-purple"
+                  title="Seleccionar todo"
+                />
+                <Filter className={`h-3.5 w-3.5 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
+                <input
+                  type="text"
+                  placeholder="Buscar..."
+                  value={filterText}
+                  onChange={(e) => setFilterText(e.target.value)}
+                  className={`px-3 py-1.5 border rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-purple-500 w-44 ${isDark ? 'bg-zinc-800/80 border-purple-500/20 text-white placeholder:text-zinc-500' : 'bg-white border-gray-200 text-gray-900 placeholder:text-gray-400'}`}
+                />
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1 ${showFilters || filters.length > 0
+                    ? 'bg-purple-600 text-white'
+                    : isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-purple-500/20' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                  }`}
+                >
+                  <Filter className="h-3 w-3" />
+                  Filtros {filters.length > 0 && `(${filters.length})`}
+                </button>
+                {periodoOptions.length > 1 && (
+                  <select
+                    value={filterPeriodo}
+                    onChange={(e) => setFilterPeriodo(e.target.value)}
+                    className={`px-2.5 py-1.5 border rounded-lg text-xs ${filterPeriodo ? (isDark ? 'bg-purple-500/20 text-purple-300 border-purple-500/30' : 'bg-purple-100 text-purple-700 border-purple-300') : isDark ? 'bg-zinc-800 border-purple-500/20 text-zinc-300' : 'bg-white border-gray-200 text-gray-700'}`}
+                  >
+                    <option value="">Todos los periodos</option>
+                    {periodoOptions.map(p => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <ArrowUpDown className={`h-3.5 w-3.5 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
+                <select value={sortField} onChange={(e) => setSortField(e.target.value)} className={`px-2 py-1.5 border rounded text-xs focus:ring-1 focus:ring-purple-500 ${isDark ? 'bg-zinc-800 border-purple-500/20 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
+                  <option value="">Sin ordenar</option>
+                  <option value="codigo_unico">Codigo</option>
+                  <option value="plaza">Plaza</option>
+                  <option value="tipo_de_cara">Tipo</option>
+                  <option value="tarifa_publica">Tarifa</option>
+                </select>
+                <button
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  className={`px-2 py-1.5 rounded text-xs ${isDark ? 'bg-zinc-800 hover:bg-purple-500/20 text-zinc-400' : 'bg-gray-100 hover:bg-gray-200 text-gray-500'}`}
+                >
+                  {sortOrder === 'asc' ? '↑' : '↓'}
+                </button>
+              </div>
+              {(filterText || filters.length > 0 || filterPeriodo || selectedItems.size > 0) && (
+                <button
+                  onClick={() => { setFilterText(''); setFilters([]); setFilterPeriodo(''); setSelectedItems(new Set()); }}
+                  className="px-2.5 py-1.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded-lg text-xs hover:bg-red-500/30"
+                >
+                  Limpiar
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Advanced Filters Panel */}
+          {showFilters && (
+            <div className={`p-4 border-b ${isDark ? 'border-purple-500/10 bg-zinc-800/30' : 'border-gray-200 bg-gray-50'}`}>
+              <div className="flex flex-wrap gap-2 mb-3">
+                {filters.map(filter => {
+                  const fieldConfig = FILTER_FIELDS.find(f => f.field === filter.field);
+                  const operatorConfig = FILTER_OPERATORS.find(o => o.value === filter.operator);
+                  return (
+                    <div key={filter.id} className="flex items-center gap-1 px-2 py-1 bg-purple-500/20 rounded-lg text-xs">
+                      <span className="text-purple-300">{fieldConfig?.label || filter.field}</span>
+                      <span className={isDark ? 'text-zinc-500' : 'text-gray-400'}>{operatorConfig?.label || filter.operator}</span>
+                      <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{filter.value}</span>
+                      <button onClick={() => setFilters(filters.filter(f => f.id !== filter.id))} className={`ml-1 hover:text-red-400 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-2">
+                <select id="filter-field" className={`px-2 py-1 border rounded text-xs ${isDark ? 'bg-zinc-800 border-purple-500/20 text-white' : 'bg-white border-gray-200 text-gray-900'}`} defaultValue="">
+                  <option value="" disabled>Campo</option>
+                  {FILTER_FIELDS.map(f => (<option key={f.field} value={f.field}>{f.label}</option>))}
+                </select>
+                <select id="filter-operator" className={`px-2 py-1 border rounded text-xs ${isDark ? 'bg-zinc-800 border-purple-500/20 text-white' : 'bg-white border-gray-200 text-gray-900'}`} defaultValue="=">
+                  {FILTER_OPERATORS.map(o => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                </select>
+                <input id="filter-value" type="text" placeholder="Valor" className={`px-2 py-1 border rounded text-xs w-32 ${isDark ? 'bg-zinc-800 border-purple-500/20 text-white' : 'bg-white border-gray-200 text-gray-900'}`} />
+                <button
+                  onClick={() => {
+                    const field = (document.getElementById('filter-field') as HTMLSelectElement).value;
+                    const operator = (document.getElementById('filter-operator') as HTMLSelectElement).value as FilterOperator;
+                    const value = (document.getElementById('filter-value') as HTMLInputElement).value;
+                    if (field && value) {
+                      setFilters([...filters, { id: `filter-${Date.now()}`, field, operator, value }]);
+                      (document.getElementById('filter-value') as HTMLInputElement).value = '';
+                    }
+                  }}
+                  className="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs"
+                >Agregar</button>
+                {filters.length > 0 && (
+                  <button onClick={() => setFilters([])} className={`px-3 py-1 rounded text-xs ${isDark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'}`}>Limpiar</button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Selection info */}
+          {selectedItems.size > 0 && (
+            <div className="flex items-center gap-3 px-4 py-2 bg-purple-500/10 border-b border-purple-500/20">
+              <span className="text-sm text-purple-300">{selectedItems.size} seleccionados</span>
+              <button onClick={() => setSelectedItems(new Set())} className="text-xs text-purple-400 hover:text-purple-300">Limpiar seleccion</button>
+            </div>
+          )}
+
+          {/* Resumen Tree */}
+          <div className={`divide-y ${isDark ? 'divide-purple-500/10' : 'divide-gray-200'}`}>
+            {resumenCaras.map((catGroup) => {
+              const catItems = catGroup.articulos.flatMap(a => a.items);
+              const catKeys = catItems.map(itemKey);
+              const allCatSelected = catKeys.length > 0 && catKeys.every(k => selectedItems.has(k));
+              const someCatSelected = catKeys.some(k => selectedItems.has(k));
+
+              return (
+                <div key={catGroup.catorcena}>
+                  {/* Catorcena Header */}
+                  <div className={`w-full px-5 py-3 flex items-center gap-3 transition-colors ${isDark ? 'hover:bg-purple-600/10 bg-purple-600/5' : 'hover:bg-purple-50 bg-gray-50'}`}>
+                    <input
+                      type="checkbox"
+                      checked={allCatSelected}
+                      ref={(el) => { if (el) el.indeterminate = someCatSelected && !allCatSelected; }}
+                      onChange={() => toggleGroupSelection(catItems)}
+                      className="checkbox-purple"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <button onClick={() => toggleResumen(catGroup.catorcena)} className="flex-1 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {expandedResumen.has(catGroup.catorcena) ? (
+                          <ChevronDown className="h-4 w-4 text-purple-400" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-purple-500/50" />
+                        )}
+                        <span className={`px-3 py-1 rounded-lg text-xs font-medium border ${isDark ? 'bg-purple-500/30 text-purple-200 border-purple-400/30' : 'bg-purple-100 text-purple-700 border-purple-300'}`}>
+                          {catGroup.catorcena}
+                        </span>
+                        {tipoPeriodo === 'mensual' && catGroup.fechaInicio && catGroup.fechaFin && (
+                          <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                            {formatDayMonthCom(catGroup.fechaInicio)} – {formatDayMonthCom(catGroup.fechaFin)}
+                          </span>
+                        )}
+                        <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                          ({catGroup.articulos.length} articulo{catGroup.articulos.length > 1 ? 's' : ''})
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Renta:</span>
+                          <span className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{catGroup.totalCaras}</span>
+                        </div>
+                        {catGroup.totalBonificadas > 0 && (
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-xs ${isDark ? 'text-cyan-400' : 'text-cyan-600'}`}>Bonif:</span>
+                            <span className={`text-sm font-semibold ${isDark ? 'text-cyan-300' : 'text-cyan-700'}`}>{catGroup.totalBonificadas}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1.5 pl-2 border-l border-purple-500/30">
+                          <span className={`text-xs ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>Inversión:</span>
+                          <span className={`text-sm font-semibold ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>{formatCurrency(catGroup.totalInversion)}</span>
+                        </div>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-1 ml-2">
+                      <button onClick={() => handleShowGroupOnMap(catItems)} className="p-1.5 hover:bg-purple-500/20 rounded text-purple-400 transition-colors" title="Ver en mapa">
+                        <MapIcon className="h-3.5 w-3.5" />
+                      </button>
+                      <button onClick={() => handleDownloadGroupKML(catGroup.catorcena, catItems)} className="p-1.5 hover:bg-blue-500/20 rounded text-blue-400 transition-colors" title="Descargar KML">
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Articulo Groups */}
+                  {expandedResumen.has(catGroup.catorcena) && (
+                    <div className={`pl-6 border-l-2 ml-5 ${isDark ? 'border-purple-500/20' : 'border-gray-200'}`}>
+                      {catGroup.articulos.map((artGroup) => {
+                        const artKey = `${catGroup.catorcena}|${artGroup.articulo}`;
+                        const artKeys = artGroup.items.map(itemKey);
+                        const allArtSelected = artKeys.length > 0 && artKeys.every(k => selectedItems.has(k));
+                        const someArtSelected = artKeys.some(k => selectedItems.has(k));
+
+                        return (
+                          <div key={artKey} className={`border-b last:border-b-0 ${isDark ? 'border-purple-500/10' : 'border-gray-200'}`}>
+                            <div className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-violet-600/10 transition-colors">
+                              <input
+                                type="checkbox"
+                                checked={allArtSelected}
+                                ref={(el) => { if (el) el.indeterminate = someArtSelected && !allArtSelected; }}
+                                onChange={() => toggleGroupSelection(artGroup.items)}
+                                className="checkbox-purple"
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <button onClick={() => toggleResumen(artKey)} className="flex-1 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  {expandedResumen.has(artKey) ? (
+                                    <ChevronDown className="h-3.5 w-3.5 text-violet-400" />
+                                  ) : (
+                                    <ChevronRight className="h-3.5 w-3.5 text-violet-500/50" />
+                                  )}
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Plazas:</span>
+                                    {artGroup.plazas.map(p => (
+                                      <span key={p} className={`px-2 py-0.5 rounded text-[10px] font-medium ${isDark ? 'bg-zinc-700 text-zinc-300' : 'bg-gray-200 text-gray-700'}`}>{p}</span>
+                                    ))}
+                                    <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} ml-1`}>Formatos:</span>
+                                    {artGroup.formatos.map(f => (
+                                      <span key={f} className={`px-2 py-0.5 rounded text-[10px] font-medium border ${isDark ? 'bg-purple-500/20 text-purple-300 border-purple-400/20' : 'bg-purple-50 text-purple-700 border-purple-200'}`}>{f}</span>
+                                    ))}
+                                    <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} ml-1`}>Tipo:</span>
+                                    {artGroup.tipos.map(t => (
+                                      <span key={t} className={`px-2 py-0.5 rounded text-[10px] font-medium border ${isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/20' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>{t}</span>
+                                    ))}
+                                  </div>
+                                  <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                                    ({artGroup.items.length} inventario{artGroup.items.length > 1 ? 's' : ''})
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-3 text-xs">
+                                  <span className={isDark ? 'text-zinc-400' : 'text-gray-500'}>{(artGroup.articulo || '').toUpperCase().startsWith('IN') ? 'Intercambio' : 'Renta'}: <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{artGroup.totalCaras}</span></span>
+                                  {artGroup.totalBonificadas > 0 && <span className={isDark ? 'text-cyan-400' : 'text-cyan-600'}>Bonif: <span className="font-medium">{artGroup.totalBonificadas}</span></span>}
+                                  <span className={isDark ? 'text-amber-300' : 'text-amber-600'}>Tarifa: <span className="font-medium">{formatCurrency(artGroup.items[0] ? tarifaBruta(artGroup.items[0]) : 0)}</span></span>
+                                  <span className={isDark ? 'text-emerald-400' : 'text-emerald-600'}>{formatCurrency(artGroup.totalInversion)}</span>
+                                </div>
+                              </button>
+                              <div className="flex items-center gap-1 ml-2">
+                                <button onClick={() => handleShowGroupOnMap(artGroup.items)} className="p-1.5 hover:bg-purple-500/20 rounded text-purple-400 transition-colors" title="Ver en mapa">
+                                  <MapIcon className="h-3 w-3" />
+                                </button>
+                                <button onClick={() => handleDownloadGroupKML(artGroup.articulo, artGroup.items)} className="p-1.5 hover:bg-blue-500/20 rounded text-blue-400 transition-colors" title="Descargar KML">
+                                  <Download className="h-3 w-3" />
+                                </button>
+                              </div>
+                            </div>
+
+                            {expandedResumen.has(artKey) && (
+                              <div className="px-4 pb-3">
+                                {/* Detail table with checkboxes */}
+                                <div className={`overflow-x-auto rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
+                                  <table className="w-full text-sm">
+                                    <thead>
+                                      <tr className={isDark ? 'bg-purple-600/20' : 'bg-purple-50'}>
+                                        <th className="px-3 py-2 w-8"></th>
+                                        <th className={`px-3 py-2 text-left text-xs font-semibold ${isDark ? 'text-purple-200' : 'text-purple-700'}`}>Codigo</th>
+                                        <th className={`px-3 py-2 text-left text-xs font-semibold ${isDark ? 'text-purple-200' : 'text-purple-700'}`}>Plaza</th>
+                                        <th className={`px-3 py-2 text-left text-xs font-semibold ${isDark ? 'text-purple-200' : 'text-purple-700'}`}>Formato</th>
+                                        <th className={`px-3 py-2 text-center text-xs font-semibold ${isDark ? 'text-purple-200' : 'text-purple-700'}`}>{artGroup.items.every(i => (i.mueble || '').toUpperCase().includes('PUENTE PEATONAL')) ? 'Puentes' : 'Caras'}</th>
+                                        <th className={`px-3 py-2 text-right text-xs font-semibold ${isDark ? 'text-purple-200' : 'text-purple-700'}`}>Lat</th>
+                                        <th className={`px-3 py-2 text-right text-xs font-semibold ${isDark ? 'text-purple-200' : 'text-purple-700'}`}>Long</th>
+                                        <th className={`px-3 py-2 text-right text-xs font-semibold ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>Tarifa</th>
+                                        <th className={`px-3 py-2 text-right text-xs font-semibold ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>Inversion</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className={`divide-y ${isDark ? 'divide-purple-500/10' : 'divide-gray-100'}`}>
+                                      {artGroup.items.map((item) => {
+                                        const key = itemKey(item);
+                                        return (
+                                          <DetailRow
+                                            key={key}
+                                            item={item}
+                                            isSelected={selectedItems.has(key)}
+                                            isDark={isDark}
+                                            onToggle={toggleItemSelection}
+                                          />
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Map */}
+        <div className={`rounded-2xl border overflow-hidden ${isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'}`}>
+          <div className={`p-4 border-b flex items-center gap-4 ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+            <MapIcon className="h-5 w-5 text-blue-500" />
+            <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Mapa de Reservas</h3>
+
+            <div className="flex items-center gap-2 ml-auto">
+              {showMap && (<>
+              <select
+                value={searchRange}
+                onChange={(e) => setSearchRange(parseInt(e.target.value))}
+                className={`px-2 py-1.5 rounded-lg text-xs ${isDark ? 'bg-zinc-800 border border-zinc-700 text-white' : 'bg-white border border-gray-200 text-gray-900'}`}
+              >
+                <option value={100}>100m</option>
+                <option value={200}>200m</option>
+                <option value={300}>300m</option>
+                <option value={500}>500m</option>
+                <option value={1000}>1km</option>
+              </select>
+
+              {isLoaded && (
+                <Autocomplete
+                  onLoad={(ac) => { autocompleteRef.current = ac; }}
+                  onPlaceChanged={handlePOIPlaceChanged}
+                  options={{ componentRestrictions: { country: 'mx' } }}
+                >
+                  <input
+                    type="text"
+                    value={poiSearch}
+                    onChange={(e) => setPoiSearch(e.target.value)}
+                    placeholder="Buscar POI..."
+                    className={`px-3 py-1.5 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-purple-500 w-48 ${isDark ? 'bg-zinc-800 border border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-white border border-gray-200 text-gray-900 placeholder:text-gray-400'}`}
+                  />
+                </Autocomplete>
+              )}
+
+              {poiMarkers.length > 0 && (
+                <button
+                  onClick={() => setPoiMarkers([])}
+                  className="px-3 py-1.5 bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg text-xs"
+                >
+                  Limpiar POIs
+                </button>
+              )}
+              </>)}
+              {/* Toggle: el mapa está oculto por default (pinta miles de markers y traba
+                  los checkboxes en propuestas grandes). Mismo patrón que "Mostrar Pines"
+                  del Dashboard. */}
+              <button
+                onClick={() => setShowMap(v => !v)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium transition-all border ${showMap
+                  ? (isDark ? 'bg-purple-500/20 text-purple-300 border-purple-500/30' : 'bg-purple-50 text-purple-600 border-purple-200')
+                  : (isDark ? 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:bg-zinc-700' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200')
+                }`}
+              >
+                {showMap ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                {showMap ? 'Ocultar mapa' : 'Mostrar mapa'}
+              </button>
+            </div>
+          </div>
+
+          {!showMap && (
+            <button
+              onClick={() => setShowMap(true)}
+              className={`w-full h-32 flex flex-col items-center justify-center gap-2 transition-colors ${isDark ? 'text-zinc-500 hover:bg-zinc-800/40' : 'text-gray-400 hover:bg-gray-50'}`}
+            >
+              <MapIcon className="h-8 w-8 opacity-60" />
+              <span className="text-sm font-medium">Mostrar mapa ({visibleMarkers.length} pines)</span>
+              <span className="text-xs opacity-70">Oculto para mantener la lista fluida</span>
+            </button>
+          )}
+
+          {showMap && (
+          <div className="h-[500px] relative">
+            {demasiadosPines && (
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 max-w-md px-4 py-2.5 rounded-xl shadow-lg border bg-amber-500/95 text-amber-950 border-amber-600 text-xs font-medium text-center pointer-events-none">
+                {visibleMarkers.length.toLocaleString()} pines: Seleccionar Catorcenas para mostrarlos aquí.
+                O usa <strong>Expandir Mapa</strong> para ver todos.
+              </div>
+            )}
+            {isLoaded ? (
+              <GoogleMap
+                mapContainerStyle={{ width: '100%', height: '100%' }}
+                center={mapCenter}
+                zoom={12}
+                options={{ styles: isDark ? DARK_MAP_STYLES : [], disableDefaultUI: true, zoomControl: true }}
+                onLoad={(map) => {
+                  mapRef.current = map;
+                  // Fit bounds to all inventory items on load
+                  if (catorcenaFilteredInventario.length > 0) {
+                    const bounds = new google.maps.LatLngBounds();
+                    catorcenaFilteredInventario.forEach(item => {
+                      if (item.latitud && item.longitud) {
+                        bounds.extend({ lat: item.latitud, lng: item.longitud });
+                      }
+                    });
+                    if (!bounds.isEmpty()) {
+                      map.fitBounds(bounds, 50);
+                    }
+                  }
+                }}
+              >
+                {!demasiadosPines && visibleMarkers.map((item) => (
+                  <MapMarker
+                    key={itemKey(item)}
+                    item={item}
+                    isSelected={selectedItems.has(itemKey(item))}
+                    onSelect={handleMarkerClick}
+                  />
+                ))}
+                {selectedMarker && (
+                  <InfoWindow
+                    position={{ lat: selectedMarker.latitud, lng: selectedMarker.longitud }}
+                    onCloseClick={() => setSelectedMarker(null)}
+                  >
+                    <div className="p-2 min-w-[200px]" style={{ color: '#000' }}>
+                      <h4 className="font-bold text-sm mb-2" style={{ color: '#1a1a2e' }}>{selectedMarker.codigo_unico}</h4>
+                      <div className="text-xs space-y-1">
+                        <p><strong>Plaza:</strong> {selectedMarker.plaza || 'N/A'}</p>
+                        <p><strong>Tipo:</strong> {selectedMarker.tipo_de_cara || 'N/A'}</p>
+                        <p><strong>Formato:</strong> {selectedMarker.mueble || 'N/A'}</p>
+                        <p><strong>Ubicación:</strong> {selectedMarker.ubicacion || 'N/A'}</p>
+                        <p><strong>{(selectedMarker.mueble || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes' : 'Caras'}:</strong> {selectedMarker.caras_totales}</p>
+                        <p><strong>Tarifa:</strong> {formatCurrency(tarifaBruta(selectedMarker))}</p>
+                        {selectedMarker.numero_catorcena && (
+                          <p><strong>Periodo:</strong> {tipoPeriodo === 'mensual' && selectedMarker.inicio_periodo ? (() => { const parts = selectedMarker.inicio_periodo.split('-'); return parts.length >= 2 ? `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}` : `Cat ${selectedMarker.numero_catorcena} / ${selectedMarker.anio_catorcena}`; })() : `Cat ${selectedMarker.numero_catorcena} / ${selectedMarker.anio_catorcena}`}</p>
+                        )}
+                      </div>
+                    </div>
+                  </InfoWindow>
+                )}
+                {poiMarkers.map(marker => (
+                  <Circle
+                    key={marker.id}
+                    center={marker.position}
+                    radius={marker.range}
+                    options={{
+                      strokeColor: '#a855f7',
+                      strokeOpacity: 0.7,
+                      strokeWeight: 2,
+                      fillColor: '#a855f7',
+                      fillOpacity: 0.15,
+                    }}
+                  />
+                ))}
+              </GoogleMap>
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
+              </div>
+            )}
+          </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
