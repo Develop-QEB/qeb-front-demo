@@ -135,6 +135,13 @@ export interface Inventario {
   tarifa_publica: number | null;
   cto?: string | null;
   estatus_real?: string | null;
+  // Vigencia del bloqueo administrativo (ver lib/bloqueoInventario.ts).
+  // Fechas DATE serializadas por el back como ISO ('YYYY-MM-DDT00:00:00.000Z').
+  bloqueo_tipo?: string | null;
+  bloqueo_fecha_inicio?: string | null;
+  bloqueo_fecha_fin?: string | null;
+  bloqueo_usuario_id?: number | null;
+  bloqueo_aviso_at?: string | null;
 }
 
 // Inventario para mapa (campos reducidos)
@@ -201,7 +208,41 @@ export interface Solicitud {
   sap_database?: string | null;
   nombre_campania?: string | null;
   formatos?: string | null;
+  // Enriquecidos por el listado (solicitudes.controller.getAll) via cotizacion /
+  // campania ligadas. Pueden venir null si la solicitud aun no tiene cotizacion.
+  tipo_periodo?: string | null;
+  catorcena_inicio?: number | null;
+  anio_inicio?: number | null;
+  catorcena_fin?: number | null;
+  anio_fin?: number | null;
+  campania_id?: number | null;
+  // Requiere la columna `solicitud.updated_at` (ver scripts/sql) Y que este
+  // en el model de prisma: el listado usa findMany, que solo devuelve campos
+  // del schema. Mientras tanto llega undefined.
+  updated_at?: string | null;
+  // Autorización de circuitos (ver lib/autorizacionFiltro): conteo por
+  // estatus (acotado al periodo filtrado) y fechas de último cambio por
+  // estatus de entidad / autorización (solo con includeCambios).
+  autorizacion_resumen?: AutorizacionResumen | null;
+  cambios?: CambiosFechas | null;
 }
+
+/** Conteo de circuitos por estatus de autorización (llega por fila en los listados). */
+export interface AutorizacionResumen {
+  total: number;
+  aprobado: number;
+  pend_dg: number;
+  pend_dcm: number;
+  correccion: number;
+  rechazado: number;
+}
+
+/**
+ * Última fecha (ISO) en que el registro cambió a cada estatus. Claves
+ * `estatus:<Estatus>` (cambios de estatus de la entidad) y `auth:<key>`
+ * (cambios de autorización de sus circuitos). Lo usa el orden "Último cambio".
+ */
+export type CambiosFechas = Record<string, string>;
 
 export interface SolicitudStats {
   total: number;
@@ -226,6 +267,9 @@ export interface Propuesta {
   comentario_cambio_status: string;
   articulo: string;
   updated_at: string | null;
+  // Autorización de circuitos (ver lib/autorizacionFiltro).
+  autorizacion_resumen?: AutorizacionResumen | null;
+  cambios?: CambiosFechas | null;
   // Campos adicionales del JOIN
   cliente_nombre?: string;
   marca_nombre?: string;
@@ -240,12 +284,17 @@ export interface Propuesta {
   catorcena_fin?: number | null;
   anio_fin?: number | null;
   tipo_periodo?: string | null;
+  // Totales de completitud del listado (mismo criterio y exclusiones que el
+  // badge "Incompleta" de campañas) — para el badge de la tabla de propuestas.
+  caras_esperadas_total?: number | null;
+  reservas_validas_total?: number | null;
   fecha_inicio?: string | null;
   fecha_fin?: string | null;
   formatos?: string | null;
   cuic?: number | null;
   campania_id?: number | null;
   campania_status?: string | null;
+  sap_database?: string | null;
 }
 
 export interface PropuestaStats {
@@ -314,7 +363,15 @@ export interface Campana {
   id_asignado: string | null;
   inversion: number | null;
   comentario_cambio_status: string | null;
+  // Requiere la columna `campania.updated_at` (ver scripts/sql). Sin ella el
+  // listado la manda vacia: la tabla `campania` no la tenia.
   updated_at: string | null;
+  // Autorización de circuitos (ver lib/autorizacionFiltro).
+  autorizacion_resumen?: AutorizacionResumen | null;
+  cambios?: CambiosFechas | null;
+  // Columna real de `campania`; llega por el cm.* del listado. Es la fecha con
+  // la que el backend ordena (COALESCE(fecha_aprobacion, fecha_inicio) DESC).
+  fecha_aprobacion?: string | null;
   // Campos adicionales del listado
   cliente_nombre: string | null;
   cliente_razon_social: string | null;
@@ -350,6 +407,18 @@ export interface Campana {
   formatos?: string | null;
 }
 
+export interface PosteoBucket {
+  count: number;
+  monto: number;
+}
+
+/** Estado de POST a SAP a nivel circuito (misma forma que /dashboard/posteo-stats). */
+export interface PosteoStats {
+  pendientes: PosteoBucket;
+  posteadas: PosteoBucket;
+  total: PosteoBucket;
+}
+
 export interface CampanaStats {
   total: number;
   activas: number;
@@ -357,6 +426,10 @@ export interface CampanaStats {
   byStatus: Record<string, number>;
   conAps: number;
   sinAps: number;
+  /** Suma de la inversión de las campañas del universo (misma fórmula que la columna Inversión). */
+  montoTotal: number;
+  /** Estado de POST a SAP de los circuitos de esas campañas. */
+  posteo: PosteoStats;
 }
 
 export interface CampanaWithComments extends Campana {

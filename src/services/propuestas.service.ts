@@ -49,6 +49,11 @@ export interface PropuestasParams {
   fechaHasta?: string;
   estatusValor?: string;
   excludeRechazadas?: boolean;
+  // Filtro por autorización de circuitos (claves CSV: pend_dg,rechazado,...)
+  // y fechas de último cambio por fila para el orden "Último cambio".
+  // Ver lib/autorizacionFiltro.
+  autorizacion?: string;
+  includeCambios?: boolean;
 }
 
 export interface PropuestaStats {
@@ -94,6 +99,9 @@ export interface InventarioReservado {
   tipo_medio: string | null;
   inicio_periodo: string | null;
   fin_periodo: string | null;
+  // Horario diario del circuito digital (feature Horario inicio/fin). null si no aplica.
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
   tradicional_digital: string | null;
   tipo_de_mueble: string | null;
   ancho: number | null;
@@ -105,6 +113,15 @@ export interface InventarioReservado {
   numero_catorcena?: number | null;
   anio_catorcena?: number | null;
   formato?: string | null;
+  // Versionado de circuitos completados (Vista Compartir). Ver
+  // features/propuestas/versionCompletado.ts.
+  estado_version?: 'vigente' | 'no_vigente' | 'sin_version' | null;
+  version_completado?: number | null;
+  fecha_completado?: string | null;
+  motivo_no_vigente?: string | null;
+  // Origen en campañas: 'propuesta' cruzo en el pase a ventas, 'campana' se
+  // agrego despues. Ver features/propuestas/origenReserva.ts.
+  origen_reserva?: 'propuesta' | 'campana' | null;
 }
 
 export interface PropuestaFullDetails {
@@ -185,6 +202,15 @@ export const propuestasService = {
       throw new Error(response.data.error || 'Error al obtener propuesta');
     }
     return response.data.data;
+  },
+
+  /** Desglose de completitud por catorcena (popover del badge "Incompleta"). */
+  async getCompletitud(id: number): Promise<{ catorcena: number; anio: number; caras_esperadas: number; reservas_count: number; completa: boolean }[]> {
+    const response = await api.get<ApiResponse<{ catorcena: number; anio: number; caras_esperadas: number; reservas_count: number; completa: boolean }[]>>(`/propuestas/${id}/completitud`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al obtener completitud');
+    }
+    return response.data.data ?? [];
   },
 
   async updateStatus(id: number, status: string, comentario_cambio_status?: string): Promise<Propuesta> {
@@ -285,6 +311,23 @@ export const propuestasService = {
     return response.data.data;
   },
 
+  // Bloquear / desbloquear un circuito (apartado exclusivo de Tráfico). El back
+  // responde con la forma plana { success, bloqueado, message, ... }.
+  async toggleBloqueoCircuito(
+    propuestaId: number,
+    caraId: number,
+    activo: boolean,
+  ): Promise<{ success: boolean; bloqueado?: boolean; message?: string; bloqueadas?: number; desbloqueadas?: number; desplazadas?: number; error?: string }> {
+    const response = await api.post<{ success: boolean; bloqueado?: boolean; message?: string; bloqueadas?: number; desbloqueadas?: number; desplazadas?: number; error?: string }>(
+      `/propuestas/${propuestaId}/circuito/${caraId}/bloqueo`,
+      { activo },
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al cambiar el bloqueo del circuito');
+    }
+    return response.data;
+  },
+
   async createReservas(
     propuestaId: number,
     data: {
@@ -324,6 +367,14 @@ export const propuestasService = {
     const response = await api.get<ApiResponse<ReservaModalItem[]>>(`/propuestas/${propuestaId}/reservas-modal`);
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Error al obtener reservas');
+    }
+    return response.data.data;
+  },
+
+  async getReservasHistorial(propuestaId: number): Promise<ReservaHistorialItem[]> {
+    const response = await api.get<ApiResponse<ReservaHistorialItem[]>>(`/propuestas/${propuestaId}/reservas-historial`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener historial');
     }
     return response.data.data;
   },
@@ -443,6 +494,10 @@ export interface CaraUpdateData {
   articulo?: string;
   descuento?: number;
   grupo_rt_bf?: number | null;
+  // Horario diario (solo circuitos DIGITALES): franja "HH:MM" aplicada a todo el
+  // rango. Feature "Horario inicio/fin - Digital".
+  hora_inicio?: string;
+  hora_fin?: string;
   // Si true, propaga este update a todas las caras del mismo grupo_masivo_id
   aplicarAGrupo?: boolean;
   // Solo para createCara desde el modal de edición: persiste la cara pero NO
@@ -473,6 +528,9 @@ export interface SolicitudCara {
   autorizacion_dg?: string;
   autorizacion_dcm?: string;
   grupo_rt_bf?: number | null;
+  en_filtro_dg?: boolean;
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
 }
 
 export interface ReservaModalItem {
@@ -492,4 +550,35 @@ export interface ReservaModalItem {
   grupo_completo_id: number | null;
   solicitud_cara_id: number;
   articulo: string | null;
+}
+
+// Fila del tab "Historial" del buscador: reserva que salió del circuito
+// (quitada / desplazada / por bloqueo). Reserva soft-eliminada + estado actual
+// del inventario + si se puede volver a reservar.
+export interface ReservaHistorialItem {
+  reserva_id: number;
+  espacio_id: number;
+  inventario_id: number;
+  codigo_unico: string;
+  tipo_de_cara: string | null;
+  formato: string | null;      // = inventarios.mueble
+  ubicacion: string | null;
+  isla: string | null;
+  plaza: string | null;
+  municipio: string | null;
+  ancho: number | null;
+  alto: number | null;
+  tradicional_digital: string | null;
+  estatus_inventario: string | null;
+  estatus: string;             // estatus que tenía la reserva al salir
+  estatus_original: string | null;
+  deleted_at: string | null;   // cuándo salió
+  aps?: number | null;
+  solicitud_cara_id: number;
+  articulo: string | null;
+  inicio_periodo: string | null;
+  fin_periodo: string | null;
+  disponible: boolean;         // ¿se puede volver a reservar hoy?
+  motivo_salida: 'No Disponible' | 'Bloqueado' | 'Inhabilitado' | 'Desplazado' | 'Quitado' | string;
+  motivo_no_disponible: string | null;
 }

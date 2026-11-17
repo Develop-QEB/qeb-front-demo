@@ -1,20 +1,49 @@
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useMemo, useRef, useCallback, memo } from 'react';
 import {
   ArrowLeft, Share2, Download, FileText, Map as MapIcon, Copy, Check, Loader2,
   ChevronDown, ChevronRight, Filter, ArrowUpDown, Layers, FileSpreadsheet, ExternalLink, X, Maximize2, Eye, EyeOff
 } from 'lucide-react';
-import { GoogleMap, useLoadScript, Marker, Circle, Autocomplete, InfoWindow } from '@react-google-maps/api';
+import { GoogleMap, useLoadScript, Marker, InfoWindow } from '@react-google-maps/api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { propuestasService, InventarioReservado, PropuestaFullDetails } from '../../services/propuestas.service';
+import { UdcReservadosTable } from './UdcReservadosTable';
+import { UdcMapaAeropuerto } from './UdcMapaAeropuerto';
+import { udcFichaImg, udcFichaDe, udcMapaCoord, UDC_MAPA_COORDS, UDC_MAPA_COORDS_PB, udcPantallaNum } from '../../lib/udc';
+import udcMapaPA from './assets/udc-mapa-aicm-t1.jpg';
+import udcMapaPB from './assets/udc-mapa-aicm-t1-pb.jpg';
 import { formatCurrency, formatDate } from '../../lib/utils';
-import { toNum, applyNumberFormats, FMT_COORD } from '../../utils/excelFormat';
+import { toNum } from '../../utils/excelFormat';
+import { descargarExcelCompartir, FMT_COORD } from '../../utils/excelCompartir';
+import { horarioLabel } from '../../lib/periodos';
 import { useThemeStore } from '../../store/themeStore';
+// Versionado de circuitos completados: filas/pines 'no_vigente' en gris,
+// leyenda "Última versión completada", estilos de PDF/Excel.
+import {
+  esNoVigente, hayNoVigentes, estadoTexto, leyendaVersion,
+  NO_VIGENTE_LABEL, NO_VIGENTE_LEYENDA, NO_VIGENTE_CHIP, MAPA_GRIS, PDF_GRIS_FONDO,
+} from './versionCompletado';
+// Origen en campañas: azul = se vino de la propuesta en el pase a ventas,
+// verde = se agrego despues dentro de la campaña (pase a ventas incompleto).
+import {
+  origenColor, origenTexto, origenDe, tieneOrigen, hayAgregadasEnCampana, contarPorOrigen,
+  excelFondoOrigen, pdfEstiloCompartir, ORIGEN_COLOR, ORIGEN_LABEL, ORIGEN_LEYENDA, PDF_ORIGEN_FONDO,
+} from './origenReserva';
 
 // Config UNICA de Google Maps (mismo id/key/libraries en toda la app) para
 // que el script se inyecte una sola vez. Ver src/config/googleMaps.ts.
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
+// Capas de POI / poligonos con las que Trafico armo cada circuito (Buscador de
+// Formatos -> capasMapa.ts). Vista interna: llegan TODAS, incluidas las que
+// Trafico oculto al cliente; aqui se pueden mostrar/ocultar y borrar.
+import { capasMapaService } from '../../services/capasMapa.service';
+import { CapaMapa, boundsDeCapas, crearFiltroCapas } from './capasMapa';
+import { CapasMapaPanel } from './CapasMapaPanel';
+import { CapasMapaOverlay } from './CapasMapaOverlay';
+// Buscador de POI libre (misma busqueda por area que el Buscador de Formatos).
+import { PoiBuscadorMapa, PoiMapaOverlay } from './PoiBuscadorMapa';
+import type { POIEncontrado } from './poiBusqueda';
 
 // Purple Brand Colors for Compartir
 const PURPLE_PRIMARY = '#8B5CF6';
@@ -31,13 +60,6 @@ const DARK_MAP_STYLES = [
   { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2d2d44' }] },
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0f0f1a' }] },
 ];
-
-interface POIMarker {
-  id: string;
-  position: { lat: number; lng: number };
-  name: string;
-  range: number;
-}
 
 // Helper functions
 const MESES_LABEL = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -180,12 +202,18 @@ function applyFilters<T>(data: T[], filters: FilterCondition[]): T[] {
 // cada toggle de checkbox recreaba las ~5010 instancias de google.maps.Marker en el
 // hilo principal (freeze/crash en propuestas grandes). Con memo + onSelect estable,
 // togglear un item solo actualiza los markers cuyo isSelected cambió.
-const MapMarker = memo(function MapMarker({ item, isSelected, onSelect }: {
+const MapMarker = memo(function MapMarker({ item, isSelected, mostrarOrigen, onSelect }: {
   item: InventarioReservado;
   isSelected: boolean;
+  /** Contexto campaña: colorear por origen (azul propuesta / verde campaña). */
+  mostrarOrigen: boolean;
   onSelect: (item: InventarioReservado) => void;
 }) {
   if (!item.latitud || !item.longitud) return null;
+  // Pieza desplazada/quitada despues de completar el circuito: pin gris.
+  const noVigente = esNoVigente(item);
+  // Prioridad de color: seleccion > no vigente (gris) > origen > tipo de cara.
+  const colorOrigen = origenColor(item, mostrarOrigen);
   return (
     <Marker
       position={{ lat: item.latitud, lng: item.longitud }}
@@ -195,9 +223,11 @@ const MapMarker = memo(function MapMarker({ item, isSelected, onSelect }: {
         scale: isSelected ? 10 : 7,
         fillColor: isSelected
           ? '#22c55e' // Verde si está seleccionado
-          : String(item.tipo_de_cara).startsWith('Flujo') ? '#ef4444' : String(item.tipo_de_cara).startsWith('Contraflujo') ? '#3b82f6' : '#a855f7',
-        fillOpacity: isSelected ? 1 : 0.9,
-        strokeColor: '#fff',
+          : noVigente ? MAPA_GRIS
+          : colorOrigen
+          || (String(item.tipo_de_cara).startsWith('Flujo') ? '#ef4444' : String(item.tipo_de_cara).startsWith('Contraflujo') ? '#3b82f6' : '#a855f7'),
+        fillOpacity: isSelected ? 1 : noVigente ? 0.75 : 0.9,
+        strokeColor: noVigente && !isSelected ? '#6b7280' : '#fff',
         strokeWeight: isSelected ? 3 : 1.5,
       }}
     />
@@ -206,20 +236,56 @@ const MapMarker = memo(function MapMarker({ item, isSelected, onSelect }: {
 
 // Fila de detalle memoizada: togglear un checkbox solo re-renderiza la fila afectada,
 // no las miles de filas de los grupos expandidos.
-const DetailRow = memo(function DetailRow({ item, isSelected, isDark, onToggle }: {
+const DetailRow = memo(function DetailRow({ item, isSelected, isDark, mostrarOrigen, onToggle }: {
   item: InventarioReservado;
   isSelected: boolean;
   isDark: boolean;
+  /** Contexto campaña: marcar origen (azul propuesta / verde campaña). */
+  mostrarOrigen: boolean;
   onToggle: (key: string) => void;
 }) {
   const inv = inversionBruta(item);
   const key = item.rsv_ids;
+  // 'no_vigente' = estaba en la ultima version completada del circuito pero se
+  // desplazo (multireservas) o se quito a mano: fila en gris + etiqueta.
+  const noVigente = esNoVigente(item);
+  const colorOrigen = noVigente ? null : origenColor(item, mostrarOrigen);
+  const origen = mostrarOrigen ? origenDe(item) : null;
   return (
-    <tr onClick={() => onToggle(key)} className={`cursor-pointer transition-colors ${isSelected ? 'bg-purple-500/10' : 'hover:bg-purple-500/5'}`}>
+    <tr
+      onClick={() => onToggle(key)}
+      title={noVigente ? (item.motivo_no_vigente || NO_VIGENTE_LEYENDA) : (origen ? ORIGEN_LABEL[origen] : undefined)}
+      // Barra de color a la izquierda = origen del inventario en la campaña.
+      style={colorOrigen ? { boxShadow: `inset 4px 0 0 0 ${colorOrigen}` } : undefined}
+      className={`cursor-pointer transition-colors ${isSelected ? 'bg-purple-500/10' : 'hover:bg-purple-500/5'} ${noVigente ? 'opacity-50 grayscale italic' : ''}`}
+    >
       <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
         <input type="checkbox" checked={isSelected} onChange={() => onToggle(key)} className="checkbox-purple" />
       </td>
-      <td className={`px-3 py-2 font-mono text-xs ${isDark ? 'text-blue-300' : 'text-blue-600'}`}>{item.codigo_unico}</td>
+      <td className={`px-3 py-2 font-mono text-xs ${isDark ? 'text-blue-300' : 'text-blue-600'}`}>
+        {colorOrigen && (
+          <span
+            className="inline-block h-2 w-2 rounded-full mr-1.5 align-middle"
+            style={{ backgroundColor: colorOrigen }}
+          />
+        )}
+        {item.codigo_unico}
+        {noVigente && (
+          <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold not-italic font-sans border ${isDark ? 'bg-zinc-700 text-zinc-200 border-zinc-500' : 'bg-gray-200 text-gray-700 border-gray-400'}`}>
+            {NO_VIGENTE_LABEL}
+          </span>
+        )}
+        {origen === 'campana' && (
+          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold not-italic font-sans border" style={{ backgroundColor: `${ORIGEN_COLOR.campana}22`, color: ORIGEN_COLOR.campana, borderColor: `${ORIGEN_COLOR.campana}66` }}>
+            Nuevo en campaña
+          </span>
+        )}
+        {/* Horario diario (digital): no hay columna Periodo en pantalla (va en el header
+            de grupo), así que la franja del circuito se cuelga bajo el código. */}
+        {item.tradicional_digital === 'Digital' && (item.hora_inicio || item.hora_fin) && (
+          <span className="block text-[10px] text-purple-400 font-medium mt-0.5 not-italic font-sans" title="Horario diario (digital)">⏱ {horarioLabel(item.hora_inicio, item.hora_fin)}</span>
+        )}
+      </td>
       <td className={`px-3 py-2 text-xs ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{item.plaza || '-'}</td>
       <td className={`px-3 py-2 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
         {item.mueble || '-'}
@@ -243,7 +309,6 @@ export function CompartirPropuestaPage() {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
   const propuestaId = id ? parseInt(id, 10) : 0;
   const mapRef = useRef<google.maps.Map | null>(null);
-  const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
 
   // States
   const [copied, setCopied] = useState(false);
@@ -263,15 +328,18 @@ export function CompartirPropuestaPage() {
   const [showFilters, setShowFilters] = useState(false);
 
   // POI states
-  const [poiMarkers, setPoiMarkers] = useState<POIMarker[]>([]);
+  const [poiMarkers, setPoiMarkers] = useState<POIEncontrado[]>([]);
   const [searchRange, setSearchRange] = useState(300);
-  const [poiSearch, setPoiSearch] = useState('');
   const [selectedMarker, setSelectedMarker] = useState<InventarioReservado | null>(null);
   // El mapa embebido pinta un marker por inventario (miles en propuestas grandes) y es
   // lo más pesado de la página. Colapsado por default: así los checkboxes van fluidos y
   // el mapa solo se monta cuando el usuario lo pide. ("Ver Mapa"/"Expandir Mapa" siguen
   // abriendo el visor completo aparte.)
   const [showMap, setShowMap] = useState(false);
+  // Capas de Trafico prendidas en el mapa (nacen apagadas: son "activables").
+  const [capasActivas, setCapasActivas] = useState<Set<number>>(new Set());
+  const [capaOcupadaId, setCapaOcupadaId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
 
   // Google Maps
   const { isLoaded } = useLoadScript(GOOGLE_MAPS_LOADER_OPTIONS);
@@ -289,7 +357,18 @@ export function CompartirPropuestaPage() {
     enabled: propuestaId > 0,
   });
 
+  // Capas por circuito (solicitud_caras_id). Como todo se resuelve por la
+  // propuesta (idquote), sirven igual para la campaña (?ctx=campana).
+  const { data: capas = [] } = useQuery({
+    queryKey: ['capas-mapa', propuestaId],
+    queryFn: () => capasMapaService.listarPorPropuesta(propuestaId),
+    enabled: propuestaId > 0,
+  });
+
   const tipoPeriodo = (details?.cotizacion as any)?.tipo_periodo || 'catorcena';
+  // UDC (aeropuerto AICM): sin geolocalización → en compartir se oculta el
+  // "Resumen de Circuitos" + mapa y se muestra la ficha técnica de reservados.
+  const esUDC = ((details?.propuesta as any)?.sap_database || (details?.solicitud as any)?.sap_database || '').toString().toUpperCase() === 'UDC';
 
   // Leyenda de contexto: la misma vista sirve para compartir desde PROPUESTAS
   // ("Circuitos Muestra") y desde CAMPAÑAS ("Circuitos Confirmados"). La decide
@@ -299,6 +378,10 @@ export function CompartirPropuestaPage() {
   // (todas las hojas) y se propaga a los enlaces públicos del cliente.
   const esCampana = searchParams.get('ctx') === 'campana';
   const leyendaCircuitos = esCampana ? 'Circuitos Confirmados' : 'Circuitos Muestra';
+
+  // Colorear por origen SOLO en campañas y solo si el backend pudo clasificar
+  // (hay foto del pase a ventas). En propuestas no aplica: todo viene de ahi.
+  const mostrarOrigen = esCampana && tieneOrigen(inventario);
 
   // Master catorcena-filtered inventario (affects everything: KPIs, charts, map, resumen)
   const catorcenaFilteredInventario = useMemo(() => {
@@ -345,19 +428,82 @@ export function CompartirPropuestaPage() {
     return Object.entries(counts).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [catorcenaFilteredInventario]);
 
-  // Markers visibles en el mapa (con coords y respetando la selección). Memoizado para
-  // no reconstruir el arreglo salvo que cambie el inventario filtrado o la selección.
+  // Capas prendidas = filtro espacial ademas de visualizacion: el mapa deja solo
+  // el inventario que cumple el criterio (dentro de "cerca de" / fuera de "lejos
+  // de"), igual que el "Conservar" del Buscador de Formatos.
+  const filtroCapas = useMemo(
+    () => crearFiltroCapas(capas.filter(c => capasActivas.has(c.id))),
+    [capas, capasActivas]
+  );
+
+  // Markers visibles en el mapa (con coords, respetando la selección y las capas
+  // prendidas). Memoizado para no reconstruir el arreglo salvo que algo cambie.
   const visibleMarkers = useMemo(() => {
     return catorcenaFilteredInventario.filter(i =>
       i.latitud && i.longitud && (selectedItems.size === 0 || selectedItems.has(i.rsv_ids))
+      && (!filtroCapas || filtroCapas(i.latitud, i.longitud))
     );
-  }, [catorcenaFilteredInventario, selectedItems]);
+  }, [catorcenaFilteredInventario, selectedItems, filtroCapas]);
 
   // En el mapa EMBEBIDO: si hay demasiados pines (>2000) y no hay selección, no pintarlos
   // todos (traba el navegador). Se piden que seleccione circuitos primero. NO aplica a
   // "Expandir Mapa" (visor aparte), que sí muestra todo sin selección.
   const MAX_PINES_INLINE = 2000;
   const demasiadosPines = selectedItems.size === 0 && visibleMarkers.length > MAX_PINES_INLINE;
+
+  // ---- Capas de Trafico ----
+  // Circuitos con inventario en el alcance actual (chips de catorcena): las
+  // capas de circuitos fuera se atenúan en el panel. Nombre legible por circuito.
+  const circuitosVisibles = useMemo(() => {
+    const s = new Set<number>();
+    catorcenaFilteredInventario.forEach(i => { if (i.solicitud_caras_id) s.add(i.solicitud_caras_id); });
+    return s;
+  }, [catorcenaFilteredInventario]);
+  const nombreCircuito = useCallback((scId: number): string | null => {
+    const item = (inventario || []).find(i => i.solicitud_caras_id === scId);
+    if (!item) return null;
+    return [item.articulo, item.formato || item.mueble].filter(Boolean).join(' · ') || null;
+  }, [inventario]);
+  // Al prender una capa se encuadra el mapa para que se vea (si esta montado).
+  const handleToggleCapa = (id: number) => {
+    const capa = capas.find(c => c.id === id);
+    if (capa && !capasActivas.has(id) && mapRef.current) {
+      const b = boundsDeCapas([capa]);
+      if (b) mapRef.current.fitBounds(b, 60);
+    }
+    setCapasActivas(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleTodasCapas = (activar: boolean) => {
+    setCapasActivas(activar ? new Set(capas.map(c => c.id)) : new Set());
+  };
+  const handleCambiarVisibleCapa = async (capa: CapaMapa, visible: boolean) => {
+    setCapaOcupadaId(capa.id);
+    try {
+      await capasMapaService.actualizar(capa.id, { visibleCliente: visible });
+      await queryClient.invalidateQueries({ queryKey: ['capas-mapa', propuestaId] });
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'No se pudo actualizar la capa');
+    } finally {
+      setCapaOcupadaId(null);
+    }
+  };
+  const handleEliminarCapa = async (capa: CapaMapa) => {
+    if (!window.confirm(`¿Eliminar la capa "${capa.nombre}"?\n\nDejará de verse aquí y en el link del cliente. El circuito no cambia.`)) return;
+    setCapaOcupadaId(capa.id);
+    try {
+      await capasMapaService.eliminar(capa.id);
+      setCapasActivas(prev => { const next = new Set(prev); next.delete(capa.id); return next; });
+      await queryClient.invalidateQueries({ queryKey: ['capas-mapa', propuestaId] });
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'No se pudo eliminar la capa');
+    } finally {
+      setCapaOcupadaId(null);
+    }
+  };
 
   // Map center (responds to catorcena filter)
   const mapCenter = useMemo(() => {
@@ -574,41 +720,50 @@ export function CompartirPropuestaPage() {
       ? inventario.filter(i => selectedItems.has(itemKey(i)))
       : inventario;
     if (source.length === 0) return;
-    import('xlsx').then(XLSX => {
-      // codigo_unico (completo) va ANTES de Clave (que es solo el prefijo).
-      const headers = ['codigo_unico', 'Clave', 'Plaza', 'Ubicación', 'Tipo de Cara', 'Formato', 'Tipo Inventario', 'Periodo', 'Lat', 'Long', 'NOTAS'];
-      const byPlaza: Record<string, typeof inventario> = {};
-      for (const i of source) {
-        const plaza = i.plaza || 'Sin Plaza';
-        if (!byPlaza[plaza]) byPlaza[plaza] = [];
-        byPlaza[plaza].push(i);
-      }
-      const wb = XLSX.utils.book_new();
-      for (const plaza of Object.keys(byPlaza).sort()) {
-        const rows = byPlaza[plaza].map(i => [
+    // codigo_unico (completo) va ANTES de Clave (que es solo el prefijo).
+    // "Estado" marca las piezas no vigentes (ademas la fila va en gris).
+    const headers = ['codigo_unico', 'Clave', 'Plaza', 'Ubicación', 'Formato', 'Tipo Inventario', 'Periodo', 'Horario', 'Lat', 'Long', 'Estado', ...(mostrarOrigen ? ['Origen'] : []), 'NOTAS'];
+    const byPlaza: Record<string, InventarioReservado[]> = {};
+    for (const i of source) {
+      const plaza = i.plaza || 'Sin Plaza';
+      if (!byPlaza[plaza]) byPlaza[plaza] = [];
+      byPlaza[plaza].push(i);
+    }
+    const subLeyenda = leyendaVersion(inventario) || undefined;
+    // Fila 1: leyenda de contexto en TODAS las hojas (para que no se pierda si
+    // borran alguna pestaña). Fila 2: ultima version completada. Luego headers.
+    const hojas = Object.keys(byPlaza).sort().map(plaza => ({
+      nombre: plaza,
+      leyenda: leyendaCircuitos,
+      subLeyenda,
+      headers,
+      filas: byPlaza[plaza].map(i => ({
+        noVigente: esNoVigente(i),
+        // Tinte azul/verde por origen (solo campañas); el gris de no vigente gana.
+        fondoArgb: excelFondoOrigen(i, mostrarOrigen),
+        valores: [
           i.codigo_unico || '',
           (i.codigo_unico || '').split('_')[0],
           i.plaza || '',
           i.ubicacion || '',
-          i.tipo_de_cara || '',
           i.mueble || '',
           i.tradicional_digital || '',
           formatInicioPeriodo(i, tipoPeriodo),
+          i.tradicional_digital === 'Digital' ? horarioLabel(i.hora_inicio, i.hora_fin) : '',
           toNum(i.latitud),
           toNum(i.longitud),
-          ''
-        ]);
-        // Fila 1: leyenda de contexto en TODAS las hojas (para que no se pierda si
-        // borran alguna pestaña). Headers pasan a la fila 2 (headerRows = 2 abajo).
-        const ws = XLSX.utils.aoa_to_sheet([[leyendaCircuitos], headers, ...rows]);
-        // Lat (col 8) y Long (col 9) como celdas tipo número
-        applyNumberFormats(XLSX, ws, rows.length, { 8: FMT_COORD, 9: FMT_COORD }, 2);
-        const sheetName = plaza.substring(0, 31);
-        XLSX.utils.book_append_sheet(wb, ws, sheetName);
-      }
-      const sufijo = selectedItems.size > 0 ? '_seleccion' : '';
-      XLSX.writeFile(wb, `reservas_propuesta_${propuestaId}${sufijo}.xlsx`);
-    });
+          estadoTexto(i),
+          ...(mostrarOrigen ? [origenTexto(i, true)] : []),
+          '',
+        ],
+      })),
+      // Lat y Long como celdas tipo número. Corridos a 8/9 al insertar "Horario".
+      formatos: { 8: FMT_COORD, 9: FMT_COORD },
+    }));
+    const sufijo = selectedItems.size > 0 ? '_seleccion' : '';
+    const notaPie = mostrarOrigen ? `${NO_VIGENTE_LEYENDA}  ·  ${ORIGEN_LEYENDA}` : NO_VIGENTE_LEYENDA;
+    descargarExcelCompartir(`reservas_propuesta_${propuestaId}${sufijo}.xlsx`, hojas, notaPie)
+      .catch(err => console.error('Error generando Excel:', err));
   };
 
   // Download ALL items as KML
@@ -619,7 +774,7 @@ export function CompartirPropuestaPage() {
       .filter(i => i.latitud && i.longitud)
       .map(i => `
         <Placemark>
-          <name>${i.codigo_unico}</name>
+          <name>${i.codigo_unico}${esNoVigente(i) ? ` (${NO_VIGENTE_LABEL})` : ''}${mostrarOrigen && origenDe(i) === 'campana' ? ' [Nuevo en campaña]' : ''}</name>
           <description>
             <![CDATA[
               Plaza: ${i.plaza || 'N/A'}<br/>
@@ -660,7 +815,7 @@ export function CompartirPropuestaPage() {
       .filter(i => i.latitud && i.longitud)
       .map(i => `
         <Placemark>
-          <name>${i.codigo_unico}</name>
+          <name>${i.codigo_unico}${esNoVigente(i) ? ` (${NO_VIGENTE_LABEL})` : ''}${mostrarOrigen && origenDe(i) === 'campana' ? ' [Nuevo en campaña]' : ''}</name>
           <description>
             <![CDATA[
               Plaza: ${i.plaza || 'N/A'}<br/>
@@ -698,6 +853,7 @@ export function CompartirPropuestaPage() {
   //     entre catorcenas) — el bug que hacía que el mapa no respondiera a la seleccion.
   //   - Solo chips de catorcena: ?periodos=YYYY-NN,... (compacto, no enumera cada pin).
   //   - Sin nada seleccionado: sin params -> mapa completo.
+  //   - Capas de Trafico prendidas en el mapa embebido: ?capas=id,id (llegan prendidas).
   const handleExpandMap = () => {
     const base = catorcenaFilteredInventario; // respeta los chips de catorcena
     const params = new URLSearchParams();
@@ -713,6 +869,11 @@ export function CompartirPropuestaPage() {
       params.set('periodos', Array.from(selectedCatorcenas).join(','));
     }
 
+    // Capas de Trafico prendidas aqui -> llegan prendidas al visor (?capas=ids).
+    // Solo las visibles al cliente: las ocultas ni viajan en el endpoint publico.
+    const capasSel = capas.filter(c => capasActivas.has(c.id) && c.visible_cliente).map(c => c.id);
+    if (capasSel.length > 0) params.set('capas', capasSel.join(','));
+
     const qs = params.toString();
     window.open(`/cliente/propuesta/${propuestaId}/mapa${qs ? `?${qs}` : ''}`, '_blank', 'noopener,noreferrer');
   };
@@ -723,7 +884,7 @@ export function CompartirPropuestaPage() {
       .filter(i => i.latitud && i.longitud)
       .map(i => `
         <Placemark>
-          <name>${i.codigo_unico}</name>
+          <name>${i.codigo_unico}${esNoVigente(i) ? ` (${NO_VIGENTE_LABEL})` : ''}${mostrarOrigen && origenDe(i) === 'campana' ? ' [Nuevo en campaña]' : ''}</name>
           <description>
             <![CDATA[
               Plaza: ${i.plaza || 'N/A'}<br/>
@@ -1064,6 +1225,55 @@ export function CompartirPropuestaPage() {
     });
     y += 25;
 
+    // Leyenda de versionado: ultima version completada y significado del gris.
+    {
+      const leyVer = leyendaVersion(inventario);
+      const hayGris = hayNoVigentes(inventario);
+      if (leyVer || hayGris) {
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'italic');
+        doc.setTextColor(90, 90, 90);
+        if (leyVer) { doc.text(leyVer, marginX, y); y += 4.5; }
+        if (hayGris) {
+          doc.setFillColor(...PDF_GRIS_FONDO);
+          doc.setDrawColor(180, 180, 180);
+          doc.rect(marginX, y - 3, 6, 3.5, 'FD');
+          doc.text(NO_VIGENTE_LEYENDA, marginX + 8, y);
+          y += 4.5;
+        }
+        y += 2;
+      }
+      // Leyenda de origen (solo campañas): azul de propuesta, verde agregado.
+      if (mostrarOrigen) {
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'italic');
+        doc.setTextColor(90, 90, 90);
+        doc.setDrawColor(180, 180, 180);
+        doc.setFillColor(...PDF_ORIGEN_FONDO.propuesta);
+        doc.rect(marginX, y - 3, 6, 3.5, 'FD');
+        doc.text(ORIGEN_LABEL.propuesta, marginX + 8, y);
+        const anchoIzq = doc.getTextWidth(ORIGEN_LABEL.propuesta) + 16;
+        doc.setFillColor(...PDF_ORIGEN_FONDO.campana);
+        doc.rect(marginX + anchoIzq, y - 3, 6, 3.5, 'FD');
+        doc.text(ORIGEN_LABEL.campana, marginX + anchoIzq + 8, y);
+        y += 6.5;
+      }
+    }
+
+    // UDC: precargar las fichas técnicas (imágenes) para incrustarlas en el PDF,
+    // y un índice de la ficha por nombre de pantalla (para los datos básicos).
+    const fichaImgCache = new Map<string, HTMLImageElement>();
+    if (esUDC && inventario && inventario.length > 0) {
+      const urls = new Set<string>();
+      inventario.forEach(it => { const u = udcFichaImg(it.codigo_unico); if (u) urls.add(u); });
+      await Promise.all(Array.from(urls).map(u => new Promise<void>(resolve => {
+        const img = new Image();
+        img.onload = () => { fichaImgCache.set(u, img); resolve(); };
+        img.onerror = () => resolve();
+        img.src = u;
+      })));
+    }
+
     // Table grouped by Catorcena > Artículo (separate rows)
     if (inventario && inventario.length > 0) {
       // Group by catorcena first, then by articulo
@@ -1100,6 +1310,20 @@ export function CompartirPropuestaPage() {
           const groupBonif = items.reduce((sum, i) => sum + (Number(i.caras_bonificadas) || 0), 0);
           const groupTarifa = items.reduce((sum, i) => sum + inversionBruta(i), 0);
 
+          // UDC: mantener el encabezado del artículo PEGADO a su primera ficha.
+          // Si no cabe el sub-header + la primera ficha en lo que queda de hoja,
+          // abre hoja nueva para que cada artículo arranque limpio y no quede el
+          // título al pie con las fichas saltando a la página siguiente.
+          if (esUDC) {
+            const first = items[0];
+            const u0 = first ? udcFichaImg(first.codigo_unico) : null;
+            const img0 = u0 ? fichaImgCache.get(u0) : undefined;
+            const colW0 = (pageWidth - marginX * 2 - 10 - 6) / 2;
+            const ratio0 = img0 && img0.naturalWidth > 0 ? img0.naturalWidth / img0.naturalHeight : 1.647;
+            const need = 8 /*sub-header*/ + colW0 / ratio0 + 14 /*datos + horario debajo*/;
+            if (y + need > pageHeight - 16) { doc.addPage(); y = 20; }
+          }
+
           // === ARTICULO SUB-HEADER ===
           doc.setFillColor(...IMU_GREEN);
           doc.roundedRect(marginX + 5, y, pageWidth - marginX * 2 - 10, 6, 1, 1, 'F');
@@ -1107,23 +1331,118 @@ export function CompartirPropuestaPage() {
           doc.setFont('helvetica', 'bold');
           doc.setTextColor(...WHITE);
           const groupTarifaUnit = items.length > 0 ? tarifaBruta(items[0]) : 0;
-          doc.text(`${articulo}`, marginX + 10, y + 4);
+          // La barra verde identifica al grupo por PLAZA y FORMATO, no por
+          // artículo: el artículo es nomenclatura interna y no le dice nada al
+          // cliente. Un grupo puede abarcar varias plazas o formatos, así que se
+          // listan los distintos y se recorta para no chocar con los totales de
+          // la derecha. Si por algún motivo no hay ninguno, cae al artículo.
+          const etiquetaDe = (vals: (string | null)[]) => [...new Set(vals.filter(Boolean) as string[])].join(', ');
+          const plazasGrupo = etiquetaDe(items.map(i => i.plaza));
+          const formatosGrupo = etiquetaDe(items.map(i => i.mueble));
+          // UDC (aeropuerto): plaza y formato son IGUALES en todo el inventario
+          // ("CIUDAD DE MEXICO · PANTALLA DIGITAL"), así que esa etiqueta no
+          // distingue un circuito de otro y las fichas se ven "todas juntas".
+          // Para UDC la barra verde se rotula con el ARTÍCULO (el circuito), que
+          // es justo lo que separa un bloque de fichas del siguiente.
+          let etiquetaGrupo = esUDC
+            ? articulo
+            : ([plazasGrupo, formatosGrupo].filter(Boolean).join('  ·  ') || articulo);
+          const anchoMaxEtiqueta = pageWidth - marginX * 2 - 120;
+          if (doc.getTextWidth(etiquetaGrupo) > anchoMaxEtiqueta) {
+            while (etiquetaGrupo.length > 8 && doc.getTextWidth(`${etiquetaGrupo}…`) > anchoMaxEtiqueta) {
+              etiquetaGrupo = etiquetaGrupo.slice(0, -1);
+            }
+            etiquetaGrupo = `${etiquetaGrupo}…`;
+          }
+          doc.text(etiquetaGrupo, marginX + 10, y + 4);
           doc.setFont('helvetica', 'normal');
           doc.text(`Renta: ${groupCaras}${groupBonif > 0 ? `  |  Bonif: ${groupBonif}` : ''}  |  Tarifa: ${formatCurrency(groupTarifaUnit)}  |  Inversion: ${formatCurrency(groupTarifa)}`, pageWidth - marginX - 10, y + 4, { align: 'right' });
           y += 8;
 
-          // === TABLE FOR THIS ARTICULO ===
+          if (esUDC) {
+            // === UDC: FICHAS TÉCNICAS (imágenes) + datos básicos, 2 por fila ===
+            const gap = 6;
+            const colW = (pageWidth - marginX * 2 - 10 - gap) / 2;
+            let col = 0;
+            let rowTop = y;
+            let rowMaxH = 0;
+            for (const it of items) {
+              const f = udcFichaDe(it.codigo_unico);
+              const url = udcFichaImg(it.codigo_unico);
+              const img = url ? fichaImgCache.get(url) : undefined;
+              const ratio = img && img.naturalWidth > 0 ? img.naturalWidth / img.naturalHeight : 1.647;
+              const imgH = colW / ratio;
+              const cellH = imgH + 14;
+              // Salto de página si la ficha no cabe
+              if (rowTop + cellH > pageHeight - 16) {
+                doc.addPage();
+                rowTop = 20;
+                col = 0;
+                rowMaxH = 0;
+              }
+              const x = marginX + 5 + col * (colW + gap);
+              if (img) {
+                doc.addImage(img, 'JPEG', x, rowTop, colW, imgH);
+                doc.setDrawColor(210);
+                doc.rect(x, rowTop, colW, imgH);
+              } else {
+                doc.setFillColor(245, 245, 245);
+                doc.rect(x, rowTop, colW, imgH, 'F');
+                doc.setFontSize(8);
+                doc.setTextColor(150, 150, 150);
+                doc.text('Ficha técnica no disponible', x + colW / 2, rowTop + imgH / 2, { align: 'center' });
+              }
+              // Datos básicos debajo de la ficha
+              const nombre = it.codigo_unico || 'Pantalla';
+              const zona = f?.zona || it.ubicacion || '';
+              const medida = (it.ancho && it.alto) ? `${it.ancho}x${it.alto}px` : (f ? f.medida : '');
+              const dur = f ? `${f.duracion} seg` : '';
+              const tarifaStr = `Tarifa: ${formatCurrency(tarifaBruta(it))}`;
+              const tipo = (Number(it.caras_bonificadas) || 0) > 0 && (Number(it.caras_renta) || 0) === 0 ? 'Bonificación' : 'Renta';
+              doc.setFontSize(9);
+              doc.setFont('helvetica', 'bold');
+              doc.setTextColor(...IMU_DARK);
+              doc.text(`${nombre}${zona ? `   ·   ${zona}` : ''}`, x + 1, rowTop + imgH + 5);
+              doc.setFontSize(7.5);
+              doc.setFont('helvetica', 'normal');
+              doc.setTextColor(90, 90, 90);
+              doc.text([medida, dur, tipo, tarifaStr].filter(Boolean).join('   ·   '), x + 1, rowTop + imgH + 9);
+              // Horario diario (digital): la pantalla UDC siempre es digital, la
+              // franja va en violeta debajo de los datos básicos (feedback Jos).
+              const horarioStr = (it.hora_inicio || it.hora_fin) ? horarioLabel(it.hora_inicio, it.hora_fin) : '';
+              if (horarioStr) {
+                doc.setFontSize(7.5);
+                doc.setTextColor(124, 58, 237);
+                doc.text(`Horario diario: ${horarioStr}`, x + 1, rowTop + imgH + 12.5);
+              }
+              rowMaxH = Math.max(rowMaxH, cellH);
+              col++;
+              if (col === 2) { col = 0; rowTop += rowMaxH + gap; rowMaxH = 0; }
+            }
+            if (col === 1) rowTop += rowMaxH + gap; // cerrar fila incompleta
+            y = rowTop + 2;
+          } else {
+          // === TABLA DE ESTE GRUPO ===
+          // Mismas columnas y mismos datos que el Excel de esta pantalla, para
+          // que los dos documentos se lean igual. Quedan fuera solo las dos
+          // columnas que existen por el formato de la hoja: "Clave" (el prefijo
+          // de codigo_unico, ya visible ahí) y "NOTAS" (columna en blanco para
+          // escribir a mano).
           const tableData = items.map(i => [
-            String(i.id),
+            i.codigo_unico || '',
+            i.plaza || '',
             (i.ubicacion || '').substring(0, 50),
             i.mueble || '',
-            i.municipio || '',
+            i.tradicional_digital || '',
+            formatInicioPeriodo(i, tipoPeriodo) + (i.tradicional_digital === 'Digital' && (i.hora_inicio || i.hora_fin) ? `\n${horarioLabel(i.hora_inicio, i.hora_fin)}` : ''),
             i.latitud?.toFixed(6) || '-',
             i.longitud?.toFixed(6) || '-',
+            estadoTexto(i),
+            ...(mostrarOrigen ? [origenTexto(i, true)] : []),
           ]);
 
           autoTable(doc, {
-            head: [['ID', 'Ubicación', 'Mueble', 'Municipio', 'Latitud', 'Longitud']],
+            head: [['codigo_unico', 'Plaza', 'Ubicación', 'Formato', 'Tipo Inventario', 'Periodo', 'Lat', 'Long', 'Estado', ...(mostrarOrigen ? ['Origen'] : [])]],
             body: tableData,
             startY: y,
             margin: { left: marginX + 5, right: marginX + 5 },
@@ -1131,13 +1450,20 @@ export function CompartirPropuestaPage() {
             headStyles: { fillColor: [230, 240, 250], textColor: IMU_BLUE, fontStyle: 'bold', fontSize: 7 },
             alternateRowStyles: { fillColor: [250, 252, 255] },
             columnStyles: {
-              0: { cellWidth: 18 },
-              1: { cellWidth: 70 },
-              2: { cellWidth: 35 },
-              3: { cellWidth: 35 },
-              4: { cellWidth: 28 },
+              0: { cellWidth: 52 },
+              1: { cellWidth: 30 },
+              2: { cellWidth: 66 },
+              3: { cellWidth: 32 },
+              4: { cellWidth: 26 },
               5: { cellWidth: 28 },
+              6: { cellWidth: 26 },
+              7: { cellWidth: 26 },
+              8: { cellWidth: 42 },
+              9: { cellWidth: 38 },
             },
+            // Gris = no vigente (desplazada/quitada tras completar el circuito).
+            // Azul/verde = origen en la campaña (propuesta vs agregado despues).
+            didParseCell: pdfEstiloCompartir(items, mostrarOrigen),
           });
 
           y = (doc as any).lastAutoTable.finalY + 5;
@@ -1147,10 +1473,97 @@ export function CompartirPropuestaPage() {
             doc.addPage();
             y = 20;
           }
+          }
         });
 
         y += 5; // Extra space after catorcena group
       });
+    }
+
+    // === UDC: MAPAS DEL AEROPUERTO (apilados) ===
+    // Un plano por cada mapa con >=1 pantalla reservada; pines verdes en las
+    // reservadas. En pantalla van con pestañas; aquí en el PDF, apilados.
+    if (esUDC && inventario && inventario.length > 0) {
+      const reservadosNums = new Set(inventario.map(i => udcPantallaNum(i.codigo_unico)).filter(Boolean));
+      const MAPAS_PDF: { titulo: string; url: string; coords: Record<string, { x: number; y: number }> }[] = [
+        { titulo: 'Terminal 1 · Planta Alta', url: udcMapaPA, coords: UDC_MAPA_COORDS },
+        { titulo: 'Terminal 1 · Planta Baja', url: udcMapaPB, coords: UDC_MAPA_COORDS_PB },
+      ];
+      const planos = MAPAS_PDF
+        .map(m => ({ ...m, nums: Object.keys(m.coords).filter(n => reservadosNums.has(n)) }))
+        .filter(m => m.nums.length > 0);
+      if (planos.length > 0) {
+        const mapaCache = new Map<string, HTMLImageElement>();
+        await Promise.all(planos.map(p => new Promise<void>(resolve => {
+          const img = new Image();
+          img.onload = () => { mapaCache.set(p.url, img); resolve(); };
+          img.onerror = () => resolve();
+          img.src = p.url;
+        })));
+
+        doc.addPage();
+        y = 20;
+        doc.setFillColor(...IMU_BLUE);
+        doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...WHITE);
+        doc.text('UBICACIÓN EN EL AEROPUERTO (AICM)', marginX + 5, y + 5);
+        y += 12;
+
+        const maxW = pageWidth - marginX * 2;
+        for (const plano of planos) {
+          const img = mapaCache.get(plano.url);
+          const ratio = img && img.naturalWidth > 0 ? img.naturalWidth / img.naturalHeight : 2;
+          let imgW = maxW;
+          let imgH = imgW / ratio;
+          const maxH = pageHeight - 46;
+          if (imgH > maxH) { imgH = maxH; imgW = imgH * ratio; }
+          if (y + 8 + imgH > pageHeight - 16) { doc.addPage(); y = 20; }
+          doc.setFillColor(...IMU_GREEN);
+          doc.roundedRect(marginX, y, maxW, 6, 1, 1, 'F');
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(...WHITE);
+          doc.text(`${plano.titulo}  ·  ${plano.nums.length} reservada${plano.nums.length !== 1 ? 's' : ''}`, marginX + 4, y + 4);
+          y += 8;
+          const imgX = marginX + (maxW - imgW) / 2;
+          if (img) {
+            doc.addImage(img, 'JPEG', imgX, y, imgW, imgH);
+            doc.setDrawColor(210);
+            doc.rect(imgX, y, imgW, imgH);
+          } else {
+            doc.setFillColor(245, 245, 245);
+            doc.rect(imgX, y, imgW, imgH, 'F');
+          }
+          // Pines verdes en las pantallas reservadas de este plano
+          for (const num of plano.nums) {
+            const pos = plano.coords[num];
+            if (!pos) continue;
+            const px = imgX + (pos.x / 100) * imgW;
+            const py = y + (pos.y / 100) * imgH;
+            doc.setFillColor(16, 185, 129);
+            doc.setDrawColor(255, 255, 255);
+            doc.setLineWidth(0.4);
+            doc.circle(px, py, 1.6, 'FD');
+          }
+          doc.setLineWidth(0.2);
+          y += imgH + 6;
+        }
+
+        // Reservadas que no caen en ningún plano disponible aún.
+        const fuera = Array.from(reservadosNums).filter(n => n && !MAPAS_PDF.some(m => m.coords[n]));
+        if (fuera.length > 0) {
+          const nombres = fuera.map(n => udcFichaDe(n)?.nombre || `DIGITAL ${n}`).sort();
+          if (y > pageHeight - 24) { doc.addPage(); y = 20; }
+          doc.setFontSize(7.5);
+          doc.setFont('helvetica', 'italic');
+          doc.setTextColor(90, 90, 90);
+          const txt = doc.splitTextToSize(`Reservadas sin plano disponible aún: ${nombres.join(', ')}`, maxW);
+          doc.text(txt, marginX, y + 3);
+          y += txt.length * 4 + 4;
+        }
+      }
     }
 
     // Footer on all pages
@@ -1173,22 +1586,6 @@ export function CompartirPropuestaPage() {
     }
 
     doc.save(`Propuesta_Interna_${propuestaId}.pdf`);
-  };
-
-  const handlePOIPlaceChanged = () => {
-    const place = autocompleteRef.current?.getPlace();
-    if (place?.geometry?.location) {
-      const newMarker: POIMarker = {
-        id: `poi-${Date.now()}`,
-        position: { lat: place.geometry.location.lat(), lng: place.geometry.location.lng() },
-        name: place.name || 'POI',
-        range: searchRange,
-      };
-      setPoiMarkers(prev => [...prev, newMarker]);
-      mapRef.current?.setCenter(newMarker.position);
-      mapRef.current?.setZoom(15);
-      setPoiSearch('');
-    }
   };
 
   const toggleResumen = (key: string) => {
@@ -1240,6 +1637,8 @@ export function CompartirPropuestaPage() {
               <ExternalLink className="h-4 w-4" />
               Ver en navegador
             </a>
+            {/* UDC (aeropuerto): sin mapa geográfico ni KML */}
+            {!esUDC && (
             <a
               href={`/cliente/propuesta/${propuestaId}/mapa${esCampana ? '?ctx=campana' : ''}`}
               target="_blank"
@@ -1249,6 +1648,7 @@ export function CompartirPropuestaPage() {
               <MapIcon className="h-4 w-4" />
               Ver Mapa
             </a>
+            )}
             <button
               onClick={handleCopyLink}
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white rounded-lg text-sm font-medium transition-all shadow-lg shadow-purple-500/20"
@@ -1256,6 +1656,7 @@ export function CompartirPropuestaPage() {
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
               {copied ? 'Copiado!' : 'Copiar Enlace'}
             </button>
+            {!esUDC && (
             <button
               onClick={handleDownloadKMLAll}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${isDark ? 'bg-zinc-800/80 hover:bg-purple-500/20 text-white border-purple-500/30' : 'bg-gray-100 hover:bg-gray-200 text-gray-900 border-gray-200'}`}
@@ -1264,6 +1665,7 @@ export function CompartirPropuestaPage() {
               <MapIcon className="h-4 w-4" />
               KML Todo
             </button>
+            )}
             <button
               onClick={handleGeneratePDF}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors border ${isDark ? 'bg-zinc-800/80 hover:bg-purple-500/20 text-white border-purple-500/30' : 'bg-gray-100 hover:bg-gray-200 text-gray-900 border-gray-200'}`}
@@ -1288,6 +1690,39 @@ export function CompartirPropuestaPage() {
             }`}>
               {leyendaCircuitos}
             </span>
+            {/* Versionado: fecha de la ultima version completada y leyenda del gris */}
+            {leyendaVersion(inventario) && (
+              <span className={`px-3 py-1 rounded-full text-xs font-medium border ${isDark ? 'bg-sky-500/15 text-sky-300 border-sky-400/30' : 'bg-sky-50 text-sky-700 border-sky-200'}`}>
+                {leyendaVersion(inventario)}
+              </span>
+            )}
+            {hayNoVigentes(inventario) && (
+              <span
+                title={NO_VIGENTE_LEYENDA}
+                className={`px-3 py-1 rounded-full text-xs font-medium border ${isDark ? 'bg-zinc-700/40 text-zinc-300 border-zinc-500/40' : 'bg-gray-100 text-gray-600 border-gray-300'}`}
+              >
+                <span className="inline-block h-2 w-2 rounded-full bg-gray-400 mr-1.5 align-middle" />
+                {NO_VIGENTE_CHIP}
+              </span>
+            )}
+            {/* Origen (solo campañas): de dónde salió cada pieza. Útil cuando el
+                pase a ventas quedó incompleto y se repuso dentro de la campaña. */}
+            {mostrarOrigen && (() => {
+              const conteo = contarPorOrigen(inventario);
+              return (
+                <span title={ORIGEN_LEYENDA} className={`px-3 py-1 rounded-full text-xs font-medium border ${isDark ? 'bg-zinc-800/60 border-zinc-600/50 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'}`}>
+                  <span className="inline-block h-2 w-2 rounded-full mr-1.5 align-middle" style={{ backgroundColor: ORIGEN_COLOR.propuesta }} />
+                  {ORIGEN_LABEL.propuesta}: {conteo.propuesta}
+                  <span className="inline-block h-2 w-2 rounded-full ml-3 mr-1.5 align-middle" style={{ backgroundColor: ORIGEN_COLOR.campana }} />
+                  {ORIGEN_LABEL.campana}: {conteo.campana}
+                </span>
+              );
+            })()}
+            {mostrarOrigen && hayAgregadasEnCampana(inventario) && (
+              <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${isDark ? 'bg-amber-500/15 text-amber-300 border-amber-400/30' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                Pase a ventas incompleto: se repuso inventario en campaña
+              </span>
+            )}
           </div>
           <p className={isDark ? 'text-zinc-400' : 'text-gray-500'}>{details?.propuesta?.descripcion || 'Sin descripción'}</p>
           <div className="flex gap-4 mt-4 text-sm">
@@ -1375,7 +1810,8 @@ export function CompartirPropuestaPage() {
           ))}
         </div>
 
-        {/* Charts */}
+        {/* Charts — ocultas en UDC: 1 ciudad (AICM) / 1 tipo (PANTALLA DIGITAL) no aportan nada */}
+        {!esUDC && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className={`rounded-2xl p-6 border ${isDark ? 'bg-gradient-to-br from-zinc-900 to-purple-900/10 border-purple-500/20' : 'bg-gray-50 border-gray-200'}`}>
             <h3 className="text-lg font-semibold bg-gradient-to-r from-purple-500 to-pink-400 bg-clip-text text-transparent mb-4">Reservas por Ciudad</h3>
@@ -1429,6 +1865,7 @@ export function CompartirPropuestaPage() {
             )}
           </div>
         </div>
+        )}
 
         {/* KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1446,7 +1883,30 @@ export function CompartirPropuestaPage() {
           ))}
         </div>
 
-        {/* Resumen de Caras - Tabla principal */}
+        {/* Resumen de Caras - Tabla principal (UDC = ficha técnica de reservados + mapa AICM) */}
+        {esUDC ? (
+          <div className="space-y-6">
+            <UdcReservadosTable items={filteredInventario} isDark={isDark} tipoPeriodo={tipoPeriodo} />
+            {/* Mapa del aeropuerto — solo se muestra si alguna pantalla reservada
+                cae en este plano (T1 Planta Alta). Si ninguna está, no aporta
+                (saldría todo gris), así que se oculta. */}
+            {filteredInventario.some(i => udcMapaCoord(i.codigo_unico)) && (
+            <div className={`rounded-2xl border overflow-hidden ${isDark ? 'bg-zinc-900 border-cyan-500/20' : 'bg-white border-cyan-200'}`}>
+              <div className={`px-5 py-4 border-b flex items-center gap-2 ${isDark ? 'border-cyan-500/20 bg-gradient-to-r from-cyan-600/10 to-sky-600/10' : 'border-cyan-100 bg-cyan-50/60'}`}>
+                <MapIcon className={`h-4 w-4 ${isDark ? 'text-cyan-300' : 'text-cyan-600'}`} />
+                <h3 className={`text-sm font-semibold ${isDark ? 'text-cyan-300' : 'text-cyan-700'}`}>Ubicación en el aeropuerto</h3>
+                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>AICM · Terminal 1</span>
+              </div>
+              <div className="p-3 sm:p-4 overflow-x-auto">
+                <UdcMapaAeropuerto
+                  reservados={new Set(filteredInventario.map(i => i.codigo_unico || ''))}
+                  isDark={isDark}
+                />
+              </div>
+            </div>
+            )}
+          </div>
+        ) : (
         <div className={`rounded-2xl border overflow-hidden ${isDark ? 'bg-gradient-to-br from-zinc-900 to-purple-900/10 border-purple-500/20' : 'bg-white border-gray-200'}`}>
           {/* Toolbar */}
           <div className={`px-5 py-4 border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-600/10 to-violet-600/10' : 'border-gray-200 bg-gray-50'}`}>
@@ -1753,6 +2213,7 @@ export function CompartirPropuestaPage() {
                                             item={item}
                                             isSelected={selectedItems.has(key)}
                                             isDark={isDark}
+                                            mostrarOrigen={mostrarOrigen}
                                             onToggle={toggleItemSelection}
                                           />
                                         );
@@ -1772,52 +2233,28 @@ export function CompartirPropuestaPage() {
             })}
           </div>
         </div>
+        )}
 
-        {/* Map */}
-        <div className={`rounded-2xl border overflow-hidden ${isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'}`}>
+        {/* Mapa de Reservas — oculto para UDC (aeropuerto sin geolocalización) */}
+        <div className={esUDC ? 'hidden' : `rounded-2xl border overflow-hidden ${isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'}`}>
           <div className={`p-4 border-b flex items-center gap-4 ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
             <MapIcon className="h-5 w-5 text-blue-500" />
             <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Mapa de Reservas</h3>
 
             <div className="flex items-center gap-2 ml-auto">
-              {showMap && (<>
-              <select
-                value={searchRange}
-                onChange={(e) => setSearchRange(parseInt(e.target.value))}
-                className={`px-2 py-1.5 rounded-lg text-xs ${isDark ? 'bg-zinc-800 border border-zinc-700 text-white' : 'bg-white border border-gray-200 text-gray-900'}`}
-              >
-                <option value={100}>100m</option>
-                <option value={200}>200m</option>
-                <option value={300}>300m</option>
-                <option value={500}>500m</option>
-                <option value={1000}>1km</option>
-              </select>
-
-              {isLoaded && (
-                <Autocomplete
-                  onLoad={(ac) => { autocompleteRef.current = ac; }}
-                  onPlaceChanged={handlePOIPlaceChanged}
-                  options={{ componentRestrictions: { country: 'mx' } }}
-                >
-                  <input
-                    type="text"
-                    value={poiSearch}
-                    onChange={(e) => setPoiSearch(e.target.value)}
-                    placeholder="Buscar POI..."
-                    className={`px-3 py-1.5 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-purple-500 w-48 ${isDark ? 'bg-zinc-800 border border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-white border border-gray-200 text-gray-900 placeholder:text-gray-400'}`}
-                  />
-                </Autocomplete>
+              {/* POI libre: busca en el area visible, como el Buscador de Formatos */}
+              {showMap && (
+                <PoiBuscadorMapa
+                  getMap={() => mapRef.current}
+                  isLoaded={isLoaded}
+                  pois={poiMarkers}
+                  onChange={setPoiMarkers}
+                  range={searchRange}
+                  onRangeChange={setSearchRange}
+                  isDark={isDark}
+                  acento="purple"
+                />
               )}
-
-              {poiMarkers.length > 0 && (
-                <button
-                  onClick={() => setPoiMarkers([])}
-                  className="px-3 py-1.5 bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg text-xs"
-                >
-                  Limpiar POIs
-                </button>
-              )}
-              </>)}
               {/* Toggle: el mapa está oculto por default (pinta miles de markers y traba
                   los checkboxes en propuestas grandes). Mismo patrón que "Mostrar Pines"
                   del Dashboard. */}
@@ -1840,7 +2277,9 @@ export function CompartirPropuestaPage() {
               className={`w-full h-32 flex flex-col items-center justify-center gap-2 transition-colors ${isDark ? 'text-zinc-500 hover:bg-zinc-800/40' : 'text-gray-400 hover:bg-gray-50'}`}
             >
               <MapIcon className="h-8 w-8 opacity-60" />
-              <span className="text-sm font-medium">Mostrar mapa ({visibleMarkers.length} pines)</span>
+              <span className="text-sm font-medium">
+                Mostrar mapa ({visibleMarkers.length} pines{capas.length > 0 ? ` · ${capas.length} ${capas.length === 1 ? 'capa' : 'capas'}` : ''})
+              </span>
               <span className="text-xs opacity-70">Oculto para mantener la lista fluida</span>
             </button>
           )}
@@ -1852,6 +2291,22 @@ export function CompartirPropuestaPage() {
                 {visibleMarkers.length.toLocaleString()} pines: Seleccionar Catorcenas para mostrarlos aquí.
                 O usa <strong>Expandir Mapa</strong> para ver todos.
               </div>
+            )}
+            {capas.length > 0 && (
+              <CapasMapaPanel
+                className="absolute top-3 left-3 z-10 w-72 max-w-[calc(100%-1.5rem)] max-h-[calc(100%-1.5rem)]"
+                capas={capas}
+                activas={capasActivas}
+                onToggle={handleToggleCapa}
+                onToggleTodas={toggleTodasCapas}
+                nombreCircuito={nombreCircuito}
+                circuitosVisibles={selectedCatorcenas.size > 0 ? circuitosVisibles : null}
+                interno
+                onCambiarVisible={handleCambiarVisibleCapa}
+                onEliminar={handleEliminarCapa}
+                ocupadaId={capaOcupadaId}
+                isDark={isDark}
+              />
             )}
             {isLoaded ? (
               <GoogleMap
@@ -1875,11 +2330,13 @@ export function CompartirPropuestaPage() {
                   }
                 }}
               >
+                <CapasMapaOverlay capas={capas} activas={capasActivas} />
                 {!demasiadosPines && visibleMarkers.map((item) => (
                   <MapMarker
                     key={itemKey(item)}
                     item={item}
                     isSelected={selectedItems.has(itemKey(item))}
+                    mostrarOrigen={mostrarOrigen}
                     onSelect={handleMarkerClick}
                   />
                 ))}
@@ -1897,6 +2354,14 @@ export function CompartirPropuestaPage() {
                         <p><strong>Ubicación:</strong> {selectedMarker.ubicacion || 'N/A'}</p>
                         <p><strong>{(selectedMarker.mueble || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes' : 'Caras'}:</strong> {selectedMarker.caras_totales}</p>
                         <p><strong>Tarifa:</strong> {formatCurrency(tarifaBruta(selectedMarker))}</p>
+                        {esNoVigente(selectedMarker) && (
+                          <p className="text-gray-500 italic"><strong>Estado:</strong> {NO_VIGENTE_LABEL}{selectedMarker.motivo_no_vigente ? ` (${selectedMarker.motivo_no_vigente})` : ''}</p>
+                        )}
+                        {mostrarOrigen && origenDe(selectedMarker) && (
+                          <p><strong>Origen:</strong>{' '}
+                            <span style={{ color: ORIGEN_COLOR[origenDe(selectedMarker)!] }}>{ORIGEN_LABEL[origenDe(selectedMarker)!]}</span>
+                          </p>
+                        )}
                         {selectedMarker.numero_catorcena && (
                           <p><strong>Periodo:</strong> {tipoPeriodo === 'mensual' && selectedMarker.inicio_periodo ? (() => { const parts = selectedMarker.inicio_periodo.split('-'); return parts.length >= 2 ? `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}` : `Cat ${selectedMarker.numero_catorcena} / ${selectedMarker.anio_catorcena}`; })() : `Cat ${selectedMarker.numero_catorcena} / ${selectedMarker.anio_catorcena}`}</p>
                         )}
@@ -1904,20 +2369,7 @@ export function CompartirPropuestaPage() {
                     </div>
                   </InfoWindow>
                 )}
-                {poiMarkers.map(marker => (
-                  <Circle
-                    key={marker.id}
-                    center={marker.position}
-                    radius={marker.range}
-                    options={{
-                      strokeColor: '#a855f7',
-                      strokeOpacity: 0.7,
-                      strokeWeight: 2,
-                      fillColor: '#a855f7',
-                      fillOpacity: 0.15,
-                    }}
-                  />
-                ))}
+                <PoiMapaOverlay pois={poiMarkers} onChange={setPoiMarkers} color="#a855f7" />
               </GoogleMap>
             ) : (
               <div className="flex items-center justify-center h-full">

@@ -11,6 +11,8 @@ export interface DashboardKPIs {
 export interface ChartData {
   nombre: string;
   cantidad: number;
+  /** Solo en stats por estatus 'Vendido': $ vendido del bucket en el periodo. */
+  monto?: number;
 }
 
 export interface DashboardGraficas {
@@ -163,6 +165,8 @@ class DashboardService {
   async getStatsByEstatus(estatus: string, filters?: DashboardFilters): Promise<{
     total: number;
     estatus: string;
+    /** Solo con estatus 'Vendido': $ de lo vendido en el periodo mostrado. */
+    montoVendido?: number;
     graficas: DashboardGraficas;
   }> {
     const params = new URLSearchParams();
@@ -219,7 +223,7 @@ class DashboardService {
     return response.data.data;
   }
 
-  async getInventoryDetail(filters?: DashboardFilters & { estatus?: string; page?: number; limit?: number; includeCoords?: boolean }): Promise<InventoryDetailResponse> {
+  async getInventoryDetail(filters?: DashboardFilters & { estatus?: string; page?: number; limit?: number; includeCoords?: boolean; inventario_id?: number }): Promise<InventoryDetailResponse> {
     const params = new URLSearchParams();
 
     appendMulti(params, 'estado', filters?.estado);
@@ -232,6 +236,7 @@ class DashboardService {
     if (filters?.fecha_inicio) params.append('fecha_inicio', filters.fecha_inicio);
     if (filters?.fecha_fin) params.append('fecha_fin', filters.fecha_fin);
     if (filters?.estatus) params.append('estatus', filters.estatus);
+    if (filters?.inventario_id) params.append('inventario_id', filters.inventario_id.toString());
     if (filters?.page) params.append('page', filters.page.toString());
     if (filters?.limit) params.append('limit', filters.limit.toString());
     if (filters?.includeCoords) params.append('includeCoords', 'true');

@@ -24,6 +24,11 @@ export interface SolicitudesParams {
   fechaHasta?: string;
   estatusValor?: string;
   excludeRechazadas?: boolean;
+  // Filtro por autorización de circuitos (claves CSV: pend_dg,rechazado,...)
+  // y fechas de último cambio por fila para el orden "Último cambio".
+  // Ver lib/autorizacionFiltro.
+  autorizacion?: string;
+  includeCambios?: boolean;
 }
 
 export interface CatorcenasResponse {
@@ -77,6 +82,8 @@ export interface SolicitudCaraInput {
   tarifa_publica?: number;
   inicio_periodo: string;
   fin_periodo: string;
+  hora_inicio?: string;
+  hora_fin?: string;
   caras_flujo?: number;
   caras_contraflujo?: number;
   descuento?: number;
@@ -312,6 +319,8 @@ export const solicitudesService = {
     costo: number;
     tarifa_publica?: number;
     articulo?: string | null;
+    // Compañía SAP del origen: 'UDC' evalúa contra el tabulador de Dirección UDC.
+    sap_database?: string | null;
   }): Promise<{
     estado: 'aprobado' | 'pendiente_dcm' | 'pendiente_dg';
     autorizacion_dg: 'aprobado' | 'pendiente' | 'rechazado';
@@ -351,6 +360,8 @@ export interface SolicitudCara {
   tarifa_publica: number;
   inicio_periodo: string;
   fin_periodo: string;
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
   caras_flujo: number;
   caras_contraflujo: number;
   articulo: string;
@@ -358,6 +369,7 @@ export interface SolicitudCara {
   autorizacion_dg?: string;
   autorizacion_dcm?: string;
   grupo_rt_bf?: number | null;
+  en_filtro_dg?: boolean;
 }
 
 export interface Comentario {

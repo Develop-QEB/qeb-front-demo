@@ -4,25 +4,50 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
   X, Search, Plus, Trash2, ChevronDown, ChevronRight, ChevronUp, Users,
   FileText, MapPin, Layers, Pencil, Map as MapIcon, Package, Calendar,
-  Gift, Target, Save, ArrowLeft, Filter, Grid, LayoutGrid, Ruler, ArrowUpDown, ArrowUp, ArrowDown, Download, Eye, Funnel, Check, Upload, Monitor, AlertTriangle, Trophy, Loader2, Clock, RefreshCw
+  Gift, Target, Save, ArrowLeft, Filter, Grid, LayoutGrid, Ruler, ArrowUpDown, ArrowUp, ArrowDown, Download, Eye, Funnel, Check, Upload, Monitor, AlertTriangle, Trophy, Loader2, Clock, RefreshCw, History, Lock, Unlock
 } from 'lucide-react';
 import { GoogleMap, useLoadScript, Marker } from '@react-google-maps/api';
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
 import { AdvancedMapComponent } from './AdvancedMapComponent';
+import { capasMapaService } from '../../services/capasMapa.service';
+import type { NuevaCapa } from './capasMapa';
+import { UdcFichaTecnicaPanel } from './UdcFichaTecnicaPanel';
+import { UdcReservadosPanel } from './UdcReservadosPanel';
+import { HistorialInventarioPanel } from './HistorialInventarioPanel';
+import { CapasCircuitoPanel } from './CapasCircuitoPanel';
 import { Propuesta } from '../../types';
 import { solicitudesService, UserOption } from '../../services/solicitudes.service';
 import { inventariosService, InventarioDisponible } from '../../services/inventarios.service';
-import { propuestasService, ReservaModalItem, CaraUpdateData } from '../../services/propuestas.service';
+import { propuestasService, ReservaModalItem, CaraUpdateData, type ReservaHistorialItem } from '../../services/propuestas.service';
 import { formatCurrency } from '../../lib/utils';
 import { parseCircuitoDigital } from '../../lib/circuitos';
-import { getRequiredPeriodoForArticulo } from '../../lib/periodos';
+import { articuloValidoEnPeriodo, esArticuloGranFormato, hora12h } from '../../lib/periodos';
+import { HistorialFiltrado } from '../historial/HistorialFiltrado';
+import { TimeInput } from '../../components/ui/TimeInput';
 import { circuitosService } from '../../services/circuitos.service';
 import { clientesService } from '../../services/clientes.service';
 import { useEnvironmentStore, getEndpoints } from '../../store/environmentStore';
 import { useAuthStore } from '../../store/authStore';
-import { getPermissions, esAsesorComercial } from '../../lib/permissions';
+import { getPermissions, esAsesorComercial, esTrafico } from '../../lib/permissions';
 import { filterAllowedArticulos } from '../../config/allowedDigitalArticles';
-import { useSocketPropuesta, useSocketEquipos, useSocketInventarioRealtime, type InventarioRealtimePayload } from '../../hooks/useSocket';
+import { parseArticuloUDC, esArticuloUDCBasura, buildUdcInventarioDisponible, udcPantallaNum, udcFichaDe, UDC_FORMATO } from '../../lib/udc';
+
+// Mini-preview (cuadrito cyan con el aspect-ratio real) para las filas UDC.
+// Solo se pinta si el código corresponde a una pantalla UDC (udcFichaDe la halla).
+function UdcPreview({ codigo }: { codigo?: string | null }) {
+  const f = udcFichaDe(codigo);
+  if (!f || !f.ancho || !f.alto) return null;
+  const BW = 34, BH = 20;
+  const ratio = f.ancho / f.alto;
+  let w = BW, h = BW / ratio;
+  if (h > BH) { h = BH; w = BH * ratio; }
+  return (
+    <span className="inline-flex items-center justify-center shrink-0" style={{ width: BW, height: BH }} title={`${f.ancho} × ${f.alto}px · ${f.duracion} seg`}>
+      <span className="rounded-[2px] bg-gradient-to-br from-cyan-400 to-cyan-600 ring-1 ring-cyan-300/40 shadow-sm" style={{ width: Math.max(6, w), height: Math.max(5, h) }} />
+    </span>
+  );
+}
+import { useSocketPropuesta, useSocketEquipos, useSocketInventarioRealtime, useEstatusEnVivo, type InventarioRealtimePayload } from '../../hooks/useSocket';
 import { useThemeStore } from '../../store/themeStore';
 import { SaveChangesConfirmModal, type ModifiedCircuito } from '../../components/SaveChangesConfirmModal';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
@@ -31,6 +56,7 @@ import { BULK_DELETE_ENABLED } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
+import { BitacoraEstatusInline, type BitacoraEstatusInlineHandle, type StatusValidation } from '../../components/BitacoraEstatusInline';
 
 // GOOGLE_MAPS_API_KEY / LIBRARIES centralizados en src/config/googleMaps.ts.
 
@@ -81,6 +107,10 @@ interface CaraItem {
   tarifa_publica: number;
   inicio_periodo: string;
   fin_periodo: string;
+  // Horario diario (solo circuitos DIGITALES en periodo mensual): franja "HH:MM"
+  // que aplica a todos los dias del rango. Feature "Horario inicio/fin - Digital".
+  hora_inicio?: string;
+  hora_fin?: string;
   caras_flujo: number;
   caras_contraflujo: number;
   articulo: string;
@@ -92,6 +122,8 @@ interface CaraItem {
   anio_fin?: number;
   autorizacion_dg?: string;
   autorizacion_dcm?: string;
+  // true si hay una tarea 'Filtro Autorización DG' abierta — pinta embudo cyan junto al "Pend. DG".
+  en_filtro_dg?: boolean;
   _originalDg?: string;
   _originalDcm?: string;
   // Baseline INMUTABLE de BD (DG/DCM aprobados al cargar) para la regla de conservar
@@ -103,6 +135,11 @@ interface CaraItem {
   // Costo/caras de BD al cargar (regla "Direcciones Aprobadas" en la pre-evaluación).
   _originalCosto?: number;
   _originalCaras?: number;
+  // Total `caras` y tarifa TAL COMO ESTÁN EN BD (inmutables durante el borrador). El edit
+  // decide contra esto si manda `caras`/`costo`: el estado local ya trae ediciones sin
+  // guardar y no sirve de referencia (caso 81894 / 81827).
+  _savedCaras?: number;
+  _savedTarifa?: number;
   grupo_rt_bf?: number | null;
   grupo_masivo_id?: number | null;
   esBf?: boolean;
@@ -132,9 +169,21 @@ const isEspecialArticle = (itemCode: string, itemName?: string): boolean => {
   return false;
 };
 
+// CF-#### (CF + dígitos, ej. CF-0017 "Mantenimiento Extraordinario"): artículo de
+// SERVICIO cobrado — NO bonificación contraflujo. Se maneja como IM: sin inventario.
+const isServicioCFArticle = (itemCode?: string | null): boolean => {
+  return /^CF-?\d/i.test((itemCode || '').trim());
+};
+
+// BF/CF de bonificación "real" (excluye los CF-#### de servicio)
+const isBfCfArticle = (itemCode?: string | null): boolean => {
+  const code = (itemCode || '').toUpperCase();
+  return (code.startsWith('BF') || code.startsWith('CF')) && !isServicioCFArticle(code);
+};
+
 // Detectar si un artículo no requiere inventario
 const isNoInventoryArticle = (itemCode: string, itemName?: string): boolean => {
-  return isImpresionArticle(itemCode, itemName) || isEspecialArticle(itemCode, itemName);
+  return isImpresionArticle(itemCode, itemName) || isEspecialArticle(itemCode, itemName) || isServicioCFArticle(itemCode);
 };
 
 // Regla "Direcciones Aprobadas" (espejo del backend conservarAprobacionSiIncrementa).
@@ -176,14 +225,16 @@ const isQuretaroArticle = (itemCode: string): boolean => {
 // SAP) se cuenta como Renta con tarifa flexible, no como bonificación.
 const isBonifSplitArticle = (articulo?: string | null): boolean => {
   const a = (articulo || '').toUpperCase();
+  if (isServicioCFArticle(a)) return false; // CF-#### = servicio, no bonif
   return a.startsWith('BF') || a.startsWith('CF') || a.startsWith('CT');
 };
 
-// Feature flag: el switch "Disponibilidad multi-periodo" del buscador se oculta
-// por pedido del negocio (jun-2026). La lógica (intersectarMultiPeriodo, estados)
-// queda intacta y neutralizada — como el toggle nunca se prende, la intersección
-// regresa la data sin tocar. Para reactivarlo, poner en true. Ver commit 576a7bc.
-const SHOW_DISPONIBILIDAD_MULTIPERIODO = false;
+// Feature flag: el switch "Disponibilidad multi-periodo" del buscador.
+// Se ocultó por pedido del negocio (jun-2026) y se REACTIVÓ (sep-2026) a pedido
+// del negocio (ver reserva masiva por circuito / multi-catorcena). La lógica
+// (intersectarMultiPeriodo, estados) queda intacta; con el flag en true el toggle
+// aparece y filtra la disponibilidad por intersección de periodos. Ver commit 576a7bc.
+const SHOW_DISPONIBILIDAD_MULTIPERIODO = true;
 
 // Tarifa publica now comes from SAP (U_IMU_PublicPrice field on each article)
 
@@ -268,7 +319,11 @@ const getFormatoFromArticulo = (itemName: string, itemCode?: string): string => 
 };
 
 // Tipo auto-detection from article name
-const getTipoFromName = (itemName: string): 'Tradicional' | 'Digital' => {
+const getTipoFromName = (itemName: string, itemCode?: string): 'Tradicional' | 'Digital' => {
+  // "Digital" se detecta por CÓDIGO (contiene DIG), igual que el gate de
+  // allowedDigitalArticles. El NOMBRE a veces NO lo trae (ej. RT-ES-DIG-EM =
+  // "RENTA DE ESPACIOS UNIPOLARES EDOMEX"), por eso revisamos el código primero.
+  if ((itemCode || '').toUpperCase().includes('DIG')) return 'Digital';
   if (!itemName) return 'Tradicional';
   const name = itemName.toUpperCase();
   if (name.includes('DIGITAL') || name.includes('DIG')) return 'Digital';
@@ -634,6 +689,8 @@ const EMPTY_CARA: Omit<CaraItem, 'localId'> = {
   tarifa_publica: 0,
   inicio_periodo: '',
   fin_periodo: '',
+  hora_inicio: '',
+  hora_fin: '',
   caras_flujo: 0,
   caras_contraflujo: 0,
   articulo: '',
@@ -788,14 +845,30 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // Socket para actualizar usuarios en tiempo real
   useSocketEquipos();
 
+  // Estatus EN VIVO: `propuesta` es un snapshot congelado al abrir el modal, así
+  // que si el asesor cambia el estatus mientras Tráfico está aquí adentro (por
+  // ejemplo dentro del buscador de formatos) el bloqueo nunca se activaba.
+  // Feedback 2026-09-17 (Jos). El guard de servidor lo respalda de todos modos.
+  const statusActual = useEstatusEnVivo('propuesta', propuesta?.id, propuesta.status) ?? propuesta.status;
+
   // Si readOnly es true, sobrescribir permisos para modo visualización
-  const isDescartada = propuesta.status === 'Descartada' || propuesta.status === 'Rechazada';
+  const isDescartada = statusActual === 'Descartada' || statusActual === 'Rechazada';
   // Bloqueo Edición Asesores — Estatus Ajuste CTO: los asesores comerciales no pueden
   // editar circuitos existentes mientras la propuesta esté en "Ajuste Cto-Cliente".
-  const bloqueoCircuitoAjusteCto = esAsesorComercial(user?.rol) && (propuesta.status === 'Ajuste Cto-Cliente' || propuesta.status === 'Ajuste Inventario');
-  const puedeEditarCircuito = permissions.canEditCircuitoExistente && !bloqueoCircuitoAjusteCto;
-  const effectiveCanEdit = !readOnly && permissions.canAsignarInventario && !isDescartada;
-  const canEditResumen = !readOnly && permissions.canEditResumenPropuesta && !isDescartada;
+  const bloqueoCircuitoAjusteCto = esAsesorComercial(user?.rol) && (statusActual === 'Ajuste Cto-Cliente' || statusActual === 'Ajuste Inventario');
+  // Bloqueo Edición Tráfico — Estatus Ajuste Comercial: cuando la propuesta
+  // esta en Ajuste Comercial el balón está del lado del asesor; tráfico no
+  // debe tocar circuitos hasta que el asesor lo resuelva.
+  // Feedback 2026-09-10 (Jos): simetrico al bloqueo Ajuste CTO (que bloquea a
+  // asesores), pero al reves.
+  // Ajuste 2026-09-23 (Jos): la condición original era `!esAsesorComercial`
+  // que arrastraba a admins, gerentes y directores (Jos, Dul y demás) — les
+  // salía el aviso y no podían mover nada. La regla correcta es "sólo
+  // tráfico"; admins/gerentes/directores editan igual que siempre.
+  const bloqueoCircuitoAjusteComercial = esTrafico(user?.rol) && statusActual === 'Ajuste Comercial';
+  const puedeEditarCircuito = permissions.canEditCircuitoExistente && !bloqueoCircuitoAjusteCto && !bloqueoCircuitoAjusteComercial;
+  const effectiveCanEdit = !readOnly && permissions.canAsignarInventario && !isDescartada && !bloqueoCircuitoAjusteComercial;
+  const canEditResumen = !readOnly && permissions.canEditResumenPropuesta && !isDescartada && !bloqueoCircuitoAjusteComercial;
   // Tráfico NO puede editar tarifa ni cantidad de caras de circuitos (aunque sí otros campos).
   const canEditTarifaCaras = canEditResumen && permissions.canEditTarifaCaras;
   const canEditCliente = !readOnly && permissions.canEditClienteEnFormularios && !isDescartada;
@@ -824,6 +897,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   const [imu, setImu] = useState(false);
   const periodInitializedRef = useRef(false);
   const initialValuesSetRef = useRef(false);
+  const asignadosInitializedRef = useRef(false);
 
   // Client editing state
   interface CuicItem {
@@ -876,6 +950,13 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // "no quede nada". Al guardar, se limpian (ya quedan confirmadas). No es estado
   // de render (useRef) para no re-renderizar en cada agregado.
   const sessionNewCaraIdsRef = useRef<Set<number>>(new Set());
+  // DIFERIDO (feedback jefe oct-2026 "cerré sin guardar y se vació"): ids de
+  // caras YA guardadas (originales) que el usuario eliminó pero que NO se mandan
+  // al back hasta "Guardar Cambios". Si cierra sin guardar, no se tocaron (al
+  // reabrir se reconstruyen de la data cacheada). Las caras agregadas EN la
+  // sesión se siguen borrando directo (deshacer el alta).
+  const [pendingCaraDeletions, setPendingCaraDeletions] = useState<number[]>([]);
+  const hasPendingDeletions = pendingCaraDeletions.length > 0;
 
   // New cara form
   const [newCara, setNewCara] = useState<Omit<CaraItem, 'localId'>>(EMPTY_CARA);
@@ -906,11 +987,19 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     );
   }, [editingCaraId, caras, reservas]);
 
-  // Filtros del circuito (plazas / ciudades / formatos): con inventario reservado
-  // quedan bloqueados SIEMPRE —aunque el rol tenga canEditCaraFiltersOnEdit—
-  // porque el inventario ya reservado se eligió justo con esos filtros; cambiarlos
-  // dejaría reservas que no corresponden a la plaza/formato de la cara.
+  // Filtros del circuito (plazas / formatos): con inventario reservado quedan
+  // bloqueados SIEMPRE —aunque el rol tenga canEditCaraFiltersOnEdit— porque el
+  // inventario ya reservado se eligió justo con esos filtros; cambiarlos dejaría
+  // reservas que no corresponden a la plaza/formato de la cara.
+  // Ciudades queda FUERA de este bloqueo: es editable siempre (ver campo Ciudades).
   const caraFiltersLocked = editingCaraHasReservas || (!!editingCaraId && !permissions.canEditCaraFiltersOnEdit);
+  // EXCEPCION (2026-11-02): el area de Trafico si puede corregir el FORMATO de
+  // un circuito aunque ya tenga inventario reservado: son quienes cuadran el
+  // inventario contra la cara y a veces el formato capturado por comercial no
+  // corresponde a lo que realmente se reservo. Plazas sigue bloqueado. El back
+  // ya aceptaba el cambio (updateCara escribe `formato` y recalcula DG/DCM);
+  // el candado era solo de UI.
+  const formatoLocked = (editingCaraHasReservas && !esTrafico(user?.rol)) || (!!editingCaraId && !permissions.canEditCaraFiltersOnEdit);
 
   // Inventory search state
   const [searchFilters, setSearchFilters] = useState({
@@ -1064,8 +1153,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // Expanded groups state for collapsible groups
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['Grupo 1']));
 
-  // Tab state for search view (buscar / reservados)
-  const [searchViewTab, setSearchViewTab] = useState<'buscar' | 'reservados'>('buscar');
+  // Tab state for search view (buscar / reservados / historial / capas)
+  const [searchViewTab, setSearchViewTab] = useState<'buscar' | 'reservados' | 'historial' | 'capas'>('buscar');
 
   // Disponibles data
   const [inventarioDisponible, setInventarioDisponible] = useState<InventarioDisponible[]>([]);
@@ -1076,6 +1165,10 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // disparan autorización DG/DCM). Feedback Jos 2026-07-08.
   const [showNotaDireccionModal, setShowNotaDireccionModal] = useState(false);
   const [pendingAuthTipo, setPendingAuthTipo] = useState<'dg' | 'dcm' | 'ambas' | null>(null);
+  // DIFERIDO (igual que en campañas, fix jefe oct-2026): la Nota de Dirección se
+  // ENCOLA y se crea junto con el guardado (no al confirmar la nota), para que
+  // todo se guarde o se cancele junto.
+  const pendingNotaDireccionRef = useRef<string | null>(null);
 
   // Real-time: cuando OTRO usuario reserva un espacio cuyo período se solapa
   // con la cara que estoy buscando, quitarlo de mi listado de disponibles en
@@ -1152,15 +1245,33 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     enabled: isOpen,
   });
 
+  // BD SAP del catálogo: UDC (aeropuerto) si el cliente seleccionado o la
+  // propuesta son UDC; si no, ambiente global (CIMU/TRADE intactos).
+  const sapDbArticulos = (((selectedClienteCuic as any)?.sap_database || propuesta?.sap_database || '') as string).toUpperCase() === 'UDC'
+    ? ('UDC' as const)
+    : useEnvironmentStore.getState().environment;
+  // UDC (aeropuerto): inventario sin geolocalización/plaza → en el buscador se
+  // oculta el mapa y el panel de ubicación (POI/radio/KML/leyenda).
+  // OJO: depende de que la PROPUESTA/CLIENTE sea UDC — NO del ambiente global
+  // (`sapDbArticulos` cae al ambiente): antes, navegar en ambiente UDC ocultaba
+  // el mapa en TODAS las propuestas, no solo en las UDC.
+  const esUDC = (((selectedClienteCuic as any)?.sap_database || propuesta?.sap_database || '') as string).toUpperCase() === 'UDC';
   // Fetch articulos from SAP
   const { data: articulosData, isLoading: articulosLoading } = useQuery({
-    queryKey: ['sap-articulos'],
+    queryKey: ['sap-articulos', sapDbArticulos],
     queryFn: async () => {
       try {
-        const response = await fetch(getEndpoints(useEnvironmentStore.getState().environment).articulos);
+        const response = await fetch(getEndpoints(sapDbArticulos).articulos);
         if (!response.ok) throw new Error('Error fetching articulos');
         const data = await response.json();
-        return filterAllowedArticulos((data.value || data) as SAPArticulo[]);
+        let list = (data.value || data) as SAPArticulo[];
+        if (sapDbArticulos === 'UDC') {
+          list = list.filter(a => !esArticuloUDCBasura(a.ItemCode));
+          // (Gran formato dentro de UDC DESHABILITADO 2026-10-29: el selector UDC
+          // vuelve a mostrar SOLO pantallas del aeropuerto; gran formato para
+          // usuarios UDC será vía CIMU/TRADE como tarea aparte.)
+        }
+        return filterAllowedArticulos(list);
       } catch {
         return [] as SAPArticulo[];
       }
@@ -1169,10 +1280,31 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     staleTime: 5 * 60 * 1000,
   });
 
+  // ¿El buscador debe comportarse como UDC (ficha de pantallas del aeropuerto) o
+  // como normal (gran formato con inventario real)? Se decide POR CARA: una
+  // propuesta UDC también puede traer caras de gran formato (puentes/carteleras)
+  // cuyo inventario vive en `inventarios` → esas usan el buscador normal. Sin
+  // artículo o con pantalla UDC → ficha. Si la propuesta no es UDC, siempre false.
+  const esUDCBusqueda = useMemo(() => {
+    if (!esUDC) return false;
+    const art = selectedCaraForSearch?.articulo;
+    if (!art) return true;
+    const row = articulosData?.find(a => a.ItemCode === art);
+    return !(row && esArticuloGranFormato(row.ItemName, row.ItemCode));
+  }, [esUDC, selectedCaraForSearch?.articulo, articulosData]);
+
   // Fetch existing reservas for this propuesta - refetch always on mount for real-time data
   const { data: existingReservas, isLoading: reservasLoading } = useQuery({
     queryKey: ['propuesta-reservas-modal', propuesta.id],
     queryFn: () => propuestasService.getReservasForModal(propuesta.id),
+    enabled: isOpen && !!propuesta.id,
+    refetchOnMount: 'always',
+  });
+
+  // Historial del circuito (reservas que salieron: quitadas/desplazadas/bloqueo)
+  const { data: historialInventario, refetch: refetchHistorial, isFetching: historialFetching } = useQuery({
+    queryKey: ['propuesta-reservas-historial', propuesta.id],
+    queryFn: () => propuestasService.getReservasHistorial(propuesta.id),
     enabled: isOpen && !!propuesta.id,
     refetchOnMount: 'always',
   });
@@ -1190,6 +1322,38 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     enabled: isOpen && !!propuesta.id,
   });
 
+  // ── Bloqueo de circuito (apartado exclusivo — SOLO Tráfico) ─────────────────
+  // Marca las reservas del circuito como 'Reservado Bloqueado': ocupan en
+  // exclusiva (nadie más las aparta ni las roba una campaña) sin ser venta.
+  const puedeBloquearCircuito = esTrafico(user?.rol);
+  const [bloqueoCircuitoLoading, setBloqueoCircuitoLoading] = useState(false);
+  // ¿El circuito activo del buscador ya está bloqueado? (lee el estatus crudo).
+  const circuitoActivoBloqueado = useMemo(() => {
+    if (!selectedCaraForSearch || !existingReservas) return false;
+    return existingReservas.some(
+      (r) => r.solicitud_cara_id === selectedCaraForSearch.id &&
+        (r.estatus === 'Reservado Bloqueado' || r.estatus === 'Bonificado Bloqueado'),
+    );
+  }, [selectedCaraForSearch, existingReservas]);
+
+  const handleToggleBloqueoCircuito = async () => {
+    const caraId = selectedCaraForSearch?.id;
+    if (caraId == null || bloqueoCircuitoLoading) return;
+    const activar = !circuitoActivoBloqueado;
+    setBloqueoCircuitoLoading(true);
+    try {
+      const r = await propuestasService.toggleBloqueoCircuito(propuesta.id, caraId, activar);
+      showToast(r.message || (activar ? 'Circuito bloqueado' : 'Circuito desbloqueado'), 'success');
+      // Refrescar reservas (nuevo estatus) + historial del circuito.
+      await queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+      refetchHistorial();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'No se pudo cambiar el bloqueo del circuito', 'error');
+    } finally {
+      setBloqueoCircuitoLoading(false);
+    }
+  };
+
   // Fetch CUIC data for client editing
   const { data: cuicData, isLoading: cuicLoading } = useQuery({
     queryKey: ['clientes-full-for-propuesta'],
@@ -1201,8 +1365,11 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         T0_U_Cliente: c.T0_U_Cliente || '',
         T1_U_UnidadNegocio: c.T1_U_UnidadNegocio || '',
         T0_U_Agencia: c.T0_U_Agencia || '',
-        ASESOR_U_IDAsesor: c.ASESOR_U_IDAsesor || '',
-        ASESOR_U_Asesor: c.ASESOR_U_Asesor || '',
+        // La tabla `cliente` guarda el asesor en T0_U_Asesor/T0_U_IDAsesor; algunos
+        // orígenes SAP lo traen como ASESOR_U_*. Fallback igual que CreateSolicitudModal
+        // (si no, cambiar el CUIC dejaba el asesor SIEMPRE vacío — reporte Jos 15-oct).
+        ASESOR_U_IDAsesor: c.ASESOR_U_IDAsesor || c.T0_U_IDAsesor || '',
+        ASESOR_U_Asesor: c.ASESOR_U_Asesor || c.T0_U_Asesor || '',
         T1_U_IDMarca: c.T1_U_IDMarca || 0,
         T2_U_Marca: c.T2_U_Marca || '',
         T2_U_IDProducto: c.T2_U_IDProducto || 0,
@@ -1306,8 +1473,32 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // Initialize form from propuesta and solicitud details
   useEffect(() => {
     if (solicitudDetails && isOpen) {
-      // Set asignados - match with users to get area
-      if (propuesta.asignado && propuesta.id_asignado) {
+      // Set asignados - match with users to get area.
+      // SOLO en la primera carga: `propuesta` es una copia tomada al abrir el
+      // modal y no se refresca. Este efecto se re-ejecuta en cada refetch de
+      // solicitud-full-details (p.ej. tras guardar); si volviera a leer el prop
+      // restablecería los asignados a los de antes de editar, y el siguiente
+      // guardado los escribiría de vuelta en la base.
+      if (asignadosInitializedRef.current) {
+        // Ya inicializados: solo completar area/puesto si `users` llegó después.
+        if (users) {
+          setAsignados(prev => {
+            let changed = false;
+            const next = prev.map(a => {
+              if (a.area && a.puesto) return a;
+              const foundUser = users.find((u: UserOption) => u.id === a.id);
+              if (!foundUser) return a;
+              const area = a.area || foundUser.area || '';
+              const puesto = a.puesto || foundUser.puesto || '';
+              if (area === a.area && puesto === a.puesto) return a;
+              changed = true;
+              return { ...a, area, puesto };
+            });
+            return changed ? next : prev;
+          });
+        }
+      } else if (propuesta.asignado && propuesta.id_asignado) {
+        asignadosInitializedRef.current = true;
         const asignadosNames = propuesta.asignado.split(',').map(s => s.trim());
         const asignadosIds = propuesta.id_asignado.split(',').map(s => s.trim());
         const asignadosList: UserOption[] = asignadosNames.map((name, idx) => {
@@ -1322,6 +1513,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           };
         });
         setAsignados(asignadosList);
+      } else {
+        asignadosInitializedRef.current = true;
       }
 
       // Set campaign name
@@ -1479,6 +1672,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           // Si es circuito, plaza se deriva del ItemCode (ej. RT-DIG-03-MX → "Ciudad de México / AM")
           const circuitoLoad = parseCircuitoDigital(cara.articulo || '');
           const plazaDerivada = circuitoLoad ? circuitoLoad.plazaLabel : '';
+          const tarifaBd = (Number(cara.caras) || 0) > 0
+            ? (Number(cara.costo) || 0) / (Number(cara.caras) || 1)
+            : Number(cara.tarifa_publica) || 0;
           return {
             localId: `cara-${cara.id || idx}-${Date.now()}`,
             id: cara.id,
@@ -1492,12 +1688,12 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
             nivel_socioeconomico: cara.nivel_socioeconomico || '',
             formato: cara.formato || '',
             costo: Number(cara.costo) || 0,
-            tarifa_publica: (Number(cara.caras) || 0) > 0
-              ? (Number(cara.costo) || 0) / (Number(cara.caras) || 1)
-              : Number(cara.tarifa_publica) || 0,
+            tarifa_publica: tarifaBd,
             // Truncar a YYYY-MM-DD para que <input type="date"> autocomplete al editar
             inicio_periodo: String(cara.inicio_periodo || '').slice(0, 10),
             fin_periodo: String(cara.fin_periodo || '').slice(0, 10),
+            hora_inicio: (cara as any).hora_inicio || '',
+            hora_fin: (cara as any).hora_fin || '',
             caras_flujo: Number(cara.caras_flujo) || 0,
             caras_contraflujo: Number(cara.caras_contraflujo) || 0,
             articulo: cara.articulo || '',
@@ -1506,6 +1702,10 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
             anio_inicio: anioInicioCara,
             autorizacion_dg: cara.autorizacion_dg || 'aprobado',
             autorizacion_dcm: cara.autorizacion_dcm || 'aprobado',
+            // true si hay una tarea 'Filtro Autorización DG' abierta — pinta
+            // el chip cyan "Filtro GC" junto al badge rojo "Pend. DG". El
+            // mapping antes no copiaba este campo (reporte Jos 2026-11-04).
+            en_filtro_dg: (cara as any).en_filtro_dg === true,
             _originalDg: cara.autorizacion_dg || 'aprobado',
             _originalDcm: cara.autorizacion_dcm || 'aprobado',
             // Baseline INMUTABLE para conservar aprobación (no drifta al reeditar).
@@ -1517,6 +1717,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
             _originalCaras: esBfRow
               ? (Number(cara.bonificacion) || 0)
               : (Number(cara.caras_flujo) || 0) + (Number(cara.caras_contraflujo) || 0),
+            // Total y tarifa de BD (inmutables): base del edit para decidir si manda caras/costo.
+            _savedCaras: Number(cara.caras) || 0,
+            _savedTarifa: tarifaBd,
             grupo_rt_bf: grupoRtBfVal,
             grupo_masivo_id: (cara as any).grupo_masivo_id != null ? Number((cara as any).grupo_masivo_id) : null,
             esBf: esBfRow,
@@ -1540,6 +1743,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       setSelectedArticulo(null);
       periodInitializedRef.current = false;
       initialValuesSetRef.current = false;
+      asignadosInitializedRef.current = false;
       setCsvFile(null);
       setCsvData([]);
       setShowCsvSection(false);
@@ -2054,6 +2258,37 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     );
   }, [caras]);
 
+  // Bitacora inline (estatus + comentarios) — se guarda junto con el resto de
+  // los cambios del modal. Handle imperativo para que el flujo de Guardar
+  // Cambios pueda invocarlo despues del save principal. La tabla general sigue
+  // usando su propio StatusModal, ambos flujos coexisten.
+  const bitacoraRef = useRef<BitacoraEstatusInlineHandle>(null);
+  const [bitacoraPending, setBitacoraPending] = useState(false);
+  const [bitacoraPendingCount, setBitacoraPendingCount] = useState(0);
+  const authBloqueoStatus = useMemo(() => {
+    const pend = caras.filter(c => c.autorizacion_dg === 'pendiente' || c.autorizacion_dcm === 'pendiente').length;
+    const corr = caras.filter(c => c.autorizacion_dg === 'correccion' || c.autorizacion_dcm === 'correccion').length;
+    const rech = caras.filter(c => c.autorizacion_dg === 'rechazado' || c.autorizacion_dcm === 'rechazado').length;
+    return pend > 0 || corr > 0 || rech > 0;
+  }, [caras]);
+  // Opciones de estatus para el select — usa el whitelist de rol si existe,
+  // fallback al catalogo base sin los estatus solo-sistema.
+  const propuestaStatusOptions = useMemo<string[]>(() => {
+    const catalogoBase = ['Atendido', 'Abierto', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Pase a ventas', 'Rechazada'];
+    if (permissions.allowedPropuestaStatuses && permissions.allowedPropuestaStatuses.length > 0) {
+      return permissions.allowedPropuestaStatuses;
+    }
+    return catalogoBase;
+  }, [permissions.allowedPropuestaStatuses]);
+  const getPropuestaStatusValidation = useCallback((status: string): StatusValidation => {
+    const bloqueaAvanceStatus = status === 'Aprobada' || status === 'Pase a ventas';
+    const bloqueaSalidaStatus = status === 'Rechazada' || status === 'Cancelada';
+    if (authBloqueoStatus && (bloqueaAvanceStatus || bloqueaSalidaStatus)) {
+      return { disabled: true, reason: 'Autorización abierta' };
+    }
+    return { disabled: false };
+  }, [authBloqueoStatus]);
+
   // Saved-pending lock: existe alguna cara YA GUARDADA en BD (id != null) con
   // autorización original pendiente y que NO ha sido modificada localmente.
   // Las caras agregadas localmente (sin id) o las modificadas en la sesion no
@@ -2276,38 +2511,33 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       isDeleting: false,
       onConfirm: async () => {
         setDeleteCircuitoModal(prev => ({ ...prev, isDeleting: true }));
-        if (caraToDelete?.id) {
+        const dbIds = [caraToDelete?.id, pairCara?.id].filter((x): x is number => !!x);
+        // Nuevas de esta sesión (reservadas al agregar) → borrado directo: es
+        // deshacer el alta. Originales ya guardadas → DIFERIR al Guardar (si
+        // cierra sin guardar no se tocan; al reabrir reaparecen).
+        const nuevas = dbIds.filter(id => sessionNewCaraIdsRef.current.has(id));
+        const originales = dbIds.filter(id => !sessionNewCaraIdsRef.current.has(id));
+        for (const id of nuevas) {
           try {
-            await propuestasService.deleteCara(propuesta.id, caraToDelete.id);
+            await propuestasService.deleteCara(propuesta.id, id);
           } catch (error) {
-            console.error('Error deleting cara:', error);
+            console.error('Error deleting cara (nueva):', error);
             alert('Error al eliminar el formato de la base de datos');
             setDeleteCircuitoModal(prev => ({ ...prev, isOpen: false, isDeleting: false }));
             return;
           }
+          sessionNewCaraIdsRef.current.delete(id);
         }
-        if (pairCara?.id) {
-          try {
-            await propuestasService.deleteCara(propuesta.id, pairCara.id);
-          } catch (error) {
-            console.error('Error deleting RT/BF pair cara:', error);
-            alert('Error al eliminar la cara par (RT/BF) de la base de datos');
-            setDeleteCircuitoModal(prev => ({ ...prev, isOpen: false, isDeleting: false }));
-            return;
-          }
-        }
+        if (originales.length > 0) setPendingCaraDeletions(prev => [...prev, ...originales]);
+
         const idsToRemove = new Set<string>([localId]);
         if (pairCara) idsToRemove.add(pairCara.localId);
-        const dbIdsToRemove = new Set<number>();
-        if (caraToDelete?.id) dbIdsToRemove.add(caraToDelete.id);
-        if (pairCara?.id) dbIdsToRemove.add(pairCara.id);
+        const dbIdsToRemove = new Set<number>(dbIds);
         setModifiedCaras(prev => {
           const next = new Map(prev);
           for (const id of dbIdsToRemove) next.delete(id);
           return next;
         });
-        // Ya se borraron de BD: sacarlas del set de rollback para no re-borrarlas al cerrar.
-        for (const id of dbIdsToRemove) sessionNewCaraIdsRef.current.delete(id);
         setCaras(prev => prev.filter(c => !idsToRemove.has(c.localId)));
         setReservas(prev => prev.filter(r =>
           ![...idsToRemove].some(id => r.id.startsWith(id)) &&
@@ -2391,24 +2621,32 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       onConfirm: async () => {
         setDeleteCircuitoModal(prev => ({ ...prev, isDeleting: true }));
 
-        // Eliminar primero las persistidas en BD; si una falla, detener y limpiar solo lo borrado
+        // Nuevas de esta sesión → borrado directo (deshacer alta); si una falla,
+        // detener. Originales ya guardadas → DIFERIR al Guardar (encolar).
         const removedLocalIds = new Set<string>();
         const removedDbIds = new Set<number>();
+        const originalesACola: number[] = [];
         let failed: CaraItem | null = null;
         for (const cara of carasToDelete) {
           if (cara.id) {
-            try {
-              await propuestasService.deleteCara(propuesta.id, cara.id);
-              removedDbIds.add(cara.id);
-            } catch (error) {
-              console.error('Error deleting cara (bulk):', error);
-              failed = cara;
-              break;
+            if (sessionNewCaraIdsRef.current.has(cara.id)) {
+              try {
+                await propuestasService.deleteCara(propuesta.id, cara.id);
+                sessionNewCaraIdsRef.current.delete(cara.id);
+              } catch (error) {
+                console.error('Error deleting cara (bulk, nueva):', error);
+                failed = cara;
+                break;
+              }
+            } else {
+              originalesACola.push(cara.id);
             }
+            removedDbIds.add(cara.id);
           }
           removedLocalIds.add(cara.localId);
         }
 
+        if (originalesACola.length > 0) setPendingCaraDeletions(prev => [...prev, ...originalesACola]);
         setModifiedCaras(prev => {
           const next = new Map(prev);
           for (const id of removedDbIds) next.delete(id);
@@ -2475,13 +2713,35 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       }
     }
 
-    // Calculate caras en renta (flujo + contraflujo).
+    // Calculate caras en renta.
     // BF/CF/CT: el split flujo/contra es el split de la bonificación (KPI),
-    // NO caras adicionales. Para esos artículos `caras` siempre debe ser 0,
-    // sino el form pre-llena con la suma y la guarda como total (data corrupta).
-    const carasEnRenta = isBonifSplitArticle(cara.articulo)
-      ? 0
-      : (cara.caras_flujo || 0) + (cara.caras_contraflujo || 0);
+    // NO caras adicionales. Para esos artículos `caras` siempre debe ser 0.
+    //
+    // RT (FIX 81891): el total `caras` se prellena del VALOR GUARDADO (cara.caras),
+    // NO de flujo+contra. Existían filas chuecas (caras=150 vs flujo+contra=25+25=50)
+    // y derivar de flujo+contra pisaba el total: al guardar un cambio de NSE el form
+    // reenviaba caras=50 y costo=50×tarifa, disparando una re-autorización indebida.
+    const esSplitBonifEdit = isBonifSplitArticle(cara.articulo);
+    const carasEnRenta = esSplitBonifEdit ? 0 : (cara.caras || 0);
+
+    // Si el split guardado no cuadra con el total, re-derivarlo DESDE caras para que
+    // el form quede consistente con el TOTAL (conserva el ratio si ambos>0, si no 50/50).
+    let carasFlujoPrefill = cara.caras_flujo;
+    let carasContraflujoPrefill = cara.caras_contraflujo;
+    if (!esSplitBonifEdit) {
+      const cfG = cara.caras_flujo || 0;
+      const ccG = cara.caras_contraflujo || 0;
+      const totalG = cara.caras || 0;
+      if (cfG + ccG !== totalG) {
+        if (cfG > 0 && ccG > 0) {
+          carasFlujoPrefill = Math.round(totalG * (cfG / (cfG + ccG)));
+          carasContraflujoPrefill = totalG - carasFlujoPrefill;
+        } else {
+          carasFlujoPrefill = Math.ceil(totalG / 2);
+          carasContraflujoPrefill = Math.floor(totalG / 2);
+        }
+      }
+    }
 
     // Try to find the matching catorcena from inicio_periodo
     let catorcenaInicioVal = cara.catorcena_inicio;
@@ -2521,8 +2781,10 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       // Truncar a YYYY-MM-DD para que <input type="date"> lo reconozca
       inicio_periodo: String(cara.inicio_periodo || '').slice(0, 10),
       fin_periodo: String(cara.fin_periodo || '').slice(0, 10),
-      caras_flujo: cara.caras_flujo,
-      caras_contraflujo: cara.caras_contraflujo,
+      hora_inicio: (cara as any).hora_inicio || '',
+      hora_fin: (cara as any).hora_fin || '',
+      caras_flujo: carasFlujoPrefill,
+      caras_contraflujo: carasContraflujoPrefill,
       articulo: cara.articulo,
       descuento: cara.descuento,
       catorcena_inicio: catorcenaInicioVal,
@@ -2547,28 +2809,29 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       return;
     }
 
-    // Validar tarifa pública: si es 0, solo CT, BF/CF, IM e IN (intercambio)
-    // pueden avanzar.
+    // Validar tarifa pública: si es 0, solo CT, BF/CF, IM, IN (intercambio) y
+    // CF-#### (servicio, como IM) pueden avanzar.
     const artCode = (newCara.articulo || '').toUpperCase();
     const esCortesia = artCode.startsWith('CT');
-    const esBonificacion = artCode.startsWith('BF') || artCode.startsWith('CF');
+    const esBonificacion = isBfCfArticle(artCode);
     const esImpresion = artCode.startsWith('IM');
     const esIntercambio = artCode.startsWith('IN');
-    if (newCara.tarifa_publica <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esIntercambio) {
+    const esServicio = isServicioCFArticle(artCode);
+    if (newCara.tarifa_publica <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esIntercambio && !esServicio) {
       alert('La tarifa pública no puede ser 0. Por favor ingresa una tarifa válida.');
       return;
     }
 
     // BF validation: bonificacion > 0 on RT article requires articuloBf
-    const needsBfArticle = (newCara.bonificacion || 0) > 0 && !esCortesia && !esBonificacion && !esImpresion && !isEspecialArticle(artCode);
+    const needsBfArticle = (newCara.bonificacion || 0) > 0 && !esCortesia && !esBonificacion && !esImpresion && !esServicio && !isEspecialArticle(artCode);
     if (needsBfArticle && !newCara.articuloBf) {
       alert('Debes seleccionar el artículo de bonificación (BF) antes de guardar, o quita las caras de bonificación a 0.');
       return;
     }
 
     // No permitir bonificación sin renta (la bonif es ADICIONAL a la renta).
-    // Excepción: artículos BF/CF/CT/IM y especiales que no requieren renta.
-    if ((newCara.bonificacion || 0) > 0 && (newCara.caras || 0) <= 0 && !esCortesia && !esBonificacion && !esImpresion && !isEspecialArticle(artCode)) {
+    // Excepción: artículos BF/CF/CT/IM, servicios CF-#### y especiales que no requieren renta.
+    if ((newCara.bonificacion || 0) > 0 && (newCara.caras || 0) <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esServicio && !isEspecialArticle(artCode)) {
       alert('No puedes agregar bonificación sin tener al menos 1 cara de renta. Sube las caras o quita la bonificación.');
       return;
     }
@@ -2592,15 +2855,17 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     // Determine if this save is an RT/BF pair (bonificacion > 0 AND articuloBf selected AND article is neither CT/BF/CF/IM/especial)
     const primaryCodeUpper = (newCara.articulo || '').toUpperCase();
     const isPrimaryCortesia = primaryCodeUpper.startsWith('CT');
-    const isPrimaryBonificacion = primaryCodeUpper.startsWith('BF') || primaryCodeUpper.startsWith('CF');
+    const isPrimaryBonificacion = isBfCfArticle(primaryCodeUpper);
     const isPrimaryImpresion = primaryCodeUpper.startsWith('IM');
     const isPrimaryEspecial = isEspecialArticle(primaryCodeUpper);
+    const isPrimaryServicio = isServicioCFArticle(primaryCodeUpper);
     const usePairMode = !!newCara.articuloBf
       && (newCara.bonificacion || 0) > 0
       && !isPrimaryCortesia
       && !isPrimaryBonificacion
       && !isPrimaryImpresion
-      && !isPrimaryEspecial;
+      && !isPrimaryEspecial
+      && !isPrimaryServicio;
 
     // Reuse existing grupo_rt_bf (for edits) or create a new one (for new pairs)
     const grupoRtBfVal: number | null = usePairMode
@@ -2624,6 +2889,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       tarifa_publica: newCara.tarifa_publica,
       inicio_periodo: inicioPeriodoUsar,
       fin_periodo: finPeriodoUsar,
+      hora_inicio: newCara.tipo === 'Digital' ? (newCara.hora_inicio || undefined) : undefined,
+      hora_fin: newCara.tipo === 'Digital' ? (newCara.hora_fin || undefined) : undefined,
       caras_flujo: newCara.caras_flujo,
       caras_contraflujo: newCara.caras_contraflujo,
       articulo: newCara.articulo,
@@ -2653,6 +2920,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           tarifa_publica: 0,
           inicio_periodo: inicioPeriodoUsar,
           fin_periodo: finPeriodoUsar,
+          hora_inicio: newCara.tipo === 'Digital' ? (newCara.hora_inicio || undefined) : undefined,
+          hora_fin: newCara.tipo === 'Digital' ? (newCara.hora_fin || undefined) : undefined,
           caras_flujo: 0,
           caras_contraflujo: 0,
           articulo: newCara.articuloBf.ItemCode,
@@ -2662,11 +2931,30 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         }
       : null;
 
+    // Rollback de BF huerfana: ver justificacion en AssignInventarioCampanaModal.tsx
+    // (caso #80925). Si el POST de la BF salio pero el flujo del RT truena despues,
+    // borramos la BF para no dejar grupos sin pareja en DB.
+    let createdBfIdForRollback: number | null = null;
+
     try {
       if (editingCaraId) {
         // ---- LOCAL-ONLY UPDATE (no API call for the RT cara itself) ----
         const caraToEdit = caras.find(c => c.localId === editingCaraId);
         if (caraToEdit?.id) {
+          // FIX 1c (81891): al EDITAR solo se mandan `caras` y `costo` si el usuario
+          // realmente cambió el total de caras (o la tarifa, que recalcula el costo).
+          // Editar NSE/ciudad/formato NO debe transmitir caras ni costo — así el
+          // backend conserva los actuales y no recalcula ni re-autoriza.
+          // Se compara contra lo GUARDADO EN BD (_savedCaras/_savedTarifa), no contra el
+          // estado local: si el circuito ya se editó en este borrador (40→30) y se vuelve
+          // a editar antes de guardar, el local ya dice 30, `caras` se caía del payload y
+          // el back rechazaba el split 15+15 contra las 40 de BD (caso 81894 / 81827).
+          const carasCambioEdit = (Number(newCara.caras) || 0) !== (Number(caraToEdit._savedCaras ?? caraToEdit.caras) || 0);
+          const tarifaCambioEdit = (Number(newCara.tarifa_publica) || 0) !== (Number(caraToEdit._savedTarifa ?? caraToEdit.tarifa_publica) || 0);
+          const caraDataBulk: typeof caraData = { ...caraData };
+          if (!carasCambioEdit) delete caraDataBulk.caras;
+          if (!carasCambioEdit && !tarifaCambioEdit) delete caraDataBulk.costo;
+
           // Cambio de periodo o de ARTÍCULO con reservas: avisar que se liberará el
           // inventario. Al guardar, el backend libera las reservas del circuito
           // (cara + pareja RT/BF) y lo deja en el nuevo periodo/artículo con 0.
@@ -2739,6 +3027,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                 costo: costoCalculado,
                 tarifa_publica: newCara.tarifa_publica,
                 articulo: newCara.articulo || null,
+                sap_database: esUDC ? 'UDC' : undefined,
               });
               autorizacion_dg = resultado.autorizacion_dg || 'aprobado';
               autorizacion_dcm = resultado.autorizacion_dcm || 'aprobado';
@@ -2786,6 +3075,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
               bfIdToRemove = existingBfPair.id ?? null;
               bfLocalIdToRemove = existingBfPair.localId;
               const createdBf = await propuestasService.createCara(propuesta.id, bfCaraData);
+              createdBfIdForRollback = createdBf.id;
               sessionNewCaraIdsRef.current.add(createdBf.id);
               newBfCaraItem = {
                 localId: `cara-${createdBf.id}`,
@@ -2839,6 +3129,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           } else if (!existingBfPair && usePairMode && bfCaraData) {
             // Create new BF pair in DB
             const createdBf = await propuestasService.createCara(propuesta.id, bfCaraData);
+            createdBfIdForRollback = createdBf.id;
             sessionNewCaraIdsRef.current.add(createdBf.id);
             newBfCaraItem = {
               localId: `cara-${createdBf.id}`,
@@ -2936,7 +3227,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           }
           setModifiedCaras(prev => {
             const next = new Map(prev);
-            next.set(caraToEdit.id!, caraData);
+            next.set(caraToEdit.id!, caraDataBulk);
             // Si BF pair existe y NO cambió su artículo, también marcarlo como modificado
             // para que el bulk save persista la nueva cantidad de bonificación
             if (existingBfPair && existingBfPair.id && usePairMode && bfCaraData &&
@@ -2960,13 +3251,20 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                 const next = new Map(prev);
                 for (const otra of otrasCarasGrupo) {
                   if (!otra.id) continue;
-                  // Replicamos campos NO-temporales; mantenemos periodo y grupo_rt_bf propios de cada otra cara
-                  next.set(otra.id, {
+                  // Replicamos campos NO-temporales; mantenemos periodo y grupo_rt_bf propios de cada otra cara.
+                  // caras/costo se deciden contra la BD de ESA cara (no la de la editada): solo viajan si
+                  // el total/tarifa nuevos difieren de lo que ella tiene guardado.
+                  const otraData: typeof caraData = {
                     ...caraData,
                     inicio_periodo: otra.inicio_periodo,
                     fin_periodo: otra.fin_periodo,
                     grupo_rt_bf: otra.grupo_rt_bf ?? null,
-                  });
+                  };
+                  const otraCarasCambio = (Number(newCara.caras) || 0) !== (Number(otra._savedCaras ?? otra.caras) || 0);
+                  const otraTarifaCambio = (Number(newCara.tarifa_publica) || 0) !== (Number(otra._savedTarifa ?? otra.tarifa_publica) || 0);
+                  if (!otraCarasCambio) delete otraData.caras;
+                  if (!otraCarasCambio && !otraTarifaCambio) delete otraData.costo;
+                  next.set(otra.id, otraData);
                   // También su par BF si existe
                   if (otra.grupo_rt_bf && newBfCaraItem) {
                     const bfPair = caras.find(c =>
@@ -3052,6 +3350,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         let createdBfItem: CaraItem | null = null;
         if (bfCaraData) {
           const createdBf = await propuestasService.createCara(propuesta.id, bfCaraData);
+          createdBfIdForRollback = createdBf.id;
           createdBfItem = {
             localId: `cara-${createdBf.id}`,
             id: createdBf.id,
@@ -3105,6 +3404,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           autorizacion_dcm: createdCara.autorizacion_dcm || 'aprobado',
           _originalDg: createdCara.autorizacion_dg || 'aprobado',
           _originalDcm: createdCara.autorizacion_dcm || 'aprobado',
+          // Recién persistida: su BD es lo que se acaba de crear.
+          _savedCaras: Number(createdCara.caras ?? newCara.caras) || 0,
+          _savedTarifa: Number(newCara.tarifa_publica) || 0,
         };
 
         setCaras(prev => {
@@ -3133,8 +3435,17 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       setNewCara(EMPTY_CARA);
       setSelectedArticulo(null);
       setShowAddCaraForm(false);
+      // Flujo completo exitoso — no borrar BF al limpiar si algo falla despues.
+      createdBfIdForRollback = null;
     } catch (error) {
       console.error('Error saving cara:', error);
+      if (createdBfIdForRollback != null) {
+        try {
+          await propuestasService.deleteCara(propuesta.id, createdBfIdForRollback);
+        } catch (rollbackErr) {
+          console.error('Rollback de BF huerfana fallo (grupo quedara en DB):', rollbackErr);
+        }
+      }
       alert('Error al guardar la cara');
     }
   };
@@ -3170,6 +3481,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         costo: target.costo,
         tarifa_publica: target.tarifa_publica,
         articulo: target.articulo || null,
+        sap_database: esUDC ? 'UDC' : undefined,
       });
       const nuevoDg = eraCorreccion ? 'pendiente' : resultado.autorizacion_dg;
       // Espejear el nuevo estado de autorización al BF del par. El backend ya
@@ -3196,6 +3508,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           tarifa_publica: target.tarifa_publica,
           inicio_periodo: target.inicio_periodo,
           fin_periodo: target.fin_periodo,
+          hora_inicio: target.tipo === 'Digital' ? (target.hora_inicio || undefined) : undefined,
+          hora_fin: target.tipo === 'Digital' ? (target.hora_fin || undefined) : undefined,
           caras_flujo: target.caras_flujo,
           caras_contraflujo: target.caras_contraflujo,
           articulo: target.articulo,
@@ -3214,22 +3528,29 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   const handleBulkSaveChanges = async (skipNotaGate = false) => {
     const hasPropuestaChanges = hasChanges;
     const hasCaraChanges = modifiedCaras.size > 0;
+    const hasBitacoraChanges = bitacoraRef.current?.hasPending() === true;
+    const hasNotaDireccion = !!pendingNotaDireccionRef.current;
+    const hasDeletions = pendingCaraDeletions.length > 0;
 
-    if (!hasPropuestaChanges && !hasCaraChanges) {
+    if (!hasPropuestaChanges && !hasCaraChanges && !hasBitacoraChanges && !hasNotaDireccion && !hasDeletions) {
       showToast('No hay cambios pendientes', 'info');
       return;
     }
 
-    if (invalidCaras.length > 0) {
+    if (invalidCaras.length > 0 && (hasPropuestaChanges || hasCaraChanges)) {
       showToast(`No se puede guardar: ${invalidCaras.length} cara(s) tienen catorcenas fuera del rango configurado`, 'error');
       return;
     }
 
-    // No permitir guardar si quedan circuitos rechazados sin resolver.
-    const rechazadasSinResolver = caras.filter(c => c.autorizacion_dg === 'rechazado' || c.autorizacion_dcm === 'rechazado');
-    if (rechazadasSinResolver.length > 0) {
-      showToast(`Tienes ${rechazadasSinResolver.length} circuito(s) rechazado(s) sin resolver. Edítalos o usa "Reenviar a autorización" antes de guardar.`, 'error');
-      return;
+    // No permitir guardar si quedan circuitos rechazados sin resolver — solo
+    // cuando estamos guardando cambios de propuesta/caras (los cambios de
+    // bitacora/estatus se dejan pasar; el back tiene sus propios guardias).
+    if (hasPropuestaChanges || hasCaraChanges) {
+      const rechazadasSinResolver = caras.filter(c => c.autorizacion_dg === 'rechazado' || c.autorizacion_dcm === 'rechazado');
+      if (rechazadasSinResolver.length > 0) {
+        showToast(`Tienes ${rechazadasSinResolver.length} circuito(s) rechazado(s) sin resolver. Edítalos o usa "Reenviar a autorización" antes de guardar.`, 'error');
+        return;
+      }
     }
 
     // Gate obligatorio: si HAY autorización pendiente (current o guardada),
@@ -3240,7 +3561,10 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     // falso positivo cuando el usuario resolvia la correccion editando el
     // circuito (bajaba tarifa/caras). El estado final ya venia en
     // `autorizacion_dg` como 'aprobado' pero se seguia pidiendo la nota.
-    if (!skipNotaGate) {
+    // Ajuste 2026-09-21: solo aplica cuando hay cambios de propuesta/caras. Si
+    // el usuario solo toco bitacora (estatus/comentarios), no re-enviamos
+    // autorizacion y por lo tanto no se pide Nota Direccion.
+    if (!skipNotaGate && (hasPropuestaChanges || hasCaraChanges)) {
       const dgPending = caras.some(c =>
         c.autorizacion_dg === 'pendiente' ||
         c.autorizacion_dg === 'correccion' ||
@@ -3263,6 +3587,12 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     setIsSaving(true);
     try {
       const messages: string[] = [];
+
+      // ORDEN (fix jefe oct-2026 "guarda parte"): primero lo ESTRUCTURAL
+      // (encabezado, bulk de caras) y la nota/bitácora AL FINAL. Antes la
+      // bitácora se aplicaba PRIMERO: si el bulk tronaba, el comentario/estatus
+      // ya había quedado guardado y los circuitos no. Ahora, si algo estructural
+      // falla, ni la nota ni la bitácora se aplicaron.
 
       // 1. Save propuesta summary changes if any
       if (hasPropuestaChanges) {
@@ -3365,6 +3695,38 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         messages.push(result.message || `${carasArray.length} circuito(s) actualizados`);
       }
 
+      // 1b. Eliminaciones DIFERIDAS de circuitos ya guardados (propuesta =
+      // borrador, sin autorización). Van después del bulk: si algo estructural
+      // de arriba tronó, no llegamos aquí y los circuitos siguen intactos.
+      if (hasDeletions) {
+        for (const caraId of pendingCaraDeletions) {
+          await propuestasService.deleteCara(propuesta.id, caraId);
+        }
+        messages.push(`${pendingCaraDeletions.length} circuito(s) eliminados`);
+        setPendingCaraDeletions([]);
+      }
+
+      // 2. Nota de Dirección ENCOLADA (autorización DG/DCM). Aditiva, después de
+      // lo estructural: si el bulk de arriba tronó, no llegamos aquí.
+      if (pendingNotaDireccionRef.current && propuesta.solicitud_id) {
+        await notasDireccionService.create(propuesta.solicitud_id, pendingNotaDireccionRef.current);
+        pendingNotaDireccionRef.current = null;
+        messages.push('Nota de Dirección registrada');
+      }
+
+      // 3. Bitácora inline (estatus + comentarios) — AL FINAL (aditiva). Si algo
+      // estructural falló arriba, no se aplicó. Si falla SOLO la bitácora, lo
+      // estructural ya quedó guardado, así que no abortamos: avisamos aparte.
+      let bitacoraError: string | null = null;
+      if (hasBitacoraChanges && bitacoraRef.current) {
+        try {
+          await bitacoraRef.current.commit();
+          messages.push('Estatus/bitácora actualizados');
+        } catch (bitErr) {
+          bitacoraError = bitErr instanceof Error ? bitErr.message : (bitErr as any)?.response?.data?.error || 'Error al actualizar estatus/bitácora';
+        }
+      }
+
       // Refresh data — incluye reservas modal para que circuitos se redibujen verdes/llenos tras redistribuir
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['propuesta-full', propuesta.id] }),
@@ -3378,7 +3740,11 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       // generó una sola vez en bulkUpdateCaras. Ya no son candidatas a rollback.
       sessionNewCaraIdsRef.current.clear();
 
-      showToast(messages.join(' | '), 'success');
+      if (bitacoraError) {
+        showToast(`Los cambios se guardaron, pero la bitácora/estatus falló: ${bitacoraError}`, 'error');
+      } else {
+        showToast(messages.join(' | '), 'success');
+      }
     } catch (error) {
       console.error('Error in bulk save:', error);
       const axiosError = error as { response?: { data?: { error?: string; message?: string } }; message?: string };
@@ -3798,6 +4164,30 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     setCsvData([]);
     setShowCsvSection(false);
 
+    // UDC (aeropuerto AICM): las pantallas viven en `inventarios` con marca
+    // plaza='AICM' (sembradas aparte, con sus espacios). Las leemos por esa
+    // plaza para tener ids REALES y poder reservar. Si el entorno no está
+    // sembrado (0 filas), caemos al inventario sintético (solo visual).
+    // UDC con pantalla de aeropuerto → inventario AICM. Pero si la cara es de
+    // GRAN FORMATO (puente/cartelera dentro de una propuesta UDC), caemos al
+    // buscador normal (inventario real por ciudad/formato).
+    const caraEsGranFormato = !!articulosData?.find(a => a.ItemCode === cara.articulo && esArticuloGranFormato(a.ItemName, a.ItemCode));
+    if (esUDC && !caraEsGranFormato) {
+      setIsSearching(true);
+      try {
+        const resp = await inventariosService.getAll({ plaza: 'AICM', limit: 100 });
+        const rows = resp.data || [];
+        setInventarioDisponible(rows.length > 0
+          ? rows.map(inv => ({ ...inv, espacios: [], espacios_count: 0, ya_reservado_para_cara: false, espacio_id: null, numero_espacio: null }))
+          : buildUdcInventarioDisponible());
+      } catch {
+        setInventarioDisponible(buildUdcInventarioDisponible());
+      } finally {
+        setIsSearching(false);
+      }
+      return;
+    }
+
     // Fetch disponibles based on cara characteristics (gets all, filter in frontend)
     setIsSearching(true);
     try {
@@ -3886,6 +4276,21 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // Refetch disponibles with current filters
   const handleRefetchDisponibles = async () => {
     if (!selectedCaraForSearch) return;
+
+    // UDC: releer inventario real por plaza='AICM' (ver handleSearchInventory).
+    // Gran formato dentro de UDC usa el buscador normal (esUDCBusqueda=false).
+    if (esUDCBusqueda) {
+      try {
+        const resp = await inventariosService.getAll({ plaza: 'AICM', limit: 100 });
+        const rows = resp.data || [];
+        setInventarioDisponible(rows.length > 0
+          ? rows.map(inv => ({ ...inv, espacios: [], espacios_count: 0, ya_reservado_para_cara: false, espacio_id: null, numero_espacio: null }))
+          : buildUdcInventarioDisponible());
+      } catch {
+        setInventarioDisponible(buildUdcInventarioDisponible());
+      }
+      return;
+    }
 
     setIsSearching(true);
     try {
@@ -4090,6 +4495,16 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     return data;
   }, [inventarioDisponible, disponiblesSearchTerm, poiFilterIds, flujoFilter, showOnlyUnicos, showOnlyCompletos, showOnlyUnicosDigitales, showSpotUnico, islaFilter, islaVipFilter, mundialistaFilter, muebleChicoFilter, disponiblesAdvFilters, groupByDistance, groupMode, filterUnicos, filterCompletos, filterUnicosDigitales, filterSpotUnico, groupByDistanceFunc, groupByListFunc, sortColumn, sortDirection, reservas]);
 
+  // UDC: mapa nombre-de-pantalla → key de selección (para pintar checkboxes en
+  // la ficha técnica sincronizados con selectedInventory).
+  const udcKeyByNombre = useMemo(() => {
+    const m = new Map<string, string>();
+    if (esUDC) for (const inv of inventarioDisponible) {
+      if (inv.codigo_unico) m.set(udcPantallaNum(inv.codigo_unico), getInventoryKey(inv));
+    }
+    return m;
+  }, [esUDC, inventarioDisponible, getInventoryKey]);
+
   // Check if an inventory item is selected
   const isInventorySelected = useCallback((inv: InventarioDisponible | ProcessedInventoryItem): boolean => {
     return selectedInventory.has(getInventoryKey(inv));
@@ -4104,6 +4519,28 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   const clearPOIFilter = useCallback(() => {
     setPoiFilterIds(null);
   }, []);
+
+  // Capa de POIs/KML del circuito: se persiste al "Conservar con/sin POIs"
+  // para que la Vista Compartir (propuesta y campaña) la muestre como capa
+  // activable. Solo hay circuito cuando la cara ya existe en BD (id).
+  const capaCircuitoId = selectedCaraForSearch?.id ?? null;
+  const handleGuardarCapa = async (capa: Omit<NuevaCapa, 'solicitudCarasId'>) => {
+    if (!capaCircuitoId) return;
+    try {
+      const creada = await capasMapaService.crear({ ...capa, solicitudCarasId: capaCircuitoId });
+      showToast(`Capa "${creada.nombre}" guardada para la Vista Compartir`, 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'No se pudo guardar la capa', 'error');
+      throw err;
+    }
+  };
+  // Conteo para el badge de la pestaña "Capas" (misma clave de cache que el
+  // panel y que la lista del mapa: una sola petición entre los tres).
+  const { data: capasCircuito = [] } = useQuery({
+    queryKey: ['capas-mapa-circuito', capaCircuitoId],
+    queryFn: () => capasMapaService.listarPorCircuito(capaCircuitoId!),
+    enabled: !!capaCircuitoId,
+  });
 
   // Check if there are digital items in inventory
   const hasDigitalInventory = useMemo(() => {
@@ -4564,6 +5001,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         }
 
         queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+        queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
         queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] }); // Refresh map
         // Also refresh disponibles
         handleRefetchDisponibles();
@@ -4711,7 +5149,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
 
         // Replicar bonificación a todas las caras BF del grupo masivo si reservaMasivaP está ON
         const carasObjetivo = (reservaMasivaP && selectedCaraForSearch.grupo_masivo_id)
-          ? caras.filter(c => c.grupo_masivo_id === selectedCaraForSearch.grupo_masivo_id && c.esBf && c.id)
+          ? caras.filter(c => c.grupo_masivo_id === selectedCaraForSearch.grupo_masivo_id && (c.esBf || (c.articulo || '').toUpperCase().startsWith('CT')) && c.id)
           : [selectedCaraForSearch];
 
         let totalReservasCreadas = 0;
@@ -4736,6 +5174,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         }
 
         queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+        queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
         queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] });
         handleRefetchDisponibles();
 
@@ -4768,7 +5207,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     const isCT = (selectedCaraForSearch?.articulo || '').toUpperCase().startsWith('CT');
     // Si reserva masiva está ON, mostrar mensaje específico
     if (reservaMasivaP && selectedCaraForSearch?.grupo_masivo_id) {
-      const grupoBfCount = caras.filter(c => c.grupo_masivo_id === selectedCaraForSearch.grupo_masivo_id && c.esBf && c.id).length;
+      const grupoBfCount = caras.filter(c => c.grupo_masivo_id === selectedCaraForSearch.grupo_masivo_id && (c.esBf || (c.articulo || '').toUpperCase().startsWith('CT')) && c.id).length;
       setConfirmModal({
         isOpen: true,
         title: isCT ? 'Cortesía Masiva' : 'Bonificación Masiva',
@@ -4831,6 +5270,94 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       r.solicitudCaraId === selectedCaraForSearch?.id
     );
   }, [reservas, selectedCaraForSearch]);
+
+  // Historial (reservas que salieron) de la cara seleccionada — para el tab Historial.
+  // Historial: por default el del circuito seleccionado en el buscador. Sin
+  // circuito seleccionado (o con "Todos los circuitos") se muestra el de toda
+  // la propuesta. Antes, sin circuito, el tab decia "Sin movimientos en este
+  // circuito" aunque hubiera eliminaciones en otros, y parecia que no se
+  // habian guardado.
+  const [historialTodos, setHistorialTodos] = useState(false);
+  const historialCaraActual = useMemo(() => {
+    if (!selectedCaraForSearch?.id) return [];
+    return (historialInventario || []).filter(h => h.solicitud_cara_id === selectedCaraForSearch.id);
+  }, [historialInventario, selectedCaraForSearch]);
+  const historialMostrandoTodos = historialTodos || !selectedCaraForSearch?.id;
+  const currentCaraHistorial = historialMostrandoTodos ? (historialInventario || []) : historialCaraActual;
+  const historialOtrosCircuitos = (historialInventario?.length ?? 0) - historialCaraActual.length;
+
+  const [reReservandoHistId, setReReservandoHistId] = useState<number | null>(null);
+  // Regresar a reservados un inventario del historial (solo si sigue disponible).
+  // Reusa createReservas: el backend valida disponibilidad con lock y omite si ya
+  // está ocupado/bloqueado.
+  const handleReReservarHistorial = async (item: ReservaHistorialItem) => {
+    if (!item.disponible) return;
+    const cara = caras.find(c => c.id === item.solicitud_cara_id) || selectedCaraForSearch;
+    if (!cara?.id) { showToast('No se encontró el circuito de esta reserva', 'error'); return; }
+    const clienteId = solicitudDetails?.propuesta?.cliente_id ?? propuesta.cliente_id;
+    if (clienteId === undefined || clienteId === null) { showToast('Cliente ID no encontrado', 'error'); return; }
+    const fechaInicio = cara.inicio_periodo || item.inicio_periodo || solicitudDetails?.cotizacion?.fecha_inicio || new Date().toISOString();
+    const fechaFin = cara.fin_periodo || item.fin_periodo || solicitudDetails?.cotizacion?.fecha_fin || new Date().toISOString();
+    const esBonif = /bonific/i.test(item.estatus || '') || /bonific/i.test(item.estatus_original || '');
+    const tipo: 'Flujo' | 'Bonificacion' = esBonif ? 'Bonificacion' : 'Flujo';
+    setReReservandoHistId(item.reserva_id);
+    try {
+      const result = await propuestasService.createReservas(propuesta.id, {
+        reservas: [{ inventario_id: item.inventario_id, tipo, latitud: 0, longitud: 0 }],
+        solicitudCaraId: cara.id,
+        clienteId,
+        fechaInicio,
+        fechaFin,
+        agruparComoCompleto: false,
+      });
+      if ((result.reservasCreadas ?? 0) > 0) {
+        showToast(`${item.codigo_unico} regresó a reservados`, 'success');
+      } else {
+        showToast(result.omitidos?.[0]?.motivo || 'No se pudo regresar (quizá ya está ocupado)', 'error');
+      }
+      queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+      queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
+      queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Error al regresar la reserva', 'error');
+    } finally {
+      setReReservandoHistId(null);
+    }
+  };
+
+  // Regresar en masa (multi-select del tab Historial): recorre los seleccionados
+  // (solo disponibles), re-reserva cada uno y al final invalida el historial para
+  // que los que regresaron salgan de la lista.
+  const handleReReservarHistorialBulk = async (sel: ReservaHistorialItem[]) => {
+    const clienteId = solicitudDetails?.propuesta?.cliente_id ?? propuesta.cliente_id;
+    if (clienteId === undefined || clienteId === null) { showToast('Cliente ID no encontrado', 'error'); return; }
+    let ok = 0; let fail = 0;
+    for (const item of sel) {
+      if (!item.disponible) { fail++; continue; }
+      const cara = caras.find(c => c.id === item.solicitud_cara_id) || selectedCaraForSearch;
+      if (!cara?.id) { fail++; continue; }
+      const fechaInicio = cara.inicio_periodo || item.inicio_periodo || solicitudDetails?.cotizacion?.fecha_inicio || new Date().toISOString();
+      const fechaFin = cara.fin_periodo || item.fin_periodo || solicitudDetails?.cotizacion?.fecha_fin || new Date().toISOString();
+      const esBonif = /bonific/i.test(item.estatus || '') || /bonific/i.test(item.estatus_original || '');
+      const tipo: 'Flujo' | 'Bonificacion' = esBonif ? 'Bonificacion' : 'Flujo';
+      try {
+        const result = await propuestasService.createReservas(propuesta.id, {
+          reservas: [{ inventario_id: item.inventario_id, tipo, latitud: 0, longitud: 0 }],
+          solicitudCaraId: cara.id,
+          clienteId,
+          fechaInicio,
+          fechaFin,
+          agruparComoCompleto: false,
+        });
+        if ((result.reservasCreadas ?? 0) > 0) ok++; else fail++;
+      } catch { fail++; }
+    }
+    if (ok > 0) showToast(`${ok} inventario${ok !== 1 ? 's' : ''} regres${ok !== 1 ? 'aron' : 'ó'} a reservados${fail > 0 ? ` · ${fail} no se ${fail !== 1 ? 'pudieron' : 'pudo'}` : ''}`, 'success');
+    else showToast('No se pudo regresar ninguno (quizá ya están ocupados)', 'error');
+    queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+    queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
+    queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] });
+  };
 
   // Group reservas by grupo_completo_id - shows pairs as single "Completo" item
   const currentCaraReservasMerged = useMemo(() => {
@@ -5133,6 +5660,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           try {
             await propuestasService.deleteReservas(propuesta.id, backendIds);
             queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+            queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
             queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] });
             handleRefetchDisponibles();
 
@@ -5140,7 +5668,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
             showToast('Mueble completo eliminado correctamente', 'success');
           } catch (error) {
             console.error('Error deleting grupo completo:', error);
-            showToast('Error al eliminar mueble completo', 'error');
+            showToast((error as any)?.response?.data?.error || 'Error al eliminar mueble completo', 'error');
           } finally {
             setIsSaving(false);
             setConfirmModal(prev => ({ ...prev, isOpen: false }));
@@ -5188,6 +5716,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           const ids = reservasAEliminar.map(r => r.reservaId!).filter(Boolean);
           await propuestasService.deleteReservas(propuesta.id, ids);
           queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+          queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
           queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] });
           handleRefetchDisponibles();
 
@@ -5196,7 +5725,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           showToast(`${reservasAEliminar.length} reserva(s) eliminada(s) correctamente`, 'success');
         } catch (error) {
           console.error('Error deleting reserva:', error);
-          showToast('Error al eliminar reserva', 'error');
+          showToast((error as any)?.response?.data?.error || 'Error al eliminar reserva', 'error');
         } finally {
           setIsSaving(false);
           setConfirmModal(prev => ({ ...prev, isOpen: false }));
@@ -5301,6 +5830,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           if (backendIds.length > 0) {
             await propuestasService.deleteReservas(propuesta.id, backendIds);
             queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', propuesta.id] });
+            queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-historial', propuesta.id] });
             queryClient.invalidateQueries({ queryKey: ['propuesta-inventario', propuesta.id] });
             handleRefetchDisponibles();
           }
@@ -5311,7 +5841,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
           showToast(`${finalSelected.length} reserva(s) eliminada(s) correctamente${masivoLabel}`, 'success');
         } catch (error) {
           console.error('Error deleting reservas:', error);
-          showToast('Error al eliminar reservas', 'error');
+          showToast((error as any)?.response?.data?.error || 'Error al eliminar reservas', 'error');
         } finally {
           setIsSaving(false);
           setConfirmModal(prev => ({ ...prev, isOpen: false }));
@@ -5448,6 +5978,23 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     </div>
   );
 
+  // Aviso para Tráfico cuando la propuesta está en "Ajuste Comercial": explica por
+  // qué todo está deshabilitado y qué tiene que pasar para poder continuar. Se
+  // muestra en las DOS vistas del modal (principal y buscador de inventario),
+  // porque el estatus puede cambiar estando Tráfico ya dentro del buscador.
+  // Feedback 2026-09-17 (Jos).
+  const avisoAjusteComercialJSX = bloqueoCircuitoAjusteComercial && (
+    <div className={`px-6 py-3 border-b flex items-start gap-3 ${isDark ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-300'}`}>
+      <AlertTriangle className={`h-5 w-5 flex-shrink-0 mt-0.5 ${isDark ? 'text-amber-400' : 'text-amber-600'}`} />
+      <div className={`text-sm ${isDark ? 'text-amber-200' : 'text-amber-800'}`}>
+        <span className="font-semibold">La propuesta está en “Ajuste Comercial”.</span>{' '}
+        La tiene el asesor comercial para revisión, así que no puedes reservar ni eliminar inventario.
+        Podrás continuar cuando te la regresen a <span className="font-medium">“Ajuste Cto-Cliente”</span> o{' '}
+        <span className="font-medium">“Ajuste Inventario”</span>.
+      </div>
+    </div>
+  );
+
   // Render inventory search view
   if (viewState === 'search-inventory') {
     return (
@@ -5458,7 +6005,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       {omitidosReservaJSX}
         <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={handleBackToMain} />
 
-        <div className={`relative w-[97vw] max-w-[1800px] h-[92vh] ${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border border-purple-500/20 shadow-2xl flex flex-col overflow-hidden`}>
+        <div className={`relative w-[97vw] max-w-[1800px] h-[92dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:w-screen max-lg:landscape:rounded-none max-lg:landscape:mx-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border border-purple-500/20 shadow-2xl flex flex-col overflow-hidden`}>
           {/* Header */}
           <div className={`flex items-center justify-between px-6 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
             <div className="flex items-center gap-4">
@@ -5471,14 +6018,39 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
               <div>
                 <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Buscar Inventario</h2>
                 <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                  {selectedCaraForSearch?.formato} - {selectedCaraForSearch?.ciudad || selectedCaraForSearch?.estados}
+                  {/* UDC: solo la plaza (aeropuerto), no la lista de ciudades */}
+                  {selectedCaraForSearch?.formato} - {esUDCBusqueda ? (selectedCaraForSearch?.estados || 'AICM') : (selectedCaraForSearch?.ciudad || selectedCaraForSearch?.estados)}
                 </p>
               </div>
             </div>
-            <button onClick={handleBackToMain} className={`p-2 rounded-lg ${isDark ? 'text-zinc-400' : 'text-gray-500'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`}>
-              <X className="h-5 w-5" />
-            </button>
+            <div className="flex items-center gap-3">
+              {/* Bloquear circuito (apartado exclusivo) — SOLO Tráfico. Feature 2026-11. */}
+              {puedeBloquearCircuito && selectedCaraForSearch && (
+                <button
+                  onClick={handleToggleBloqueoCircuito}
+                  disabled={bloqueoCircuitoLoading}
+                  title={circuitoActivoBloqueado
+                    ? 'Quitar el bloqueo: el circuito regresa a multireserva (otras propuestas podrán compartirlo)'
+                    : 'Bloquear el circuito: aparta en EXCLUSIVA lo reservado — nadie más lo puede tomar ni se lo roba una campaña'}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${
+                    circuitoActivoBloqueado
+                      ? (isDark ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30' : 'bg-amber-50 text-amber-700 border border-amber-300 hover:bg-amber-100')
+                      : (isDark ? 'bg-zinc-800 text-zinc-300 border border-zinc-700 hover:text-white' : 'bg-gray-50 text-gray-600 border border-gray-200 hover:text-gray-900')
+                  }`}
+                >
+                  {bloqueoCircuitoLoading
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : circuitoActivoBloqueado ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+                  {bloqueoCircuitoLoading ? 'Guardando…' : circuitoActivoBloqueado ? 'Circuito bloqueado' : 'Bloquear circuito'}
+                </button>
+              )}
+              <button onClick={handleBackToMain} className={`p-2 rounded-lg ${isDark ? 'text-zinc-400' : 'text-gray-500'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`}>
+                <X className="h-5 w-5" />
+              </button>
+            </div>
           </div>
+
+          {avisoAjusteComercialJSX}
 
           {/* Compact KPIs with progress bars */}
           <div className={`px-6 py-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-gradient-to-r from-zinc-900 via-zinc-900/95 to-zinc-900/90' : 'bg-gradient-to-r from-gray-50 via-gray-50/95 to-gray-50/90'}`}>
@@ -5536,18 +6108,37 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       if (totalRenta === 0) return;
                       const newFlujo = Math.ceil(totalRenta * v / 100);
                       const newContra = totalRenta - newFlujo;
-                      setSavingPct(true);
-                      try {
-                        await propuestasService.updateCara(propuesta.id, selectedCaraForSearch.id, {
-                          caras_flujo: newFlujo,
-                          caras_contraflujo: newContra,
-                        } as any);
-                        const updatedCara = { ...selectedCaraForSearch, caras_flujo: newFlujo, caras_contraflujo: newContra };
-                        setSelectedCaraForSearch(updatedCara);
-                        setCaras(prev => prev.map(c => c.id === selectedCaraForSearch.id
+                      const caraId = selectedCaraForSearch.id;
+                      const aplicarSplitLocal = () => {
+                        setSelectedCaraForSearch({ ...selectedCaraForSearch, caras_flujo: newFlujo, caras_contraflujo: newContra });
+                        setCaras(prev => prev.map(c => c.id === caraId
                           ? { ...c, caras_flujo: newFlujo, caras_contraflujo: newContra }
                           : c
                         ));
+                        // Si el circuito tiene un cambio pendiente, el split nuevo viaja en él
+                        // (si no, "Guardar Cambios" lo regresaría al split anterior).
+                        setModifiedCaras(prev => {
+                          const pendiente = prev.get(caraId);
+                          if (!pendiente) return prev;
+                          const next = new Map(prev);
+                          next.set(caraId, { ...pendiente, caras_flujo: newFlujo, caras_contraflujo: newContra });
+                          return next;
+                        });
+                      };
+                      // El total cambió en el borrador y aún no se guarda: el back rechazaría este
+                      // split (debe sumar el total de BD). Se queda en el cambio pendiente y se
+                      // persiste con "Guardar Cambios" junto con el total (caso 81894).
+                      if (modifiedCaras.has(caraId) && totalRenta !== (selectedCaraForSearch._savedCaras ?? totalRenta)) {
+                        aplicarSplitLocal();
+                        return;
+                      }
+                      setSavingPct(true);
+                      try {
+                        await propuestasService.updateCara(propuesta.id, caraId, {
+                          caras_flujo: newFlujo,
+                          caras_contraflujo: newContra,
+                        } as any);
+                        aplicarSplitLocal();
                       } catch (err) {
                         console.error('Error guardando distribución:', err);
                       } finally {
@@ -5762,14 +6353,47 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   </span>
                 )}
               </button>
+              <button
+                onClick={() => setSearchViewTab('historial')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${searchViewTab === 'historial'
+                  ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+                  : `${isDark ? 'text-zinc-400' : 'text-gray-500'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'} ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'}`
+                  }`}
+              >
+                <History className="h-4 w-4" />
+                Historial
+                {currentCaraHistorial.length > 0 && (
+                  <span className="px-1.5 py-0.5 bg-purple-500/30 text-purple-300 rounded-full text-xs">
+                    {currentCaraHistorial.length}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setSearchViewTab('capas')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${searchViewTab === 'capas'
+                  ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                  : `${isDark ? 'text-zinc-400' : 'text-gray-500'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'} ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'}`
+                  }`}
+              >
+                <Layers className="h-4 w-4" />
+                Capas
+                {capasCircuito.length > 0 && (
+                  <span className="px-1.5 py-0.5 bg-sky-500/30 text-sky-300 rounded-full text-xs">
+                    {capasCircuito.length}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
 
           {/* Conditional Content based on tab */}
           {searchViewTab === 'buscar' ? (
             <>
-              {/* Filters */}
-              <div className={`px-6 py-2.5 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50/50'}`}>
+              {/* Filters — se ocultan en UDC: la ficha técnica trae su propia
+                  barra (título + búsqueda + zona/duración + seleccionar todo),
+                  así no duplicamos búsqueda ni mostramos filtros que no aplican
+                  al aeropuerto (Únicos/Isla/Agrupar/CSV/Excluir…). */}
+              <div className={`px-6 py-2.5 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50/50'} ${esUDCBusqueda ? 'hidden' : ''}`}>
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* Flujo Toggle — para mensual solo Flujo (no Contraflujo) */}
                   {tipoPeriodo === 'mensual' ? (
@@ -5906,6 +6530,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     </button>
                   )}
 
+                  {/* Mundialista + Chico: no aplican a UDC (aeropuerto) → ocultos.
+                      En gran formato dentro de UDC (esUDCBusqueda=false) sí aplican. */}
+                  {!esUDCBusqueda && (<>
                   {/* Mundialista filter - 3-state toggle: off → SI → NO → off */}
                   <button
                     onClick={() => {
@@ -5943,6 +6570,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     <Package className="h-3.5 w-3.5" />
                     {muebleChicoFilter === 'si' ? 'Chico ✓' : muebleChicoFilter === 'no' ? 'Chico ✗' : 'Chico'}
                   </button>
+                  </>)}
 
                   {/* Filtros avanzados (embudo) */}
                   <div className="relative">
@@ -5963,7 +6591,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       )}
                     </button>
                     {showDisponiblesAdvFilters && (
-                      <div className={`absolute left-0 top-full mt-1 z-[100] w-[540px] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-gray-200'} border rounded-xl shadow-2xl p-4`}>
+                      <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:bottom-auto lg:mt-1 lg:w-[540px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible z-[100] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-gray-200'} border rounded-xl shadow-2xl p-4`}>
                         <div className="flex items-center justify-between mb-3">
                           <span className={`text-sm font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>Filtros avanzados</span>
                           <button
@@ -5973,7 +6601,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                             <X className="h-4 w-4" />
                           </button>
                         </div>
-                        <div className="space-y-2 max-h-[300px] overflow-visible pr-1">
+                        <div className="space-y-2 max-h-[300px] max-lg:landscape:max-h-32 overflow-visible pr-1">
                           {disponiblesAdvFilters.map((filter, index) => (
                             <div key={filter.id} className="flex items-center gap-2">
                               {index > 0 ? (
@@ -6478,10 +7106,34 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                 );
               })()}
 
-              {/* Content - Map and Table */}
+              {/* Content - Map and Table. UDC: la ficha técnica ES el inventario
+                  (checkbox) y ocupa todo el ancho; se oculta la tabla estándar
+                  (que estaría vacía porque el aeropuerto no vive en `inventarios`). */}
               <div className="flex-1 flex overflow-hidden">
-                {/* Table */}
-                <div className={`w-1/2 border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex flex-col`}>
+                {/* Columna principal: tabla estándar; en UDC = ficha técnica
+                    (el inventario del aeropuerto) a todo lo ancho. El footer de
+                    acciones (Reservar/Bonificar) vive en esta columna, así que
+                    en UDC sigue visible. */}
+                <div className={`${esUDCBusqueda ? 'w-full' : `w-1/2 border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`} flex flex-col`}>
+                  {esUDCBusqueda ? (
+                    <div className="flex-1 overflow-hidden">
+                      <UdcFichaTecnicaPanel
+                        isDark={isDark}
+                        articulo={selectedCaraForSearch?.articulo}
+                        selected={selectedInventory}
+                        keyByNombre={udcKeyByNombre}
+                        onToggle={toggleInventorySelection}
+                        onToggleVisible={(keys, allSelected) => {
+                          setSelectedInventory(prev => {
+                            const next = new Set(prev);
+                            if (allSelected) keys.forEach(k => next.delete(k));
+                            else keys.forEach(k => next.add(k));
+                            return next;
+                          });
+                        }}
+                      />
+                    </div>
+                  ) : (
                   <div className="flex-1 overflow-auto">
                     {isSearching ? (
                       <div className="flex items-center justify-center h-full">
@@ -6494,7 +7146,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         <p className="text-sm">Intenta cambiar los filtros o la cara seleccionada</p>
                       </div>
                     ) : (
-                      <table className="w-full text-sm">
+                      <table className="w-full min-w-[640px] text-sm">
                         <thead className={`${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'} sticky top-0`}>
                           <tr>
                             <th className={`px-3 py-2 text-left text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} font-medium w-10`}>
@@ -6752,6 +7404,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       </table>
                     )}
                   </div>
+                  )}
 
                   {/* Action buttons */}
                   <div className={`p-4 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'}/50 space-y-3`}>
@@ -6797,8 +7450,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   </div>
                 </div>
 
-                {/* Advanced Map */}
-                <div className="w-1/2">
+                {/* Panel derecho = mapa. En UDC se oculta (la ficha técnica ya
+                    ocupa la columna principal a todo lo ancho). */}
+                <div className={esUDCBusqueda ? 'hidden' : 'w-1/2'}>
                   {mapsLoaded ? (
                     <AdvancedMapComponent
                       inventarios={processedInventory}
@@ -6810,6 +7464,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       mapCenter={mapCenter}
                       onFilterByPOI={handlePOIFilter}
                       hasPOIFilter={poiFilterIds !== null}
+                      solicitudCarasId={capaCircuitoId}
+                      onGuardarCapa={handleGuardarCapa}
+                      canGuardarCapa={effectiveCanEdit}
                     />
                   ) : (
                     <div className={`flex items-center justify-center h-full ${isDark ? 'bg-zinc-800' : 'bg-gray-50'}`}>
@@ -6819,11 +7476,56 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                 </div>
               </div>
             </>
+          ) : searchViewTab === 'historial' ? (
+            /* HISTORIAL TAB CONTENT */
+            <HistorialInventarioPanel
+              items={currentCaraHistorial}
+              isDark={isDark}
+              tipoPeriodo={tipoPeriodo}
+              canEdit={effectiveCanEdit}
+              reReservandoId={reReservandoHistId}
+              onReReservar={handleReReservarHistorial}
+              onReReservarBulk={handleReReservarHistorialBulk}
+              onRefresh={() => refetchHistorial()}
+              refreshing={historialFetching}
+              mostrandoTodos={historialMostrandoTodos}
+              onToggleTodos={selectedCaraForSearch?.id ? () => setHistorialTodos(v => !v) : undefined}
+              totalOtrosCircuitos={historialOtrosCircuitos}
+            />
+          ) : searchViewTab === 'capas' ? (
+            /* CAPAS TAB CONTENT: gestion de capas de POI/KML del circuito */
+            <CapasCircuitoPanel
+              solicitudCarasId={capaCircuitoId}
+              canEdit={effectiveCanEdit}
+              isDark={isDark}
+            />
           ) : (
             /* RESERVADOS TAB CONTENT */
             <div className="flex-1 flex overflow-hidden">
-              {/* Reservados Table */}
-              <div className={`w-1/2 flex flex-col border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+              {/* Reservados Table — UDC ocupa todo el ancho (sin mapa) y usa el
+                  panel de tarjetas (mismo look que "Buscar disponible"). */}
+              <div className={`${esUDCBusqueda ? 'w-full' : `w-1/2 border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`} flex flex-col`}>
+                {esUDCBusqueda ? (
+                  <UdcReservadosPanel
+                    items={currentCaraReservasMerged}
+                    isDark={isDark}
+                    selected={selectedReservados}
+                    onToggle={handleToggleReservadoSelection}
+                    onToggleVisible={(ids, allSelected) => {
+                      setSelectedReservados(prev => {
+                        const next = new Set(prev);
+                        if (allSelected) ids.forEach(i => next.delete(i));
+                        else ids.forEach(i => next.add(i));
+                        return next;
+                      });
+                    }}
+                    onDelete={effectiveCanEdit ? handleRemoveReserva : undefined}
+                    onBulkDelete={effectiveCanEdit ? handleBulkDeleteReservas : undefined}
+                    canEdit={effectiveCanEdit}
+                    esCortesia={(selectedCaraForSearch?.articulo || '').toUpperCase().startsWith('CT')}
+                  />
+                ) : (
+                <>
                 {/* Search Bar and Tools for Reservados */}
                 <div className={`p-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'}/50 space-y-2`}>
                   {/* Row 1: Search and Delete */}
@@ -7065,7 +7767,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   </div>
                 ) : (
                   <div className="flex-1 overflow-auto">
-                    <table className="w-full">
+                    <table className="w-full min-w-[640px]">
                       <thead className={`sticky top-0 ${isDark ? 'bg-zinc-900' : 'bg-white'}/95 backdrop-blur-sm z-10`}>
                         <tr className={`border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
                           <th className="px-3 py-3 text-center">
@@ -7467,7 +8169,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
 
                 {/* Lateral Edit Panel */}
                 {editingReserva && (
-                  <div className={`absolute right-0 top-0 bottom-0 w-80 ${isDark ? 'bg-zinc-900' : 'bg-white'} border-l ${isDark ? 'border-zinc-700' : 'border-gray-200'} shadow-2xl z-20 flex flex-col animate-in slide-in-from-right duration-200`}>
+                  <div className={`absolute right-0 top-0 bottom-0 w-full max-w-[20rem] sm:w-80 ${isDark ? 'bg-zinc-900' : 'bg-white'} border-l ${isDark ? 'border-zinc-700' : 'border-gray-200'} shadow-2xl z-20 flex flex-col animate-in slide-in-from-right duration-200`}>
                     <div className={`px-4 py-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex items-center justify-between`}>
                       <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Editar Reserva</h3>
                       <button
@@ -7566,10 +8268,13 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     </div>
                   </div>
                 )}
+                </>
+                )}
               </div>
 
-              {/* Map of Reservados */}
-              <div className="w-1/2 relative">
+              {/* Map of Reservados — oculto para UDC pantalla (aeropuerto sin
+                  geolocalización); en gran formato dentro de UDC sí se muestra. */}
+              <div className={esUDCBusqueda ? 'hidden' : 'w-1/2 relative'}>
                 {mapsLoaded ? (
                   <>
                     <GoogleMap
@@ -7691,13 +8396,16 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
 
   const handleClose = () => {
     const hayCarasNuevas = sessionNewCaraIdsRef.current.size > 0;
-    if (hasChanges || modifiedCaras.size > 0 || hayCarasNuevas) {
+    const hayEliminaciones = pendingCaraDeletions.length > 0;
+    if (hasChanges || modifiedCaras.size > 0 || hayCarasNuevas || hayEliminaciones || bitacoraPending) {
       setConfirmModal({
         isOpen: true,
         title: 'Cambios sin guardar',
         message: `Tienes ${[
           hasChanges ? 'cambios en la propuesta' : '',
           modifiedCaras.size > 0 ? `${modifiedCaras.size} circuito(s) sin guardar` : '',
+          hayEliminaciones ? `${pendingCaraDeletions.length} circuito(s) por eliminar` : '',
+          bitacoraPending ? `${bitacoraPendingCount} cambio(s) en la bitácora` : '',
         ].filter(Boolean).join(' y ') || 'cambios'} sin guardar.${hayCarasNuevas ? ' Los circuitos agregados se descartarán.' : ''} ¿Seguro que quieres cerrar?`,
         confirmText: 'Cerrar sin guardar',
         cancelText: 'Volver',
@@ -7705,10 +8413,14 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         onConfirm: async () => {
           setConfirmModal(prev => ({ ...prev, isOpen: false }));
           await rollbackCarasNuevasSinGuardar();
+          pendingNotaDireccionRef.current = null; // descartar nota encolada
+          setPendingCaraDeletions([]); // descartar eliminaciones encoladas (no se tocaron en BD)
           onClose();
         },
       });
     } else {
+      pendingNotaDireccionRef.current = null;
+      setPendingCaraDeletions([]);
       onClose();
     }
   };
@@ -7718,7 +8430,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={handleClose} />
 
-      <div className={`relative w-[97vw] max-w-[1800px] h-[92vh] ${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border border-purple-500/20 shadow-2xl flex flex-col overflow-hidden`}>
+      <div className={`relative w-[97vw] max-w-[1800px] h-[92dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:w-screen max-lg:landscape:rounded-none max-lg:landscape:mx-0 ${isDark ? 'bg-zinc-900' : 'bg-white'} rounded-2xl border border-purple-500/20 shadow-2xl flex flex-col overflow-hidden`}>
         {/* Header */}
         <div className={`flex items-center justify-between px-6 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
           <div>
@@ -7726,12 +8438,14 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
             <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Propuesta #{propuesta.id}</p>
           </div>
           <div className="flex items-center gap-3">
-            
+
             <button onClick={handleClose} className={`p-2 rounded-lg ${isDark ? 'text-zinc-400' : 'text-gray-500'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`}>
               <X className="h-5 w-5" />
             </button>
           </div>
         </div>
+
+        {avisoAjusteComercialJSX}
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-6 space-y-6">
@@ -7741,6 +8455,26 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
             </div>
           ) : (
             <>
+              {/* Section 0: Bitacora inline (estatus + comentarios).
+                  Feedback usuario 2026-09-21: poder editar estatus y agregar
+                  comentarios como parte del proceso de edicion, sin salir del
+                  modal. Los cambios se aplican al Guardar Cambios de abajo.
+                  El modal StatusModal en PropuestasPage sigue funcionando desde
+                  la tabla, ambos flujos coexisten. */}
+              <BitacoraEstatusInline
+                ref={bitacoraRef}
+                kind="propuesta"
+                entityId={propuesta.id}
+                currentStatus={statusActual}
+                statusOptions={propuestaStatusOptions}
+                getStatusValidation={getPropuestaStatusValidation}
+                canEditStatus={effectiveCanEdit && permissions.canEditPropuestaStatus}
+                canComment={!readOnly}
+                onPendingChange={(pending, count) => { setBitacoraPending(pending); setBitacoraPendingCount(count); }}
+                saving={isSaving}
+                contextLabel={`Propuesta #${propuesta.id}`}
+              />
+
               {/* Section 1: Propuesta Summary */}
               <div className={`${isDark ? 'bg-zinc-800/30' : 'bg-gray-50/30'} rounded-2xl border ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} overflow-hidden`}>
                 <div className={`px-5 py-3 border-b ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'}`}>
@@ -7827,6 +8561,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                             item.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
                                             item.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
                                             item.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                            item.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
                                             isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
                                           }`}>{item.sap_database}</span>
                                         )}
@@ -7841,7 +8576,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         )}
                       </div>
                       {/* Show selected or current client details */}
-                      <div className="grid grid-cols-4 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="space-y-1">
                           <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>CUIC</label>
                           <div className={`px-3 py-2 ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'} rounded-lg text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'} border ${isDark ? 'border-zinc-700/30' : 'border-gray-200/30'}`}>
@@ -7869,7 +8604,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       </div>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                       <div className="space-y-1">
                         <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>CUIC</label>
                         <div className={`px-3 py-2 ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'} rounded-lg text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'} border ${isDark ? 'border-zinc-700/30' : 'border-gray-200/30'}`}>
@@ -7898,7 +8633,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   )}
 
                   {/* Editable fields */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Nombre de Campaña</label>
                       <input
@@ -7961,7 +8696,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   </div>
 
                   {/* Period - Same style as EditSolicitudModal */}
-                  <div className="grid grid-cols-4 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="space-y-1">
                       <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Año Inicio</label>
                       <select
@@ -8021,7 +8756,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   </div>
 
                   {/* Notes and Description */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1">
                       {propuesta.solicitud_id ? (
                         // Modo edición de propuesta: bitácora readonly. La nota
@@ -8286,11 +9021,17 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                           label="Seleccionar artículo"
                           options={(articulosData || []).filter(a => {
                             const code = a.ItemCode.toUpperCase();
-                            // BF/CF solo aparecen en el dropdown de bonificación, no en el principal
-                            if (code.startsWith('BF') || code.startsWith('CF')) return false;
+                            // BF/CF solo aparecen en el dropdown de bonificación, no en el
+                            // principal. Los CF-#### (servicio/mantenimiento) SÍ van aquí.
+                            if (isBfCfArticle(code)) return false;
+                            // UDC (aeropuerto): todos sus artículos son digitales/mensual; la
+                            // heurística de periodo (pensada para CIMU) solo reconoce ~18 de 91
+                            // y ocultaría el resto. Si la propuesta es UDC, mostrarlos todos.
+                            if (esUDC) return true;
                             // Gran Formato ↔ periodo: mensual solo muestra Gran Formato;
-                            // catorcena los excluye (mismo criterio que en solicitudes).
-                            return getRequiredPeriodoForArticulo(a.ItemName) === tipoPeriodo;
+                            // catorcena los excluye. Excepción: digital PB/CL también
+                            // en mensual (ver articuloValidoEnPeriodo).
+                            return articuloValidoEnPeriodo(a.ItemName, a.ItemCode, tipoPeriodo as 'catorcena' | 'mensual');
                           })}
                           value={selectedArticulo}
                           onChange={async (item: SAPArticulo) => {
@@ -8343,6 +9084,37 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                               }
                             }
 
+                            // UDC (aeropuerto AICM): todo Digital, mensual, plaza AICM.
+                            // Excepción: gran formato (puente/cartelera) dentro de una
+                            // propuesta UDC cae a la rama normal de abajo (autollenado CIMU).
+                            if (sapDbArticulos === 'UDC' && !esArticuloGranFormato(item.ItemName, item.ItemCode)) {
+                              const udc = parseArticuloUDC(item.ItemCode, item.ItemName);
+                              const tarifaUdc = getTarifaPublicaFromArticulo(item);
+                              const tarifaPisoUdc = getTarifaPisoFromArticulo(item);
+                              const esCT = item.ItemCode.toUpperCase().startsWith('CT');
+                              const esIN = item.ItemCode.toUpperCase().startsWith('IN');
+                              const esIM = item.ItemCode.toUpperCase().startsWith('IM');
+                              const esESP = isEspecialArticle(item.ItemCode.toUpperCase());
+                              const esSrvCF = isServicioCFArticle(item.ItemCode);
+                              setNewCara({
+                                ...newCara,
+                                articulo: item.ItemCode,
+                                tarifa_publica: esCT ? 0 : tarifaUdc,
+                                costo: esCT ? 0 : tarifaPisoUdc,
+                                caras: esCT ? 0 : newCara.caras,
+                                caras_flujo: esCT ? 0 : newCara.caras_flujo,
+                                caras_contraflujo: esCT ? 0 : newCara.caras_contraflujo,
+                                bonificacion: (esIM || esIN || esESP || esSrvCF) ? 0 : newCara.bonificacion,
+                                estados: udc?.plazaLabel || 'Ciudad de México / AM',
+                                ciudad: udc?.ciudad || 'AICM',
+                                // UDC: todo el inventario es mueble 'PANTALLA DIGITAL'; parseArticuloUDC
+                                // da label vacío para el esquema PANT-* → autollenar con el mueble real.
+                                formato: UDC_FORMATO,
+                                tipo: 'Digital',
+                              });
+                              return;
+                            }
+
                             // Auto-complete all fields from article
                             const tarifa = getTarifaPublicaFromArticulo(item);
                             const tarifaPiso = getTarifaPisoFromArticulo(item);
@@ -8354,7 +9126,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                             const plazasBackend = (solicitudFilters as any)?.plazas as { plaza: string }[] | undefined;
                             const plazaPorNombre = plazasBackend?.find(p => itemNameNorm.includes(stripAccents(p.plaza.toUpperCase())));
                             const formatoBase = getFormatoFromArticulo(item.ItemName, item.ItemCode);
-                            const tipo = getTipoFromName(item.ItemName);
+                            const tipo = getTipoFromName(item.ItemName, item.ItemCode);
                             // Para artículos digitales: incluir PARABUS, MUPIS y COLUMNA (los
                             // muebles físicos donde corre la pantalla rotando los formatos).
                             const formato = tipo === 'Digital'
@@ -8366,6 +9138,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                             const isIntercambio = item.ItemCode.toUpperCase().startsWith('IN');
                             const isImpresion = item.ItemCode.toUpperCase().startsWith('IM');
                             const isEspecial = isEspecialArticle(item.ItemCode.toUpperCase());
+                            const isSrvCF = isServicioCFArticle(item.ItemCode);
                             const isTarifaCero = isCortesia;
                             setNewCara({
                               ...newCara,
@@ -8375,7 +9148,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                               caras: isCortesia ? 0 : newCara.caras,
                               caras_flujo: isCortesia ? 0 : newCara.caras_flujo,
                               caras_contraflujo: isCortesia ? 0 : newCara.caras_contraflujo,
-                              bonificacion: (isImpresion || isIntercambio || isEspecial) ? 0 : newCara.bonificacion,
+                              bonificacion: (isImpresion || isIntercambio || isEspecial || isSrvCF) ? 0 : newCara.bonificacion,
                               estados: plazaPorNombre?.plaza || ciudadEstado?.estado || newCara.estados,
                               // Si ciudadEstado existe, usar su ciudad (incluso si es vacía para CDMX)
                               ciudad: ciudadEstado ? ciudadEstado.ciudad : newCara.ciudad,
@@ -8442,7 +9215,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                               }
                             }
                             return (
-                          <div className="grid grid-cols-3 gap-2">
+                          <>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                             <div>
                               <label className={`text-[10px] ${isDark ? 'text-zinc-600' : 'text-gray-400'} block mb-1`}>Mes</label>
                               <select
@@ -8519,6 +9293,13 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                 disabled={!canEditResumen}
                                 className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800' : 'bg-gray-50'} border ${isDark ? 'border-zinc-700' : 'border-gray-200'} rounded-lg text-sm ${isDark ? 'text-white' : 'text-gray-900'} focus:outline-none focus:ring-1 focus:ring-purple-500/50 ${!canEditResumen ? 'opacity-60 cursor-not-allowed' : ''}`}
                               />
+                              {/* Hora inicio (solo digital): agrupada con su fecha (feedback Jos). */}
+                              {newCara.tipo === 'Digital' && (
+                                <div className="mt-1.5">
+                                  <label className={`text-[10px] ${isDark ? 'text-zinc-600' : 'text-gray-400'} block mb-1`}>Hora inicio</label>
+                                  <TimeInput value={newCara.hora_inicio} onChange={(val) => { if (!canEditResumen) return; setNewCara({ ...newCara, hora_inicio: val }); }} disabled={!canEditResumen} isDark={isDark} ariaLabel="Hora inicio" />
+                                </div>
+                              )}
                             </div>
                             <div>
                               <label className={`text-[10px] ${isDark ? 'text-zinc-600' : 'text-gray-400'} block mb-1`}>Fecha Fin</label>
@@ -8547,12 +9328,20 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                 disabled={!canEditResumen || !newCara.inicio_periodo}
                                 className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800' : 'bg-gray-50'} border ${isDark ? 'border-zinc-700' : 'border-gray-200'} rounded-lg text-sm ${isDark ? 'text-white' : 'text-gray-900'} focus:outline-none focus:ring-1 focus:ring-purple-500/50 ${(!canEditResumen || !newCara.inicio_periodo) ? 'opacity-60 cursor-not-allowed' : ''}`}
                               />
+                              {/* Hora fin (solo digital): agrupada con su fecha (feedback Jos). */}
+                              {newCara.tipo === 'Digital' && (
+                                <div className="mt-1.5">
+                                  <label className={`text-[10px] ${isDark ? 'text-zinc-600' : 'text-gray-400'} block mb-1`}>Hora fin</label>
+                                  <TimeInput value={newCara.hora_fin} onChange={(val) => { if (!canEditResumen) return; setNewCara({ ...newCara, hora_fin: val }); }} disabled={!canEditResumen} isDark={isDark} ariaLabel="Hora fin" />
+                                </div>
+                              )}
                             </div>
                           </div>
+                          </>
                             );
                           })()
                         ) : (
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                           {/* Catorcena Inicio */}
                           <select
                             value={newCara.catorcena_inicio && newCara.anio_inicio ? `${newCara.anio_inicio}-${newCara.catorcena_inicio}` : ''}
@@ -8720,7 +9509,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-4 gap-4 mb-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                       <div className="space-y-1">
                         <label title={editingCaraHasReservas ? 'Bloqueado: el circuito tiene inventario reservado' : undefined} className={`text-xs ${(!editingCaraHasReservas && caraFiltersLocked) ? 'text-zinc-800' : `${isDark ? 'text-zinc-500' : 'text-gray-400'}`}`}>Plazas {editingCaraHasReservas ? <span className="text-amber-400 text-[10px]">(bloqueado)</span> : newCara.estados && !caraFiltersLocked && <span className="text-purple-400">({newCara.estados.split(',').filter(Boolean).length})</span>}</label>
                         {canEditResumen && !caraFiltersLocked ? (
@@ -8761,8 +9550,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         )}
                       </div>
                       <div className="space-y-1">
-                        <label title={editingCaraHasReservas ? 'Bloqueado: el circuito tiene inventario reservado' : undefined} className={`text-xs ${(!editingCaraHasReservas && caraFiltersLocked) ? 'text-zinc-800' : `${isDark ? 'text-zinc-500' : 'text-gray-400'}`}`}>Ciudades {editingCaraHasReservas ? <span className="text-amber-400 text-[10px]">(bloqueado)</span> : newCara.ciudad && !caraFiltersLocked && <span className="text-purple-400">({newCara.ciudad.split(',').filter(Boolean).length})</span>}</label>
-                        {canEditResumen && !caraFiltersLocked ? (
+                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Ciudades {newCara.ciudad && <span className="text-purple-400">({newCara.ciudad.split(',').filter(Boolean).length})</span>}</label>
+                        {canEditResumen ? (
                           <MultiSelectDropdown
                             options={
                               (() => {
@@ -8796,10 +9585,19 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         )}
                       </div>
                       <div className="space-y-1">
-                        <label title={editingCaraHasReservas ? 'Bloqueado: el circuito tiene inventario reservado' : undefined} className={`text-xs ${(!editingCaraHasReservas && caraFiltersLocked) ? 'text-zinc-800' : `${isDark ? 'text-zinc-500' : 'text-gray-400'}`}`}>Formatos {editingCaraHasReservas ? <span className="text-amber-400 text-[10px]">(bloqueado)</span> : newCara.formato && !caraFiltersLocked && <span className="text-purple-400">({newCara.formato.split(',').filter(Boolean).length})</span>}</label>
-                        {canEditResumen && !caraFiltersLocked ? (
+                        <label
+                          title={editingCaraHasReservas
+                            ? (formatoLocked ? 'Bloqueado: el circuito tiene inventario reservado' : 'Editable por Tráfico aunque haya inventario reservado: verifica que las reservas correspondan al formato nuevo')
+                            : undefined}
+                          className={`text-xs ${(!editingCaraHasReservas && formatoLocked) ? 'text-zinc-800' : `${isDark ? 'text-zinc-500' : 'text-gray-400'}`}`}
+                        >
+                          Formatos {editingCaraHasReservas
+                            ? <span className="text-amber-400 text-[10px]">{formatoLocked ? '(bloqueado)' : '(con inventario reservado)'}</span>
+                            : newCara.formato && !formatoLocked && <span className="text-purple-400">({newCara.formato.split(',').filter(Boolean).length})</span>}
+                        </label>
+                        {canEditResumen && !formatoLocked ? (
                           <MultiSelectDropdown
-                            options={solicitudFilters?.formatos || []}
+                            options={esUDC ? Array.from(new Set([UDC_FORMATO, ...(solicitudFilters?.formatos || [])])) : (solicitudFilters?.formatos || [])}
                             selected={newCara.formato ? newCara.formato.split(',').map(s => s.trim()).filter(Boolean) : []}
                             onChange={(selected) => setNewCara({ ...newCara, formato: selected.join(', ') })}
                             placeholder="Seleccionar formatos..."
@@ -8831,13 +9629,10 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         </select>
                       </div>
                     </div>
-                    <div className="grid grid-cols-4 gap-4 mb-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                       <div className="space-y-1">
                         <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                          {isEspecialArticle((newCara.articulo || '').toUpperCase()) ? 'Ejec. Especiales' : newCara.articulo?.toUpperCase().startsWith('IM') ? 'Impresiones' : newCara.articulo?.toUpperCase().startsWith('IN') ? 'Intercambio' : (newCara.formato || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes en Renta' : 'Caras en Renta'}
-                          {newCara.articulo?.toUpperCase().startsWith('CT') && (
-                            <span className="ml-1 text-cyan-400 text-[10px]">(Cortesía)</span>
-                          )}
+                          {newCara.articulo?.toUpperCase().startsWith('CT') ? 'Caras en Cortesía' : isEspecialArticle((newCara.articulo || '').toUpperCase()) ? 'Ejec. Especiales' : newCara.articulo?.toUpperCase().startsWith('IM') ? 'Impresiones' : isServicioCFArticle(newCara.articulo) ? 'Servicios' : newCara.articulo?.toUpperCase().startsWith('IN') ? 'Intercambio' : (newCara.formato || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes en Renta' : 'Caras en Renta'}
                         </label>
                         <input
                           type="number"
@@ -8857,8 +9652,9 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         />
                         <span className={`text-[10px] ${isDark ? 'text-zinc-600' : 'text-gray-400'}`}>Flujo: {newCara.caras_flujo || 0} | Contraflujo: {newCara.caras_contraflujo || 0}</span>
                       </div>
+                      {!newCara.articulo?.toUpperCase().startsWith('CT') && (
                       <div className="space-y-1">
-                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{newCara.articulo?.toUpperCase().startsWith('CT') ? 'Cortesía' : (newCara.formato || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes Bonificados' : 'Caras Bonificadas'}</label>
+                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{(newCara.formato || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes Bonificados' : 'Caras Bonificadas'}</label>
                         <input
                           type="number"
                           value={newCara.bonificacion || ''}
@@ -8872,6 +9668,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                           min="0"
                         />
                       </div>
+                      )}
                       <div className="space-y-1">
                         <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Tarifa Pública</label>
                         <input
@@ -8920,7 +9717,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         <label className={`text-xs font-medium ${isDark ? 'text-emerald-400' : 'text-emerald-600'} mb-1 block`}>Artículo de Bonificación (BF)</label>
                         <SearchableSelect
                           label=""
-                          options={(articulosData || []).filter(a => a.ItemCode.toUpperCase().startsWith('BF') || a.ItemCode.toUpperCase().startsWith('CF'))}
+                          options={(articulosData || []).filter(a => isBfCfArticle(a.ItemCode))}
                           value={newCara.articuloBf || null}
                           onChange={(item: SAPArticulo) => setNewCara({ ...newCara, articuloBf: item })}
                           onClear={() => setNewCara({ ...newCara, articuloBf: null })}
@@ -9168,7 +9965,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                     statusColor === 'blue' ? 'bg-blue-500' : statusColor === 'red' ? 'bg-red-500 animate-pulse' : statusColor === 'emerald' ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
                                   }`} />
 
-                                  <div className="flex-1 grid grid-cols-8 gap-3 text-sm">
+                                  <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-3 text-sm">
                                     <div>
                                       <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-xs`}>Formato</span>
                                       <p className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium`}>{cara.formato || '-'}</p>
@@ -9197,7 +9994,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                         const dia = parseInt(s[2]).toString().padStart(2, '0');
                                         const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
                                         return `${dia} ${meses[parseInt(s[1]) - 1] || ''} ${s[0]}`;
-                                      })()}</p>
+                                      })()}{cara.tipo === 'Digital' && cara.hora_inicio ? <span className="text-purple-400"> · {hora12h(cara.hora_inicio)}</span> : null}</p>
                                     </div>
                                     <div>
                                       <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-xs`}>F. Fin</span>
@@ -9208,7 +10005,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                         const dia = parseInt(s[2]).toString().padStart(2, '0');
                                         const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
                                         return `${dia} ${meses[parseInt(s[1]) - 1] || ''} ${s[0]}`;
-                                      })()}</p>
+                                      })()}{cara.tipo === 'Digital' && cara.hora_fin ? <span className="text-purple-400"> · {hora12h(cara.hora_fin)}</span> : null}</p>
                                     </div>
                                     <div>
                                       <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-xs`}>{(cara.formato || '').toUpperCase().includes('PUENTE PEATONAL') ? 'Puentes' : 'Caras'}</span>
@@ -9256,10 +10053,20 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300">Corrección</span>
                                         )}
                                         {dgDisplay === 'pendiente' && dcmDisplay !== 'rechazado' && (
-                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300">Pend. DG</span>
+                                          <>
+                                            {/* Etapa visual: la cara esta en el filtro del Gerente Comercial
+                                                (previo a DG). Al aprobar el GC la tarea pasa a 'Autorizacion DG'
+                                                y en_filtro_dg se apaga -> embudo desaparece y queda solo Pend. DG. */}
+                                            {cara.en_filtro_dg && (
+                                              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300" title="En filtro del Gerente Comercial (previo a DG)">
+                                                <Funnel className="w-3 h-3" /> Filtro GC
+                                              </span>
+                                            )}
+                                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300">Pend. DG</span>
+                                          </>
                                         )}
                                         {dcmDisplay === 'pendiente' && dgDisplay !== 'rechazado' && (
-                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">Pend. DCM</span>
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">Pend. {esUDC ? 'DCA' : 'DCM'}</span>
                                         )}
                                       </div>
                                         );
@@ -9320,19 +10127,45 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                             <RefreshCw className="h-4 w-4" />
                                           </button>
                                         )}
-                                        {puedeEditarCircuito && (
+                                        {puedeEditarCircuito && (() => {
+                                          // Regla pedida por Jos (2026-10-30): si CUALQUIER cara de la
+                                          // propuesta tiene autorizacion pendiente (DG o DCM), nadie puede
+                                          // tocar circuitos. Toda la propuesta queda "congelada" visualmente
+                                          // hasta que direccion resuelva, porque editar un circuito
+                                          // mientras otros estan en revision mezcla cambios dentro de un
+                                          // flujo ya enviado. Vuelve al comportamiento previo al
+                                          // 2026-10-23 — el caso de migraciones SAP grandes (80617 TELCEL)
+                                          // se maneja esperando a que direccion revise, no abriendo la
+                                          // propuesta a edicion.
+                                          // Ajuste 2026-11-06 (caso 80553): el candado solo aplica a pendientes YA
+                                          // GUARDADAS en BD (hasSavedPendingAuth). Un circuito que queda 'pendiente'
+                                          // solo en local (editado o reenviado, sin guardar) NO congela la pluma de
+                                          // los demas: con 3 rechazados, editar el 1o dejaba el 2o y 3o sin pluma y
+                                          // sin poder guardar (candado de rechazados sin resolver) -> callejon sin salida.
+                                          const caraTienePendienteGuardada =
+                                            cara.id != null &&
+                                            !modifiedCaras.has(cara.id) &&
+                                            ((cara as any)._originalDg === 'pendiente' || (cara as any)._originalDcm === 'pendiente');
+                                          const editBlocked = caraTienePendienteGuardada || hasSavedPendingAuth;
+                                          const blockReason = caraTienePendienteGuardada
+                                            ? 'Este circuito esta pendiente de autorizacion - no se puede editar hasta que direccion resuelva'
+                                            : hasSavedPendingAuth
+                                              ? 'Hay otro circuito en esta propuesta pendiente de autorizacion. Aprobalo primero.'
+                                              : 'Editar';
+                                          return (
                                           <button
-                                            onClick={(e) => { e.stopPropagation(); if (!hasSavedPendingAuth) handleEditCara(cara); }}
-                                            disabled={hasSavedPendingAuth}
-                                            className={`p-2 rounded-lg border transition-colors ${hasSavedPendingAuth
+                                            onClick={(e) => { e.stopPropagation(); if (!editBlocked) handleEditCara(cara); }}
+                                            disabled={editBlocked}
+                                            className={`p-2 rounded-lg border transition-colors ${editBlocked
                                               ? `bg-zinc-500/10 ${isDark ? 'text-zinc-500' : 'text-gray-400'} border-zinc-500/20 cursor-not-allowed`
                                               : 'bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20'
                                             }`}
-                                            title={hasSavedPendingAuth ? 'Hay circuitos pendientes de autorizacion - no se pueden editar otros' : 'Editar'}
+                                            title={blockReason}
                                           >
                                             <Pencil className="h-4 w-4" />
                                           </button>
-                                        )}
+                                          );
+                                        })()}
                                         {canEditResumen && permissions.canEditCircuitoExistente && (() => {
                                             // Feedback 2026-08-13: el bote de basura siempre debe permitir eliminar
                                             // circuitos con reservas (libera inventario). Solo se bloquea si el rol
@@ -9545,14 +10378,14 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                             )}
                           </button>
                           {showFiltersReservas && (
-                            <div className="absolute right-0 top-full mt-1 z-50 w-[520px] bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-4">
+                            <div className="fixed inset-x-2 top-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-auto sm:absolute sm:inset-auto sm:top-full sm:right-0 sm:mt-1 sm:w-[520px] sm:max-h-none sm:overflow-visible z-[60] bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-4">
                               <div className="flex items-center justify-between mb-3">
                                 <span className="text-sm font-medium text-purple-300">Filtros de búsqueda</span>
                                 <button onClick={() => setShowFiltersReservas(false)} className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`}>
                                   <X className="h-4 w-4" />
                                 </button>
                               </div>
-                              <div className="space-y-3 max-h-[300px] overflow-y-auto scrollbar-purple pr-1">
+                              <div className="space-y-3 max-h-[300px] max-lg:landscape:max-h-32 overflow-y-auto scrollbar-purple pr-1">
                                 {filtersReservas.map((filter, index) => (
                                   <div key={filter.id} className="flex items-center gap-2">
                                     {index > 0 && <span className="text-[10px] text-purple-400 font-medium w-8">AND</span>}
@@ -9631,7 +10464,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                             )}
                           </button>
                           {showGroupingConfigReservas && (
-                            <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-2 min-w-[200px]">
+                            <div className="fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:bottom-auto lg:mt-1 lg:w-auto lg:min-w-[200px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible z-50 bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-2">
                               <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wide px-2 py-1`}>Agrupar por (max 3)</p>
                               {AVAILABLE_GROUPINGS_RESERVAS.map(({ field, label }) => (
                                 <button
@@ -9671,7 +10504,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                             <ArrowUpDown className="h-3.5 w-3.5" />
                           </button>
                           {showSortReservas && (
-                            <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-2 min-w-[180px]">
+                            <div className="fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:bottom-auto lg:mt-1 lg:w-auto lg:min-w-[180px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible z-50 bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-2">
                               <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wide px-2 py-1`}>Ordenar por</p>
                               {FILTER_FIELDS_RESERVAS.map(({ field, label }) => (
                                 <button
@@ -9717,7 +10550,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     </div>
                     <div className="flex h-[520px]">
                       {/* Selection Panel */}
-                      <div className={`w-96 border-r ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'bg-zinc-900' : 'bg-white'}/30 flex flex-col flex-shrink-0`}>
+                      <div className={`${esUDC ? 'w-full' : 'w-96 border-r flex-shrink-0'} ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'bg-zinc-900' : 'bg-white'}/30 flex flex-col`}>
                         {/* Select All Header */}
                         <div className={`px-4 py-2.5 border-b ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'}`}>
                           <div className="flex items-center justify-between">
@@ -9795,6 +10628,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                           }`}
                                         >
                                           <input type="checkbox" checked={selectedMapReservas.has(reserva.id)} onChange={() => toggleSingleMapReserva(reserva.id)} className="checkbox-purple" />
+                                          <UdcPreview codigo={reserva.codigo_unico} />
                                           <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} font-mono text-[11px]`}>{reserva.codigo_unico}</span>
                                           <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-[11px] truncate max-w-[80px]`}>{reserva.plaza}</span>
                                           <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-[11px]`}>{reserva.formato}</span>
@@ -9846,6 +10680,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                                       }`}
                                                     >
                                                       <input type="checkbox" checked={selectedMapReservas.has(reserva.id)} onChange={() => toggleSingleMapReserva(reserva.id)} className="checkbox-purple" />
+                                          <UdcPreview codigo={reserva.codigo_unico} />
                                                       <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} font-mono`}>{reserva.codigo_unico}</span>
                                                       <span className={`ml-auto px-1.5 py-0.5 rounded text-[10px] ${
                                                         reserva.codigo_unico?.includes('_Completo') ? 'bg-purple-500/20 text-purple-300' :
@@ -9879,6 +10714,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                                                             }`}
                                                           >
                                                             <input type="checkbox" checked={selectedMapReservas.has(reserva.id)} onChange={() => toggleSingleMapReserva(reserva.id)} className="checkbox-purple" />
+                                          <UdcPreview codigo={reserva.codigo_unico} />
                                                             <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} font-mono`}>{reserva.codigo_unico}</span>
                                                           </label>
                                                         ))}
@@ -9900,7 +10736,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         </div>
                         {/* KPIs Mini Summary */}
                         <div className={`p-3 border-t ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'}`}>
-                          <div className={`grid gap-2 text-center text-xs ${reservasKPIs.completos > 0 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                          <div className={`grid gap-2 text-center text-xs ${reservasKPIs.completos > 0 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'}`}>
                             <div>
                               <p className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Flujo</p>
                               <p className="text-blue-400 font-bold">{reservasKPIs.flujo}</p>
@@ -9923,8 +10759,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         </div>
                       </div>
 
-                      {/* Map */}
-                      <div className="flex-1 relative">
+                      {/* Map (oculto en UDC: aeropuerto sin geolocalización) */}
+                      <div className={`flex-1 relative ${esUDC ? 'hidden' : ''}`}>
                         {mapsLoaded ? (
                           <>
                             <GoogleMap
@@ -10036,8 +10872,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     <Clock className="h-4 w-4" />
                     Historial
                   </h3>
-                  <div className="space-y-3">
-                    {historialData.map((h, idx) => {
+                  <HistorialFiltrado items={historialData} isDark={isDark} renderItem={(h, idx) => {
                       let detailText = h.detalles || '';
                       try {
                         const obj = JSON.parse(detailText);
@@ -10074,8 +10909,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                           <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} truncate`}>{detailText}</span>
                         </div>
                       );
-                    })}
-                  </div>
+                    }} />
                 </div>
               )}
             </>
@@ -10083,8 +10917,8 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         </div>
 
         {/* Footer with Guardar Cambios button */}
-        {(caras.length > 0 || hasChanges) && (
-          <div className={`px-6 py-4 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'}/80 flex items-center justify-between`}>
+        {(caras.length > 0 || hasChanges || bitacoraPending) && (
+          <div className={`px-4 sm:px-6 py-3 sm:py-4 max-lg:landscape:py-2 max-lg:landscape:px-3 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'}/80 flex flex-wrap items-center justify-between gap-2`}>
             <div className="flex items-center gap-4">
               {/* Status summary */}
               <div className="flex items-center gap-3 text-sm">
@@ -10106,12 +10940,13 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     Autorizaciones pendientes
                   </div>
                 )}
-                {(modifiedCaras.size > 0 || hasChanges) && (
+                {(modifiedCaras.size > 0 || hasChanges || bitacoraPending) && (
                   <div className="flex items-center gap-2 text-purple-400">
                     <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
                     {[
                       hasChanges ? 'Propuesta' : '',
                       modifiedCaras.size > 0 ? `${modifiedCaras.size} circuito(s)` : '',
+                      bitacoraPending ? `Bitácora (${bitacoraPendingCount})` : '',
                     ].filter(Boolean).join(' + ')} pendiente(s)
                   </div>
                 )}
@@ -10126,11 +10961,29 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
               </button>
               {effectiveCanEdit && (
                 <button
-                  disabled={(!hasChanges && modifiedCaras.size === 0) || isSaving || invalidCaras.length > 0}
-                  title={invalidCaras.length > 0
+                  disabled={(!hasChanges && modifiedCaras.size === 0 && !bitacoraPending && !hasPendingDeletions) || isSaving || ((hasChanges || modifiedCaras.size > 0) && invalidCaras.length > 0)}
+                  title={((hasChanges || modifiedCaras.size > 0) && invalidCaras.length > 0)
                     ? `${invalidCaras.length} cara(s) tienen catorcenas fuera del rango actual. Ajusta el rango o elimínalas para poder guardar.`
                     : undefined}
-                  onClick={() => {
+                  onClick={async () => {
+                    // Bitacora-only: si el usuario solo cambio estatus/comentarios
+                    // saltamos el gate de Nota Direccion y el modal de confirmar
+                    // cambios — no hay re-envio de caras y no hay que resumir
+                    // cambios de propuesta. Sencillo y directo.
+                    const onlyBitacora = !hasChanges && modifiedCaras.size === 0 && !hasPendingDeletions && bitacoraPending;
+                    if (onlyBitacora) {
+                      setIsSaving(true);
+                      try {
+                        await bitacoraRef.current?.commit();
+                        showToast('Estatus/bitácora actualizados', 'success');
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : (err as any)?.response?.data?.error || 'Error al guardar bitácora';
+                        showToast(msg, 'error');
+                      } finally {
+                        setIsSaving(false);
+                      }
+                      return;
+                    }
                     // Flujo nuevo (feedback Jos 2026-07-15): si hay autorización
                     // pendiente, mostrar PRIMERO la ventana de Nueva Nota Dirección
                     // y DESPUÉS el confirmar cambios. Antes iba confirmar → nota,
@@ -10154,7 +11007,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     setShowSaveConfirm(true);
                   }}
                   className={`px-6 py-2 rounded-lg text-sm font-medium transition-all ${
-                    (hasChanges || modifiedCaras.size > 0) && !isSaving && invalidCaras.length === 0
+                    (hasChanges || modifiedCaras.size > 0 || bitacoraPending || hasPendingDeletions) && !isSaving && !((hasChanges || modifiedCaras.size > 0) && invalidCaras.length > 0)
                       ? 'bg-purple-500 text-white hover:bg-purple-600 shadow-lg shadow-purple-500/25'
                       : `${isDark ? 'bg-zinc-700' : 'bg-gray-200'} ${isDark ? 'text-zinc-500' : 'text-gray-400'} cursor-not-allowed`
                   }`}
@@ -10164,7 +11017,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                   ) : (
                     <Save className="h-4 w-4 inline-block mr-2" />
                   )}
-                  {isSaving ? 'Guardando...' : `Guardar Cambios${(hasChanges || modifiedCaras.size > 0) ? ` (${(hasChanges ? 1 : 0) + modifiedCaras.size})` : ''}`}
+                  {isSaving ? 'Guardando...' : `Guardar Cambios${(hasChanges || modifiedCaras.size > 0 || bitacoraPending || hasPendingDeletions) ? ` (${(hasChanges ? 1 : 0) + modifiedCaras.size + (bitacoraPending ? 1 : 0) + pendingCaraDeletions.length})` : ''}`}
                 </button>
               )}
             </div>
@@ -10187,6 +11040,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         contextLabel="propuesta"
         hasGeneralChanges={hasChanges}
         modifiedCircuitos={modifiedCircuitosForConfirm}
+        pendingDeletions={pendingCaraDeletions.length}
       />
 
       {/* Mini-modal Nueva Nota Dirección — obligatorio cuando la edición dispara
@@ -10203,7 +11057,10 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         }}
         onConfirm={async (texto) => {
           if (!propuesta.solicitud_id) return;
-          await notasDireccionService.create(propuesta.solicitud_id, texto);
+          // DIFERIDO: la Nota de Dirección se crea junto con el guardado (en
+          // handleBulkSaveChanges), no aquí, para que todo se guarde o se cancele
+          // junto. Si el usuario cancela el Confirmar Cambios, no se creó.
+          pendingNotaDireccionRef.current = texto;
           setShowNotaDireccionModal(false);
           setPendingAuthTipo(null);
           // Cadena al Confirmar Cambios (Save Confirm) — ya no ejecutamos save

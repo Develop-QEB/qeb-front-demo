@@ -587,6 +587,7 @@ export function AnalisisOcupacionModal({
                 onRefresh={() => buildMatrizFor(inventarios, catorcenasSelected)}
                 selectionMode={selectionMode}
                 readOnly={readOnly}
+                nombreAnalisis={analisisNombre}
               />
             )}
           </div>
@@ -714,16 +715,44 @@ const labelForCampana = (c: CampanaEnCelda): string => {
   return `Propuesta #${c.propuesta_id}`;
 };
 
-// Estatus de reserva que cuentan como VENDIDO. Mismo mapeo que usa el dashboard
-// (expandEstatusFilter en el back); cualquier otro estatus se pinta como Reservado.
-// OJO: no sirve mirar si hay campana_id — propuesta, cotizacion y campania se
+// Estatus de reserva que cuentan como VENDIDO (venta firme). Espejo de
+// ESTATUS_FIRME en inventario-bloqueo.service.ts del back — esa es la lista que
+// gobierna ocupacion, bloqueo y el detector de conflictos, y es la que hay que
+// mantener en sync. 'Con Arte'/'Sin Arte' son ventas con/sin arte cargado: el
+// cliente sigue teniendo el espacio, asi que ocupan igual.
+// OJO: el dashboard usa una lista distinta (expandEstatusFilter, sin 'Sin Arte')
+// porque ahi es un filtro de reporte, no la definicion de ocupacion.
+// OJO 2: no sirve mirar si hay campana_id — propuesta, cotizacion y campania se
 // crean en la misma transaccion, asi que campana_id casi siempre viene lleno.
-const ESTATUS_VENDIDO = new Set(['Vendido', 'Vendido bonificado', 'Con Arte']);
+const ESTATUS_VENDIDO = new Set(['Vendido', 'Vendido bonificado', 'Con Arte', 'Sin Arte']);
 const esVendida = (c: CampanaEnCelda): boolean => ESTATUS_VENDIDO.has(c.reserva_estatus);
 
-// Un inventario Tradicional solo admite 1 campaña por catorcena; los Digitales admiten varias.
+// Un inventario Tradicional solo admite 1 VENTA por catorcena; los Digitales admiten varias.
 const esDigital = (inv?: InventarioResumen): boolean => inv?.tradicional_digital === 'Digital';
 const conflictoKey = (invId: number, cellKey: string): string => `${invId}|${cellKey}`;
+
+// Regla de conflicto (multireservas): varias reservas sobre la misma cara y
+// catorcena son válidas y esperadas — el equipo reserva de más y luego define.
+// Lo que no puede convivir es una venta con cualquier otra cosa:
+//   reserva + reserva   -> OK, no es conflicto
+//   campaña + reserva   -> conflicto
+//   campaña + campaña   -> conflicto
+// "Campaña" = reserva con estatus vendido (ver ESTATUS_VENDIDO); no basta con
+// que traiga campana_id, que casi siempre viene lleno.
+const contarVendidas = (campanas: CampanaEnCelda[]): number => campanas.filter(esVendida).length;
+const hayConflicto = (campanas: CampanaEnCelda[]): boolean =>
+  campanas.length >= 2 && contarVendidas(campanas) >= 1;
+
+// Estado que se muestra en cada tarjeta / celda y por el que se puede filtrar.
+type EstadoCelda = 'vendido' | 'reservado' | 'disponible';
+const estadoDeTarjeta = (c: CampanaEnCelda): EstadoCelda => (esVendida(c) ? 'vendido' : 'reservado');
+
+// Texto principal de una tarjeta: vendida -> nombre de campaña; reservada -> propuesta.
+const labelTarjeta = (c: CampanaEnCelda): string => {
+  const nombreCampana = c.campana_nombre || `Campaña #${c.campana_id}`;
+  if (esVendida(c)) return nombreCampana;
+  return c.propuesta_id ? `Propuesta #${c.propuesta_id}` : nombreCampana;
+};
 
 function MatrizView({
   matriz,
@@ -732,6 +761,7 @@ function MatrizView({
   onRefresh,
   selectionMode,
   readOnly = false,
+  nombreAnalisis,
 }: {
   matriz: MatrizOcupacion | null;
   building: boolean;
@@ -739,6 +769,7 @@ function MatrizView({
   onRefresh: () => Promise<void> | void;
   selectionMode: boolean;
   readOnly?: boolean;
+  nombreAnalisis?: string;
 }) {
   const userRole = useAuthStore(s => s.user?.rol);
   // En modo solo lectura nadie puede liberar reservas, sin importar el rol.
@@ -753,6 +784,8 @@ function MatrizView({
   const [showDuplicados, setShowDuplicados] = useState(false);
   const [soloDuplicados, setSoloDuplicados] = useState(false);
   const [campanaFilter, setCampanaFilter] = useState<Set<string>>(new Set());
+  // Filtro por estado de celda (acumulable): vacío = sin filtro.
+  const [estadoFilter, setEstadoFilter] = useState<Set<EstadoCelda>>(new Set());
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterSearch, setFilterSearch] = useState('');
   const filterRef = useRef<HTMLDivElement>(null);
@@ -955,7 +988,7 @@ function MatrizView({
     for (const [invIdStr, invCeldas] of Object.entries(matriz.celdas)) {
       if (esDigital(invById.get(Number(invIdStr)))) continue;
       for (const [cellKey, celda] of Object.entries(invCeldas)) {
-        if (celda.campanas.length >= 2) set.add(conflictoKey(Number(invIdStr), cellKey));
+        if (hayConflicto(celda.campanas)) set.add(conflictoKey(Number(invIdStr), cellKey));
       }
     }
     return set;
@@ -963,23 +996,56 @@ function MatrizView({
 
   // Lista de conflictos (sitio × catorcena) para el panel informativo.
   const conflictos = useMemo(() => {
-    if (!matriz) return [] as { inv: InventarioResumen; cat: CatorcenaRef; count: number }[];
-    const out: { inv: InventarioResumen; cat: CatorcenaRef; count: number }[] = [];
+    if (!matriz) return [] as { inv: InventarioResumen; cat: CatorcenaRef; vendidas: number; reservadas: number }[];
+    const out: { inv: InventarioResumen; cat: CatorcenaRef; vendidas: number; reservadas: number }[] = [];
     for (const inv of matriz.inventarios) {
       if (esDigital(inv)) continue;
       const invCeldas = matriz.celdas[inv.id];
       if (!invCeldas) continue;
       for (const cat of matriz.catorcenas) {
         const celda = invCeldas[cellKeyOf(cat)];
-        if (celda && celda.campanas.length >= 2) out.push({ inv, cat, count: celda.campanas.length });
+        if (celda && hayConflicto(celda.campanas)) {
+          const vendidas = contarVendidas(celda.campanas);
+          out.push({ inv, cat, vendidas, reservadas: celda.campanas.length - vendidas });
+        }
       }
     }
     return out;
   }, [matriz]);
 
+  const isEstadoFiltered = estadoFilter.size > 0;
+  const toggleEstado = (e: EstadoCelda) =>
+    setEstadoFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(e)) next.delete(e);
+      else next.add(e);
+      return next;
+    });
+
+  // Tarjetas de una celda que pasan el filtro de campañas y el de estado.
+  const filtrarTarjetas = useCallback((campanas: CampanaEnCelda[]): CampanaEnCelda[] => {
+    if (!isFiltered && !isEstadoFiltered) return campanas;
+    return campanas.filter(c => {
+      if (isFiltered && !campanaFilter.has(labelForCampana(c))) return false;
+      if (isEstadoFiltered && !estadoFilter.has(estadoDeTarjeta(c))) return false;
+      return true;
+    });
+  }, [campanaFilter, isFiltered, estadoFilter, isEstadoFiltered]);
+
+  // Una celda "Disponible" se muestra salvo que haya filtro de estado sin 'disponible'.
+  const disponibleVisible = !isEstadoFiltered || estadoFilter.has('disponible');
+
+  // Tarjetas visibles de una celda con TODOS los filtros aplicados (incluido "Solo conflictos").
+  const tarjetasVisibles = useCallback((invId: number, cellKey: string, campanas: CampanaEnCelda[]): CampanaEnCelda[] => {
+    if (soloDuplicados && !conflictoCeldas.has(conflictoKey(invId, cellKey))) return [];
+    return filtrarTarjetas(campanas);
+  }, [soloDuplicados, conflictoCeldas, filtrarTarjetas]);
+
+  const hayFiltros = isFiltered || isEstadoFiltered || soloDuplicados;
+
   const inventariosFiltrados = useMemo(() => {
     if (!matriz) return [] as InventarioResumen[];
-    if (!isFiltered && !soloDuplicados) return matriz.inventarios;
+    if (!hayFiltros) return matriz.inventarios;
     return matriz.inventarios.filter(inv => {
       const invCeldas = matriz.celdas[inv.id];
       if (!invCeldas) return false;
@@ -987,15 +1053,17 @@ function MatrizView({
         const cellKey = cellKeyOf(cat);
         const celda = invCeldas[cellKey];
         if (!celda) continue;
-        if (soloDuplicados && !conflictoCeldas.has(conflictoKey(inv.id, cellKey))) continue;
-        for (const c of celda.campanas) {
-          if (isFiltered && !campanaFilter.has(labelForCampana(c))) continue;
-          return true;
+        if (celda.campanas.length === 0) {
+          // Celda disponible: solo cuenta si el filtro de estado la incluye y no hay
+          // filtro de campaña ni "solo conflictos" (ambos exigen tarjetas).
+          if (!isFiltered && !soloDuplicados && isEstadoFiltered && disponibleVisible) return true;
+          continue;
         }
+        if (tarjetasVisibles(inv.id, cellKey, celda.campanas).length > 0) return true;
       }
       return false;
     });
-  }, [matriz, campanaFilter, isFiltered, soloDuplicados, conflictoCeldas]);
+  }, [matriz, hayFiltros, isFiltered, soloDuplicados, isEstadoFiltered, disponibleVisible, tarjetasVisibles]);
 
   // Cards visibles y liberables (sin APS, dentro de los filtros activos)
   const selectableCards = useMemo(() => {
@@ -1008,16 +1076,57 @@ function MatrizView({
         const cellKey = cellKeyOf(cat);
         const celda = invCeldas[cellKey];
         if (!celda) continue;
-        if (soloDuplicados && !conflictoCeldas.has(conflictoKey(inv.id, cellKey))) continue;
-        for (const c of celda.campanas) {
+        for (const c of tarjetasVisibles(inv.id, cellKey, celda.campanas)) {
           if (c.aps && c.aps > 0) continue;
-          if (isFiltered && !campanaFilter.has(labelForCampana(c))) continue;
           out.push(c);
         }
       }
     }
     return out;
-  }, [matriz, inventariosFiltrados, campanaFilter, isFiltered, soloDuplicados, conflictoCeldas]);
+  }, [matriz, inventariosFiltrados, tarjetasVisibles]);
+
+  // Exporta la matriz tal como se ve (respeta filtros de campaña, estado y conflictos).
+  const handleDownloadCsv = () => {
+    if (!matriz) return;
+    const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const header = [
+      'Código', 'Tipo', 'Plaza', 'Mueble', 'Ubicación',
+      ...matriz.catorcenas.map(c => `C${c.numero}-${c.anio}`),
+    ];
+    const rows = inventariosFiltrados.map(inv => {
+      const base = [
+        inv.codigo_unico || `#${inv.id}`,
+        inv.tradicional_digital || 'Tradicional',
+        inv.plaza || '',
+        inv.mueble || '',
+        inv.ubicacion || '',
+      ];
+      const cols = matriz.catorcenas.map(cat => {
+        const cellKey = cellKeyOf(cat);
+        const todas = matriz.celdas[inv.id]?.[cellKey]?.campanas || [];
+        if (todas.length === 0) return disponibleVisible && !soloDuplicados ? 'Disponible' : '';
+        const vis = tarjetasVisibles(inv.id, cellKey, todas);
+        if (vis.length === 0) return '';
+        const partes = vis.map(c =>
+          `${esVendida(c) ? 'Vendido' : 'Reservado'}: ${labelTarjeta(c)} (${c.cliente_nombre || 'Sin cliente'})`
+        );
+        const prefijo = conflictoCeldas.has(conflictoKey(inv.id, cellKey)) ? 'CONFLICTO · ' : '';
+        return prefijo + partes.join(' | ');
+      });
+      return [...base, ...cols].map(esc).join(',');
+    });
+    const csv = '﻿' + [header.map(esc).join(','), ...rows].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const nombre = (nombreAnalisis || 'matriz').trim().replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, '').replace(/\s+/g, '-') || 'matriz';
+    a.href = url;
+    a.download = `analisis-ocupacion-${nombre}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const allSelectableSelected = selectableCards.length > 0
     && selectableCards.every(c => selectedReservas.has(c.reserva_id));
@@ -1151,13 +1260,54 @@ function MatrizView({
             </div>
           )}
         </div>
-        {(isFiltered || soloDuplicados) && (
+        {/* Filtro por estado (acumulable) */}
+        <div className={`flex items-center rounded-lg border overflow-hidden text-xs ${isDark ? 'border-zinc-700' : 'border-gray-300'}`} title="Filtrar por estado (puedes combinar varios)">
+          {([
+            { key: 'reservado', label: 'Reservado', on: isDark ? 'bg-amber-500/25 text-amber-200' : 'bg-amber-100 text-amber-800' },
+            { key: 'vendido', label: 'Vendido', on: isDark ? 'bg-red-500/25 text-red-200' : 'bg-red-100 text-red-800' },
+            { key: 'disponible', label: 'Disponible', on: isDark ? 'bg-emerald-500/25 text-emerald-200' : 'bg-emerald-100 text-emerald-800' },
+          ] as { key: EstadoCelda; label: string; on: string }[]).map((opt, idx) => {
+            const active = estadoFilter.has(opt.key);
+            return (
+              <button
+                key={opt.key}
+                onClick={() => toggleEstado(opt.key)}
+                className={`px-2.5 py-1.5 font-medium transition-colors ${idx > 0 ? (isDark ? 'border-l border-zinc-700' : 'border-l border-gray-300') : ''} ${
+                  active
+                    ? opt.on
+                    : isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700' : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+          {isEstadoFiltered && (
+            <button
+              onClick={() => setEstadoFilter(new Set())}
+              title="Quitar filtro de estado"
+              className={`px-2 py-1.5 ${isDark ? 'border-l border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-700' : 'border-l border-gray-300 text-gray-500 hover:text-gray-900 hover:bg-gray-50'}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        {hayFiltros && (
           <span className={`text-[11px] ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
             Mostrando {inventariosFiltrados.length} de {matriz.inventarios.length} inventarios
           </span>
         )}
+        <button
+          onClick={handleDownloadCsv}
+          disabled={inventariosFiltrados.length === 0}
+          title="Descargar la matriz visible en CSV"
+          className={`ml-auto flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all ${isDark ? 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
+        >
+          <Download className="h-3.5 w-3.5" />
+          Descargar CSV
+        </button>
         {canRelease && selectionMode && (
-          <div className={`ml-auto flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${
             isDark
               ? 'bg-purple-500/20 border-purple-500/40 text-purple-200'
               : 'bg-purple-50 border-purple-300 text-purple-800'
@@ -1209,14 +1359,14 @@ function MatrizView({
             <button
               onClick={() => setShowDuplicados(s => !s)}
               className={`flex-1 flex items-center gap-2 px-3 py-2 ${isDark ? 'text-amber-300 hover:bg-amber-500/10' : 'text-amber-700 hover:bg-amber-100/50'} rounded-l-lg transition-colors`}
-              title="Inventarios Tradicionales con 2 o más campañas en la misma catorcena"
+              title="Inventarios Tradicionales con una venta que convive con otra venta o con reservas en la misma catorcena"
             >
               <AlertCircle className="h-3.5 w-3.5" />
               <span className="font-semibold">
                 {conflictos.length} {conflictos.length === 1 ? 'celda con conflicto' : 'celdas con conflicto'}
               </span>
               <span className={`${isDark ? 'text-amber-400/70' : 'text-amber-600/80'}`}>
-                (Tradicional con 2+ campañas en una catorcena)
+                (Tradicional vendido que comparte catorcena con otra venta o reserva)
               </span>
               <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${showDuplicados ? 'rotate-180' : ''}`} />
             </button>
@@ -1240,16 +1390,17 @@ function MatrizView({
           {showDuplicados && (
             <div className={`px-3 pb-2 pt-1 max-h-44 overflow-y-auto border-t ${isDark ? 'border-amber-500/20' : 'border-amber-200/60'}`}>
               <ul className="space-y-1">
-                {conflictos.map(({ inv, cat, count }) => (
+                {conflictos.map(({ inv, cat, vendidas, reservadas }) => (
                   <li key={`${inv.id}-${cellKeyOf(cat)}`} className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
                     <span className="font-mono font-medium">{inv.codigo_unico || `#${inv.id}`}</span>
                     <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>· C{cat.numero}-{cat.anio}</span>
                     <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>· {inv.plaza || '-'}</span>
                     <span
-                      title="Cantidad de campañas en esta celda (un Tradicional solo debería tener una)"
+                      title="Ventas y reservas que conviven en esta celda (un Tradicional solo debería tener una venta y nada más)"
                       className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${isDark ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-white text-amber-700 border-amber-200'}`}
                     >
-                      {count} campañas
+                      {vendidas} vendida{vendidas === 1 ? '' : 's'}
+                      {reservadas > 0 ? ` + ${reservadas} reservada${reservadas === 1 ? '' : 's'}` : ''}
                     </span>
                   </li>
                 ))}
@@ -1279,7 +1430,7 @@ function MatrizView({
                 colSpan={matriz.catorcenas.length + 1}
                 className={`px-3 py-8 text-center text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}
               >
-                Ningún inventario tiene las campañas seleccionadas.
+                Ningún inventario coincide con los filtros activos.
               </td>
             </tr>
           )}
@@ -1302,13 +1453,21 @@ function MatrizView({
                 const ocupado = celda?.ocupado;
                 const todasCampanas = celda?.campanas || [];
                 const esConflicto = conflictoCeldas.has(conflictoKey(inv.id, cellKey));
-                const campanas = (() => {
-                  if (soloDuplicados && !esConflicto) return [] as CampanaEnCelda[];
-                  if (isFiltered) return todasCampanas.filter(c => campanaFilter.has(labelForCampana(c)));
-                  return todasCampanas;
-                })();
+                const campanas = tarjetasVisibles(inv.id, cellKey, todasCampanas);
 
                 if (!ocupado || todasCampanas.length === 0) {
+                  if (!disponibleVisible) {
+                    return (
+                      <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
+                        <div
+                          className={`w-full rounded-md p-2 border border-dashed text-center ${isDark ? 'border-zinc-800 text-zinc-700' : 'border-gray-200 text-gray-300'}`}
+                          title="Disponible (oculto por el filtro de estado)"
+                        >
+                          <span className="text-[10px] font-medium">—</span>
+                        </div>
+                      </td>
+                    );
+                  }
                   const disponibleClass = isDark
                     ? 'bg-emerald-500/10 border-emerald-500/30'
                     : 'bg-emerald-50 border-emerald-200';
@@ -1343,7 +1502,7 @@ function MatrizView({
                       {esConflicto && (
                         <div
                           className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700'}`}
-                          title="Inventario Tradicional con más de una campaña en esta catorcena"
+                          title="Inventario Tradicional vendido que comparte esta catorcena con otra venta o con reservas"
                         >
                           <AlertCircle className="h-2.5 w-2.5" />
                           Conflicto · {todasCampanas.length}
@@ -1371,10 +1530,7 @@ function MatrizView({
                         const href = vendida
                           ? (c.campana_id ? hrefCampana : hrefPropuesta)
                           : (c.propuesta_id ? hrefPropuesta : hrefCampana);
-                        const nombreCampana = c.campana_nombre || `Campaña #${c.campana_id}`;
-                        const label = vendida
-                          ? nombreCampana
-                          : (c.propuesta_id ? `Propuesta #${c.propuesta_id}` : nombreCampana);
+                        const label = labelTarjeta(c);
                         const clienteLabel = c.cliente_nombre || 'Sin cliente';
                         const fmt = (d: string) => new Date(d).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
                         const rangoLabel = c.inicio_periodo && c.fin_periodo

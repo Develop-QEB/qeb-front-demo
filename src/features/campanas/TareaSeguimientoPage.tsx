@@ -29,6 +29,8 @@ import {
   Check,
   Image,
   Eye,
+  EyeOff,
+  Maximize2,
   Camera,
   ClipboardList,
   Info,
@@ -57,6 +59,7 @@ import {
   Paintbrush,
 } from 'lucide-react';
 import { Header } from '../../components/layout/Header';
+import { RefreshButton } from '../../components/RefreshButton';
 import { campanasService, InventarioConArte, InventarioConAPS, TareaCampana, ArteExistente, DigitalFileSummary, TradicionalFileSummary, FichasTecnicasNode } from '../../services/campanas.service';
 import { proveedoresService } from '../../services/proveedores.service';
 import { Proveedor, Catorcena } from '../../types';
@@ -182,7 +185,21 @@ const getImageUrl = (url: string | undefined | null): string | null => {
       // includes('/uploads') reescribía URLs externas tipo /wp-content/uploads/...
       // y las rompía mandándolas al backend local.
       if (path.startsWith('/uploads')) {
-        return `${STATIC_URL}${path}`;
+        // Akary 2026-11-17: si la URL absoluta ya apunta a OTRO host (ej. foto
+        // guardada apuntando a back prod y abierta desde dev), reescribirla al
+        // STATIC_URL local rompe (devuelve 404 y ArteImg pinta placeholder
+        // "sin imagen"). Solo reescribir cuando el origen coincide o el host
+        // es local (localhost/127.0.0.1).
+        try {
+          const staticOrigin = new URL(STATIC_URL).origin;
+          const isLocalHost = /^localhost(:|$)|^127\.0\.0\.1(:|$)/.test(urlObj.host);
+          if (urlObj.origin === staticOrigin || isLocalHost) {
+            return `${STATIC_URL}${path}`;
+          }
+          return url;
+        } catch {
+          return `${STATIC_URL}${path}`;
+        }
       }
       // URL externa válida: pasa tal cual.
       return url;
@@ -354,6 +371,11 @@ interface InventoryRow {
   archivo_arte?: string;
   artes_multiples?: string; // Multiple arts separated by '||'
   arte_aprobado?: string; // Texto original de arte_aprobado
+  // JSON string del back con [{archivo, nota, spot, nombre_arte, estatus_operaciones, nombre_generico}].
+  // Solo poblado para items tradicionales en getInventarioConArte. Usado por el
+  // botón "Aprobar directo" para verificar que todos los artes tengan Estatus
+  // Operaciones = "En Uso" (Jos 2026-10-28).
+  artes_detalle?: string | null;
   imu?: number | string;
   // Para Testigo
   testigo_status?: 'pendiente' | 'validado' | 'rechazado';
@@ -986,6 +1008,81 @@ interface ArteTradicionalView {
   nombre_arte?: string | null;
 }
 
+// Valores canónicos para Estatus Operaciones. Jos pidió (2026-10-28) migrar el
+// textarea libre a un select de 3 opciones + "Otro…" para preservar edición libre
+// (ej. valores legacy ya guardados). El schema sigue siendo VarChar(500) así que
+// convive con cualquier string previo.
+const ESTATUS_OPERACIONES_OPCIONES = ['En Uso', 'Espera', 'En Bodega'] as const;
+type EstatusOperacionesCanonico = typeof ESTATUS_OPERACIONES_OPCIONES[number];
+const esEstatusCanonico = (v: string): v is EstatusOperacionesCanonico =>
+  (ESTATUS_OPERACIONES_OPCIONES as readonly string[]).includes(v);
+
+// Select controlado para Estatus Operaciones. Muestra 3 opciones predeterminadas +
+// "Otro…" que revela un input de texto libre. Si el value entrante NO es canónico
+// (valor legacy en DB o custom del usuario), entra automáticamente en modo "Otro…".
+function EstatusOpSelect({
+  value,
+  onChange,
+  selectClassName,
+  inputClassName,
+  placeholder = 'Seleccionar estatus...',
+  customPlaceholder = 'Estatus personalizado',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  selectClassName?: string;
+  inputClassName?: string;
+  placeholder?: string;
+  customPlaceholder?: string;
+}) {
+  const trimmed = (value || '').trim();
+  const trimmedIsCanonico = esEstatusCanonico(trimmed);
+  const [customMode, setCustomMode] = useState<boolean>(trimmed !== '' && !trimmedIsCanonico);
+
+  useEffect(() => {
+    const t = (value || '').trim();
+    if (t !== '' && esEstatusCanonico(t)) setCustomMode(false);
+    else if (t !== '' && !esEstatusCanonico(t)) setCustomMode(true);
+    // t === '' preserva customMode (si el usuario eligió "Otro…" y luego borró, sigue en modo custom).
+  }, [value]);
+
+  const selectValue = customMode ? '__OTRO__' : (trimmedIsCanonico ? trimmed : '');
+
+  return (
+    <>
+      <select
+        value={selectValue}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === '__OTRO__') {
+            setCustomMode(true);
+            if (trimmedIsCanonico) onChange('');
+          } else {
+            setCustomMode(false);
+            onChange(v);
+          }
+        }}
+        className={selectClassName}
+      >
+        <option value="">{placeholder}</option>
+        {ESTATUS_OPERACIONES_OPCIONES.map((op) => (
+          <option key={op} value={op}>{op}</option>
+        ))}
+        <option value="__OTRO__">Otro…</option>
+      </select>
+      {customMode && (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={customPlaceholder}
+          className={inputClassName}
+        />
+      )}
+    </>
+  );
+}
+
 // Editor reutilizable del campo "Estatus Operaciones" para los modales de galería.
 // Persiste vía PATCH /campanas/:id/artes/estatus-operaciones; el cambio se aplica
 // a TODAS las reservas que comparten el mismo archivo dentro de la campaña.
@@ -1052,13 +1149,14 @@ function EstatusOperacionesEditor({
           </span>
         )}
       </div>
-      <textarea
-        value={val}
-        onChange={(e) => { setVal(e.target.value); setJustSaved(false); }}
-        rows={2}
-        placeholder="Escribe el estatus de operaciones..."
-        className="w-full text-sm p-2 rounded border bg-zinc-800 border-zinc-700 text-zinc-200 placeholder-zinc-500 focus:border-purple-500 focus:outline-none resize-y"
-      />
+      <div className="flex flex-col gap-1.5">
+        <EstatusOpSelect
+          value={val}
+          onChange={(v) => { setVal(v); setJustSaved(false); }}
+          selectClassName="w-full text-sm p-2 rounded border bg-zinc-800 border-zinc-700 text-zinc-200 focus:border-purple-500 focus:outline-none"
+          inputClassName="w-full text-sm p-2 rounded border bg-zinc-800 border-zinc-700 text-zinc-200 placeholder-zinc-500 focus:border-purple-500 focus:outline-none"
+        />
+      </div>
       {error && <p className="mt-1 text-[10px] text-red-400">{error}</p>}
       {isDirty && (
         <div className="mt-1.5 flex items-center justify-end">
@@ -1118,7 +1216,7 @@ function DigitalGalleryModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/80" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-xl w-full max-w-4xl mx-4 max-h-[90vh] flex flex-col">
+      <div className="relative bg-card border border-border rounded-xl w-full max-w-4xl mx-4 max-h-[90dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border flex-shrink-0">
           <h3 className="text-lg font-semibold flex items-center gap-2">
@@ -1332,7 +1430,7 @@ function TradicionalGalleryModal({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/80" onClick={onClose} />
-      <div className="relative bg-card border border-border rounded-xl w-full max-w-4xl mx-4 max-h-[90vh] flex flex-col">
+      <div className="relative bg-card border border-border rounded-xl w-full max-w-4xl mx-4 max-h-[90dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border flex-shrink-0">
           <h3 className="text-lg font-semibold flex items-center gap-2">
@@ -1516,8 +1614,8 @@ function UploadArtModal({
   selectedInventory: InventoryRow[];
   onSubmit: (data: { option: UploadOption; value: string | File; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => void;
   onSubmitDigital?: (data: { files: { file: File; spot: number }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => void;
-  onSubmitTradicional?: (data: { archivos: { archivo: string; nota: string; spot: number; nombre_arte?: string | null; estatus_operaciones?: string | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => void;
-  onSubmitDigitalFromLibrary?: (data: { archivos: { archivo: string; nota: string; spot: number; tipo: string; nombre_arte?: string | null; estatus_operaciones?: string | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => void;
+  onSubmitTradicional?: (data: { archivos: { archivo: string; nota: string; spot: number; nombre_arte?: string | null; estatus_operaciones?: string | null; cantidad_inicial?: number | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => void;
+  onSubmitDigitalFromLibrary?: (data: { archivos: { archivo: string; nota: string; spot: number; tipo: string; nombre_arte?: string | null; estatus_operaciones?: string | null; cantidad_inicial?: number | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => void;
   artesExistentes: ArteExistente[];
   addedArtes: ArteExistente[];
   onAddedArtesChange: (artes: ArteExistente[]) => void;
@@ -1537,6 +1635,10 @@ function UploadArtModal({
   const [duplicateWarning, setDuplicateWarning] = useState<{ nombre: string; usos: number; url: string } | null>(null);
   const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
 
+  // Akary 2026-11-13: para invalidar la cache de artes-existentes tras
+  // persistir un arte subido en biblioteca_artes del back.
+  const queryClient = useQueryClient();
+
   // Local library: extends artesExistentes with uploaded files/URLs (addedArtes persists in parent)
   // Dedup por URL: si un arte subido localmente ya coincide con uno existente
   // del backend (porque ya se subió y el backend lo devolvió), evitar duplicado
@@ -1555,6 +1657,54 @@ function UploadArtModal({
 
   // Tab del modal: Artes o Fichas Técnicas
   const [modalTab, setModalTab] = useState<'artes' | 'fichas'>('artes');
+
+  // Biblioteca de artes: manejo por-arte de "oculto" y filtro de visualizacion.
+  // Feedback usuario 2026-09-21: poder ocultar artes en la biblioteca para no
+  // saturar la vista, con filtro para alternar Todos / Visibles / Ocultos.
+  // Se persiste por campania en localStorage para que el usuario no tenga que
+  // re-ocultar cada vez que abre el modal.
+  const HIDDEN_ARTES_KEY = `qeb.upload-art.hidden.${campanaId}`;
+  const [hiddenArteIds, setHiddenArteIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(HIDDEN_ARTES_KEY);
+      if (raw) return new Set(JSON.parse(raw) as string[]);
+    } catch { /* ignore */ }
+    return new Set();
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDDEN_ARTES_KEY, JSON.stringify(Array.from(hiddenArteIds)));
+    } catch { /* ignore */ }
+  }, [hiddenArteIds, HIDDEN_ARTES_KEY]);
+  const [visibilityFilter, setVisibilityFilter] = useState<'todos' | 'visibles' | 'ocultos'>('visibles');
+  // Vista previa maximizada de un arte (imagen o video) — se abre con el boton
+  // de la esquina superior, sin marcar el arte como seleccionado.
+  const [previewArte, setPreviewArte] = useState<{ url: string; nombre: string; nombre_arte?: string | null; nota?: string | null; isVideo: boolean } | null>(null);
+  const toggleHiddenArte = (id: string) => {
+    setHiddenArteIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  // ESC cierra la vista previa maximizada.
+  useEffect(() => {
+    if (!previewArte) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewArte(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewArte]);
+
+  // Biblioteca visible aplicando el filtro (todos / visibles / ocultos).
+  // Los artes ocultos NO desaparecen del sistema — solo se filtran en la UI
+  // segun el toggle. La seleccion de un arte ya seleccionado sigue activa
+  // aunque el usuario lo oculte despues.
+  const visibleArtes = useMemo(() => {
+    if (visibilityFilter === 'todos') return localArtes;
+    if (visibilityFilter === 'ocultos') return localArtes.filter(a => hiddenArteIds.has(a.id));
+    return localArtes.filter(a => !hiddenArteIds.has(a.id));
+  }, [localArtes, visibilityFilter, hiddenArteIds]);
+  const hiddenCount = useMemo(() => localArtes.filter(a => hiddenArteIds.has(a.id)).length, [localArtes, hiddenArteIds]);
 
   // Estado para archivos digitales (múltiples)
   const [digitalFiles, setDigitalFiles] = useState<DigitalFile[]>([]);
@@ -1582,6 +1732,10 @@ function UploadArtModal({
   const [imageNames, setImageNames] = useState<Map<string, string>>(new Map());
   // Estatus Operaciones (texto manual opcional) por imagen — tradicional
   const [imageEstatusOps, setImageEstatusOps] = useState<Map<string, string>>(new Map());
+  // Cantidad inicial del almacen por arte (opcional) — Almacen Artes fase 1.
+  // Mapa compartido tradicional/digital (feedback Jos 2026-11-05).
+  // #1219184885843086
+  const [imageCantidadesInicial, setImageCantidadesInicial] = useState<Map<string, number>>(new Map());
   // Modo del step 2 — tradicional. Espejo del digital.
   const [wizardModo, setWizardModo] = useState<'versionado' | 'generico'>('versionado');
   const [nombreGenerico, setNombreGenerico] = useState('');
@@ -1666,6 +1820,9 @@ function UploadArtModal({
   const [modalSortBy, setModalSortBy] = useState<'codigo' | 'aps' | 'catorcena'>('codigo');
   const [modalPage, setModalPage] = useState(1);
   const MODAL_PAGE_SIZE = 5;
+  // Panel "Espacios a asignar" colapsable — feedback Jos 2026-09-25: al
+  // colapsar, la biblioteca de artes crece a todo el ancho del modal.
+  const [spacesPanelCollapsed, setSpacesPanelCollapsed] = useState(false);
 
   // Preview URL basado en la opción seleccionada
   const previewUrl = useMemo(() => {
@@ -1934,6 +2091,7 @@ function UploadArtModal({
         nombre_arte: digitalImageNames.get(key)?.trim() || null,
         estatus_operaciones: digitalImageEstatusOps.get(key)?.trim() || null,
         nombre_generico: digitalGenericoVal || null,
+        cantidad_inicial: imageCantidadesInicial.get(key) ?? null,
       }));
       const { proceed, markInstalado, instalacionMode, operacionesAsignados } = await checkAndConfirmInstalado(archivos.map(a => a.archivo));
       if (!proceed) return;
@@ -1969,6 +2127,7 @@ function UploadArtModal({
         nombre_arte: imageNames.get(key)?.trim() || null,
         estatus_operaciones: imageEstatusOps.get(key)?.trim() || null,
         nombre_generico: genericoVal || null,
+        cantidad_inicial: imageCantidadesInicial.get(key) ?? null,
       }));
       const { proceed, markInstalado, instalacionMode, operacionesAsignados } = await checkAndConfirmInstalado(archivos.map(a => a.archivo));
       if (!proceed) return;
@@ -2126,6 +2285,26 @@ function UploadArtModal({
     }
   };
 
+  // Akary 2026-11-13: persiste un arte subido en biblioteca_artes del back
+  // apenas se sube. Antes solo se guardaba al terminar el wizard, por eso un
+  // F5 lo perdia. Si falla, no interrumpimos el flujo: el arte sigue en
+  // addedArtes (state local) para que la UX no se rompa.
+  const persistArteEnBiblioteca = (
+    archivo: string,
+    tipo: 'tradicional' | 'digital',
+    nombreArte?: string | null,
+  ) => {
+    if (!campanaId || !archivo) return;
+    campanasService
+      .addToBibliotecaArtes(campanaId, { archivo, tipo, nombre_arte: nombreArte ?? null })
+      .then(() => {
+        queryClient.invalidateQueries({ queryKey: ['campana-artes-existentes', campanaId], exact: false });
+      })
+      .catch((err) => {
+        console.warn('[biblioteca-artes] persistencia fallo, el arte queda solo en addedArtes:', err);
+      });
+  };
+
   const addUploadedFile = async (selectedFile: File) => {
     const id = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -2139,6 +2318,7 @@ function UploadArtModal({
         url: uploadResult.url,
         usos: 0,
       }]);
+      persistArteEnBiblioteca(uploadResult.url, 'tradicional', selectedFile.name);
     } catch (err: any) {
       console.error('Error uploading file:', err);
       const backendError = err?.response?.data?.error
@@ -2161,6 +2341,7 @@ function UploadArtModal({
       url: trimmed,
       usos: 0,
     }]);
+    persistArteEnBiblioteca(trimmed, 'tradicional', trimmed.split('/').pop() || null);
   };
 
   // URL upload para flujo digital (imagen o video). Mismo patrón que addUrlImage
@@ -2176,6 +2357,7 @@ function UploadArtModal({
       url: trimmed,
       usos: 0,
     }]);
+    persistArteEnBiblioteca(trimmed, 'digital', trimmed.split('/').pop() || null);
   };
 
   // Helpers para el wizard digital
@@ -2208,6 +2390,7 @@ function UploadArtModal({
         url: uploadResult.url,
         usos: 0,
       }]);
+      persistArteEnBiblioteca(uploadResult.url, 'digital', selectedFile.name);
     } catch (err: any) {
       console.error('Error uploading digital file:', err);
       // Mostrar al usuario el mensaje real del backend (ej. "El archivo es demasiado
@@ -2253,12 +2436,16 @@ function UploadArtModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-stretch justify-stretch">
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={() => { if (!isProcessingFinal) handleClose(); }}
       />
-      <div className="relative bg-card border border-border rounded-xl w-full max-w-6xl mx-4 max-h-[90vh] flex flex-col">
+      {/* Feedback usuario 2026-09-24: la ventana debe ocupar TODA la pantalla,
+          no dejar bordes de ~2vw ni margen. Cambio de max-w-[96vw] centrado a
+          w-screen h-screen sin border/rounded. Asi la biblioteca respira y las
+          miniaturas tienen espacio real para verse grandes. */}
+      <div className="relative bg-card w-screen h-screen flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border flex-shrink-0">
           <h3 className="text-lg font-semibold flex items-center gap-2">
@@ -2423,7 +2610,7 @@ function UploadArtModal({
               )}
             </div>
           ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full min-h-0">
+          <div className={`grid grid-cols-1 gap-6 h-full min-h-0 relative ${spacesPanelCollapsed ? '' : 'lg:grid-cols-2'}`}>
             {/* Left Column - Upload Options & Preview */}
             <div className="flex flex-col space-y-4 h-full min-h-0">
               {isDigitalInventory ? (
@@ -2451,64 +2638,107 @@ function UploadArtModal({
                     <>
                       {/* Galería de artes digitales existentes */}
                       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                        <label className={`block text-xs font-medium mb-1.5 ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                          Biblioteca de contenido digital ({localArtes.length})
-                          {isUploadingDigitalFile && <Loader2 className="inline h-3 w-3 animate-spin text-cyan-400 ml-1.5" />}
-                        </label>
-                        <div className={`flex-1 min-h-[120px] max-h-[260px] border border-border rounded-lg overflow-auto p-2 ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50'}`}>
+                        <div className="flex items-center justify-between mb-1.5 gap-2">
+                          <label className={`text-xs font-medium ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
+                            Biblioteca de contenido digital ({visibleArtes.length}{hiddenCount > 0 ? ` · ${hiddenCount} oculto${hiddenCount === 1 ? '' : 's'}` : ''})
+                            {isUploadingDigitalFile && <Loader2 className="inline h-3 w-3 animate-spin text-cyan-400 ml-1.5" />}
+                          </label>
+                          <select
+                            value={visibilityFilter}
+                            onChange={(e) => setVisibilityFilter(e.target.value as 'todos' | 'visibles' | 'ocultos')}
+                            className="text-[10px] bg-background border border-border rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                            title="Filtro de visualizacion"
+                          >
+                            <option value="visibles">Solo visibles</option>
+                            <option value="todos">Todos</option>
+                            <option value="ocultos">Solo ocultos</option>
+                          </select>
+                        </div>
+                        <div className={`flex-1 min-h-[400px] border border-border rounded-lg overflow-auto p-4 ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50'}`}>
                           {isLoadingArtes ? (
                             <div className="h-full flex items-center justify-center">
                               <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
                             </div>
-                          ) : localArtes.length === 0 ? (
+                          ) : visibleArtes.length === 0 ? (
                             <div className="h-full flex items-center justify-center text-center text-zinc-500">
                               <div>
                                 <Film className="h-8 w-8 mx-auto mb-1 opacity-30" />
-                                <p className="text-[10px]">No hay archivos. Sube imágenes o videos abajo.</p>
+                                <p className="text-[10px]">
+                                  {localArtes.length === 0
+                                    ? 'No hay archivos. Sube imágenes o videos abajo.'
+                                    : visibilityFilter === 'ocultos'
+                                      ? 'No hay archivos ocultos.'
+                                      : 'Todos los archivos estan ocultos. Cambia el filtro para verlos.'}
+                                </p>
                               </div>
                             </div>
                           ) : (
-                            <div className="grid grid-cols-6 gap-1.5">
-                              {localArtes.map((art) => {
+                            <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+                              {visibleArtes.map((art) => {
                                 const isVideo = /\.(mp4|mov|webm|avi)$/i.test(art.url || '');
                                 const isSelected = selectedDigitalImages.has(art.id);
+                                const isHidden = hiddenArteIds.has(art.id);
                                 return (
-                                  <button
+                                  <div
                                     key={art.id}
-                                    onClick={() => toggleDigitalGalleryImage(art.id, art.url, isVideo)}
                                     className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all group ${
                                       isSelected
                                         ? 'border-cyan-400 ring-2 ring-cyan-400/30'
-                                        : 'border-transparent hover:border-cyan-400/50'
+                                        : isHidden ? 'border-zinc-600/60 opacity-70' : 'border-transparent hover:border-cyan-400/50'
                                     }`}
-                                    title={[
-                                      art.nombre_arte ? `Nombre: ${art.nombre_arte}` : null,
-                                      `Archivo: ${art.nombre}`,
-                                      art.nota ? `Nota: ${art.nota}` : null,
-                                      art.estatus ? `Estatus: ${art.estatus}` : null,
-                                    ].filter(Boolean).join('\n')}
                                   >
-                                    {isVideo ? (
-                                      <div className="w-full h-full flex items-center justify-center bg-zinc-700">
-                                        <Play className="h-5 w-5 text-cyan-400" />
-                                      </div>
-                                    ) : (
-                                      <ArteImg
-                                        src={art.url}
-                                        alt={art.nombre_arte || art.nombre}
-                                        className="w-full h-full object-cover"
-                                      />
-                                    )}
-                                    {isSelected && (
-                                      <div className="absolute inset-0 bg-cyan-600/30 flex items-center justify-center">
-                                        <Check className="h-4 w-4 text-white" />
-                                      </div>
-                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleDigitalGalleryImage(art.id, art.url, isVideo)}
+                                      className="w-full h-full block"
+                                      title={[
+                                        art.nombre_arte ? `Nombre: ${art.nombre_arte}` : null,
+                                        `Archivo: ${art.nombre}`,
+                                        art.nota ? `Nota: ${art.nota}` : null,
+                                        art.estatus ? `Estatus: ${art.estatus}` : null,
+                                      ].filter(Boolean).join('\n')}
+                                    >
+                                      {isVideo ? (
+                                        <div className="w-full h-full flex items-center justify-center bg-zinc-700">
+                                          <Play className="h-8 w-8 text-cyan-400" />
+                                        </div>
+                                      ) : (
+                                        <ArteImg
+                                          src={art.url}
+                                          alt={art.nombre_arte || art.nombre}
+                                          className="w-full h-full object-cover"
+                                        />
+                                      )}
+                                      {isSelected && (
+                                        <div className="absolute inset-0 bg-cyan-600/30 flex items-center justify-center pointer-events-none">
+                                          <Check className="h-6 w-6 text-white" />
+                                        </div>
+                                      )}
+                                    </button>
+                                    {/* Botones de accion en la esquina superior izquierda: vista previa y ocultar/mostrar. */}
+                                    <div className="absolute top-1 left-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); setPreviewArte({ url: art.url, nombre: art.nombre, nombre_arte: art.nombre_arte, nota: art.nota, isVideo }); }}
+                                        className="p-1 bg-black/70 hover:bg-black text-white rounded"
+                                        title="Vista previa"
+                                      >
+                                        <Maximize2 className="h-3 w-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); toggleHiddenArte(art.id); }}
+                                        className="p-1 bg-black/70 hover:bg-black text-white rounded"
+                                        title={isHidden ? 'Mostrar arte' : 'Ocultar arte'}
+                                      >
+                                        {isHidden ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                                      </button>
+                                    </div>
                                     {/* Badge de estatus arriba a la derecha. Si el arte
                                         esta marcado como Instalado en otra reserva,
                                         priorizamos ese badge (purpura) sobre arte_aprobado. */}
                                     {(art.tiene_instalado || art.estatus) && (
-                                      <span className={`absolute top-0.5 right-0.5 px-1 py-0 rounded text-[8px] font-semibold ${
+                                      <span className={`absolute top-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-semibold pointer-events-none ${
                                         art.tiene_instalado ? 'bg-purple-500/80 text-white'
                                         : art.estatus?.toLowerCase() === 'aprobado' ? 'bg-green-500/80 text-white'
                                         : art.estatus?.toLowerCase() === 'rechazado' ? 'bg-red-500/80 text-white'
@@ -2516,17 +2746,47 @@ function UploadArtModal({
                                         : 'bg-zinc-700/80 text-zinc-200'
                                       }`}>{art.tiene_instalado ? 'Instalado' : art.estatus}</span>
                                     )}
-                                    <div className="absolute bottom-0 left-0 right-0 bg-black/70 px-1 py-px">
-                                      <p className="text-[7px] text-zinc-300 truncate" title={art.nombre_arte || art.nombre}>
+                                    {/* Jos 2026-10-12: badge ADICIONAL de prueba de color.
+                                        Juntamos los dos marcadores (version + aprobada) en una
+                                        sola esquina para no mezclarlos con los badges de flujo
+                                        normal (estatus_operaciones, arte_aprobado) que viven en
+                                        las esquinas opuestas. */}
+                                    {art.origen_prueba_color && (
+                                      <span
+                                        className="absolute top-1 left-1 inline-flex items-center overflow-hidden rounded border border-fuchsia-500/60 text-[10px] font-semibold pointer-events-none shadow-sm"
+                                        title={art.prueba_color_tipo === 'revision_anticipada'
+                                          ? 'Arte proveniente de una revisión anticipada aprobada'
+                                          : 'Arte proveniente de una prueba de color aprobada'}
+                                      >
+                                        <span className="px-1.5 py-0.5 bg-fuchsia-500/90 text-white">
+                                          {art.prueba_color_tipo === 'revision_anticipada' ? 'RA' : 'PC'} v{art.prueba_color_version ?? '?'}
+                                        </span>
+                                        <span className="px-1.5 py-0.5 bg-emerald-500/90 text-white border-l border-fuchsia-500/60">Aprobada</span>
+                                      </span>
+                                    )}
+                                    {/* Jos 2026-10-12: badge adicional para 'Estatus Operaciones'
+                                        (texto manual que captura el usuario al asignar el arte).
+                                        Posicion: justo arriba del area oscura del nombre_arte.
+                                        bottom-10 (40px) asegura que no quede tapado. */}
+                                    {art.estatus_operaciones && (
+                                      <span
+                                        className="absolute bottom-10 left-1 max-w-[85%] truncate px-1.5 py-0.5 rounded text-[10px] font-semibold pointer-events-none bg-amber-500/90 text-white shadow-sm"
+                                        title={`Estatus Operaciones: ${art.estatus_operaciones}`}
+                                      >
+                                        {art.estatus_operaciones}
+                                      </span>
+                                    )}
+                                    <div className="absolute bottom-0 left-0 right-0 bg-black/70 px-1.5 py-1 pointer-events-none">
+                                      <p className="text-[10px] text-zinc-200 truncate" title={art.nombre_arte || art.nombre}>
                                         {art.nombre_arte || art.nombre}
                                       </p>
                                       {art.nota && (
-                                        <p className="text-[7px] text-zinc-400 truncate italic" title={art.nota}>
+                                        <p className="text-[10px] text-zinc-400 truncate italic" title={art.nota}>
                                           {art.nota}
                                         </p>
                                       )}
                                     </div>
-                                  </button>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -2716,17 +2976,19 @@ function UploadArtModal({
                                 <label className="block text-[10px] font-medium text-zinc-400 mb-1 mt-1.5">
                                   Estatus Operaciones {idx + 1}
                                 </label>
-                                <textarea
-                                  value={digitalImageEstatusOps.get(id) || ''}
-                                  onChange={(e) => setDigitalImageEstatusOps(prev => {
-                                    const next = new Map(prev);
-                                    next.set(id, e.target.value);
-                                    return next;
-                                  })}
-                                  rows={2}
-                                  placeholder="Estatus de operaciones (opcional)"
-                                  className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500 resize-none"
-                                />
+                                <div className="flex flex-col gap-1">
+                                  <EstatusOpSelect
+                                    value={digitalImageEstatusOps.get(id) || ''}
+                                    onChange={(v) => setDigitalImageEstatusOps(prev => {
+                                      const next = new Map(prev);
+                                      next.set(id, v);
+                                      return next;
+                                    })}
+                                    selectClassName="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                    inputClassName="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                    placeholder="Estatus de operaciones (opcional)"
+                                  />
+                                </div>
                               </div>
                             );
                           })}
@@ -2760,54 +3022,97 @@ function UploadArtModal({
                     <>
                       {/* Galería de artes existentes */}
                       <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                        <label className={`block text-xs font-medium mb-1.5 ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                          Biblioteca de artes ({localArtes.length})
-                          {isUploadingFile && <Loader2 className="inline h-3 w-3 animate-spin text-purple-400 ml-1.5" />}
-                        </label>
-                        <div className={`flex-1 min-h-[120px] max-h-[260px] border border-border rounded-lg overflow-auto p-2 ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50'}`}>
+                        <div className="flex items-center justify-between mb-1.5 gap-2">
+                          <label className={`text-xs font-medium ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
+                            Biblioteca de artes ({visibleArtes.length}{hiddenCount > 0 ? ` · ${hiddenCount} oculto${hiddenCount === 1 ? '' : 's'}` : ''})
+                            {isUploadingFile && <Loader2 className="inline h-3 w-3 animate-spin text-purple-400 ml-1.5" />}
+                          </label>
+                          <select
+                            value={visibilityFilter}
+                            onChange={(e) => setVisibilityFilter(e.target.value as 'todos' | 'visibles' | 'ocultos')}
+                            className="text-[10px] bg-background border border-border rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                            title="Filtro de visualizacion"
+                          >
+                            <option value="visibles">Solo visibles</option>
+                            <option value="todos">Todos</option>
+                            <option value="ocultos">Solo ocultos</option>
+                          </select>
+                        </div>
+                        <div className={`flex-1 min-h-[400px] border border-border rounded-lg overflow-auto p-4 ${isDark ? 'bg-zinc-900/50' : 'bg-gray-50'}`}>
                           {isLoadingArtes ? (
                             <div className="h-full flex items-center justify-center">
                               <Loader2 className="h-5 w-5 animate-spin text-purple-400" />
                             </div>
-                          ) : localArtes.length === 0 ? (
+                          ) : visibleArtes.length === 0 ? (
                             <div className="h-full flex items-center justify-center text-center text-zinc-500">
                               <div>
                                 <Image className="h-8 w-8 mx-auto mb-1 opacity-30" />
-                                <p className="text-[10px]">No hay imágenes. Sube archivos o agrega URLs abajo.</p>
+                                <p className="text-[10px]">
+                                  {localArtes.length === 0
+                                    ? 'No hay imágenes. Sube archivos o agrega URLs abajo.'
+                                    : visibilityFilter === 'ocultos'
+                                      ? 'No hay imagenes ocultas.'
+                                      : 'Todas las imagenes estan ocultas. Cambia el filtro para verlas.'}
+                                </p>
                               </div>
                             </div>
                           ) : (
-                            <div className="grid grid-cols-6 gap-1.5">
-                              {localArtes.map((art) => {
+                            <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">
+                              {visibleArtes.map((art) => {
                                 const isSelected = selectedGalleryImages.has(art.id);
+                                const isHidden = hiddenArteIds.has(art.id);
                                 return (
-                                  <button
+                                  <div
                                     key={art.id}
-                                    onClick={() => toggleGalleryImage(art.id, art.url)}
                                     className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all group ${
                                       isSelected
                                         ? 'border-purple-400 ring-2 ring-purple-400/30'
-                                        : 'border-transparent hover:border-purple-400/50'
+                                        : isHidden ? 'border-zinc-600/60 opacity-70' : 'border-transparent hover:border-purple-400/50'
                                     }`}
-                                    title={[
-                                      art.nombre_arte ? `Nombre: ${art.nombre_arte}` : null,
-                                      `Archivo: ${art.nombre}`,
-                                      art.nota ? `Nota: ${art.nota}` : null,
-                                      art.tiene_instalado ? 'Estatus: Instalado (al asignarlo, el inventario destino quedara como instalado)' : (art.estatus ? `Estatus: ${art.estatus}` : null),
-                                    ].filter(Boolean).join('\n')}
                                   >
-                                    <ArteImg
-                                      src={art.url}
-                                      alt={art.nombre_arte || art.nombre}
-                                      className="w-full h-full object-cover"
-                                    />
-                                    {isSelected && (
-                                      <div className="absolute inset-0 bg-purple-600/30 flex items-center justify-center">
-                                        <Check className="h-4 w-4 text-white" />
-                                      </div>
-                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleGalleryImage(art.id, art.url)}
+                                      className="w-full h-full block"
+                                      title={[
+                                        art.nombre_arte ? `Nombre: ${art.nombre_arte}` : null,
+                                        `Archivo: ${art.nombre}`,
+                                        art.nota ? `Nota: ${art.nota}` : null,
+                                        art.tiene_instalado ? 'Estatus: Instalado (al asignarlo, el inventario destino quedara como instalado)' : (art.estatus ? `Estatus: ${art.estatus}` : null),
+                                      ].filter(Boolean).join('\n')}
+                                    >
+                                      <ArteImg
+                                        src={art.url}
+                                        alt={art.nombre_arte || art.nombre}
+                                        className="w-full h-full object-cover"
+                                      />
+                                      {isSelected && (
+                                        <div className="absolute inset-0 bg-purple-600/30 flex items-center justify-center pointer-events-none">
+                                          <Check className="h-6 w-6 text-white" />
+                                        </div>
+                                      )}
+                                    </button>
+                                    {/* Botones de accion: vista previa y ocultar/mostrar. */}
+                                    <div className="absolute top-1 left-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); setPreviewArte({ url: art.url, nombre: art.nombre, nombre_arte: art.nombre_arte, nota: art.nota, isVideo: false }); }}
+                                        className="p-1 bg-black/70 hover:bg-black text-white rounded"
+                                        title="Vista previa"
+                                      >
+                                        <Maximize2 className="h-3 w-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); toggleHiddenArte(art.id); }}
+                                        className="p-1 bg-black/70 hover:bg-black text-white rounded"
+                                        title={isHidden ? 'Mostrar arte' : 'Ocultar arte'}
+                                      >
+                                        {isHidden ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                                      </button>
+                                    </div>
                                     {(art.tiene_instalado || art.estatus) && (
-                                      <span className={`absolute top-0.5 right-0.5 px-1 py-0 rounded text-[8px] font-semibold ${
+                                      <span className={`absolute top-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-semibold pointer-events-none ${
                                         art.tiene_instalado ? 'bg-purple-500/80 text-white'
                                         : art.estatus?.toLowerCase() === 'aprobado' ? 'bg-green-500/80 text-white'
                                         : art.estatus?.toLowerCase() === 'rechazado' ? 'bg-red-500/80 text-white'
@@ -2815,17 +3120,47 @@ function UploadArtModal({
                                         : 'bg-zinc-700/80 text-zinc-200'
                                       }`}>{art.tiene_instalado ? 'Instalado' : art.estatus}</span>
                                     )}
-                                    <div className="absolute bottom-0 left-0 right-0 bg-black/70 px-1 py-px">
-                                      <p className="text-[7px] text-zinc-300 truncate" title={art.nombre_arte || art.nombre}>
+                                    {/* Jos 2026-10-12: badge ADICIONAL de prueba de color.
+                                        Juntamos los dos marcadores (version + aprobada) en una
+                                        sola esquina para no mezclarlos con los badges de flujo
+                                        normal (estatus_operaciones, arte_aprobado) que viven en
+                                        las esquinas opuestas. */}
+                                    {art.origen_prueba_color && (
+                                      <span
+                                        className="absolute top-1 left-1 inline-flex items-center overflow-hidden rounded border border-fuchsia-500/60 text-[10px] font-semibold pointer-events-none shadow-sm"
+                                        title={art.prueba_color_tipo === 'revision_anticipada'
+                                          ? 'Arte proveniente de una revisión anticipada aprobada'
+                                          : 'Arte proveniente de una prueba de color aprobada'}
+                                      >
+                                        <span className="px-1.5 py-0.5 bg-fuchsia-500/90 text-white">
+                                          {art.prueba_color_tipo === 'revision_anticipada' ? 'RA' : 'PC'} v{art.prueba_color_version ?? '?'}
+                                        </span>
+                                        <span className="px-1.5 py-0.5 bg-emerald-500/90 text-white border-l border-fuchsia-500/60">Aprobada</span>
+                                      </span>
+                                    )}
+                                    {/* Jos 2026-10-12: badge adicional para 'Estatus Operaciones'
+                                        (texto manual que captura el usuario al asignar el arte).
+                                        Posicion: justo arriba del area oscura del nombre_arte.
+                                        bottom-10 (40px) asegura que no quede tapado. */}
+                                    {art.estatus_operaciones && (
+                                      <span
+                                        className="absolute bottom-10 left-1 max-w-[85%] truncate px-1.5 py-0.5 rounded text-[10px] font-semibold pointer-events-none bg-amber-500/90 text-white shadow-sm"
+                                        title={`Estatus Operaciones: ${art.estatus_operaciones}`}
+                                      >
+                                        {art.estatus_operaciones}
+                                      </span>
+                                    )}
+                                    <div className="absolute bottom-0 left-0 right-0 bg-black/70 px-1.5 py-1 pointer-events-none">
+                                      <p className="text-[10px] text-zinc-200 truncate" title={art.nombre_arte || art.nombre}>
                                         {art.nombre_arte || art.nombre}
                                       </p>
                                       {art.nota && (
-                                        <p className="text-[7px] text-zinc-400 truncate italic" title={art.nota}>
+                                        <p className="text-[10px] text-zinc-400 truncate italic" title={art.nota}>
                                           {art.nota}
                                         </p>
                                       )}
                                     </div>
-                                  </button>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -3007,17 +3342,22 @@ function UploadArtModal({
                                 <label className={`block text-[10px] font-medium mb-1 mt-1.5 ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
                                   Estatus Operaciones {idx + 1}
                                 </label>
-                                <textarea
-                                  value={imageEstatusOps.get(id) || ''}
-                                  onChange={(e) => setImageEstatusOps(prev => {
-                                    const next = new Map(prev);
-                                    next.set(id, e.target.value);
-                                    return next;
-                                  })}
-                                  rows={2}
-                                  placeholder="Estatus de operaciones (opcional)"
-                                  className="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500 resize-none"
-                                />
+                                <div className="flex flex-col gap-1">
+                                  <EstatusOpSelect
+                                    value={imageEstatusOps.get(id) || ''}
+                                    onChange={(v) => setImageEstatusOps(prev => {
+                                      const next = new Map(prev);
+                                      next.set(id, v);
+                                      return next;
+                                    })}
+                                    selectClassName="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500"
+                                    inputClassName="w-full px-2 py-1.5 text-xs bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500"
+                                    placeholder="Estatus de operaciones (opcional)"
+                                  />
+                                </div>
+                                {/* Akary 2026-11-13: ocultar "Cantidad inicial en almacén"
+                                    aquí (Asignar Arte); la captura inicial se hace en
+                                    Almacén Artes. El campo del back se envía como null. */}
                               </div>
                             </div>
                           </div>
@@ -3029,16 +3369,28 @@ function UploadArtModal({
               )}
             </div>
 
-            {/* Right Column - Selected Items Table */}
-            <div className="flex flex-col h-full">
+            {/* Right Column - Selected Items Table. Feedback Jos 2026-09-25:
+                colapsable. Si se contrae, la biblioteca de artes ocupa todo
+                el ancho y aparece un botón lateral para volver a mostrarlo. */}
+            <div className={`flex flex-col h-full ${spacesPanelCollapsed ? 'hidden' : ''}`}>
               {/* Header with count and toolbar */}
-              <div className="flex items-center justify-between mb-2">
-                <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                  Espacios a asignar
-                </span>
-                <Badge className={isDark ? "bg-purple-600/30 text-purple-300 border-purple-500/30" : "bg-purple-100 text-purple-700 border-purple-300"}>
-                  {selectedInventory.length} elemento{selectedInventory.length !== 1 ? 's' : ''}
-                </Badge>
+              <div className="flex items-center justify-between mb-2 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`text-sm font-medium truncate ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                    Espacios a asignar
+                  </span>
+                  <Badge className={isDark ? "bg-purple-600/30 text-purple-300 border-purple-500/30" : "bg-purple-100 text-purple-700 border-purple-300"}>
+                    {selectedInventory.length} elemento{selectedInventory.length !== 1 ? 's' : ''}
+                  </Badge>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSpacesPanelCollapsed(true)}
+                  title="Ocultar panel — expandir biblioteca de artes"
+                  className={`p-1 rounded shrink-0 ${isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'}`}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
               </div>
 
               {/* Toolbar */}
@@ -3185,6 +3537,22 @@ function UploadArtModal({
                 </div>
               </div>
             </div>
+            {/* Botón flotante para reabrir el panel Espacios a asignar cuando
+                está colapsado. Vive dentro del grid contenedor para pegarse
+                al borde derecho del modal. Feedback Jos 2026-09-25. */}
+            {spacesPanelCollapsed && (
+              <button
+                type="button"
+                onClick={() => setSpacesPanelCollapsed(false)}
+                title={`Mostrar Espacios a asignar (${selectedInventory.length})`}
+                className={`absolute right-0 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 py-3 px-2 rounded-l-lg shadow-lg border border-r-0 z-10 transition-colors ${isDark ? 'bg-purple-900/40 border-purple-500/40 text-purple-200 hover:bg-purple-800/60' : 'bg-purple-100 border-purple-300 text-purple-800 hover:bg-purple-200'}`}
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="text-[10px] font-medium [writing-mode:vertical-rl] rotate-180 whitespace-nowrap">
+                  Espacios a asignar · {selectedInventory.length}
+                </span>
+              </button>
+            )}
           </div>
           )}
         </div>
@@ -3273,6 +3641,55 @@ function UploadArtModal({
           onResolve={instaladoDialog.resolve}
           isDark={isDark}
         />
+      )}
+
+      {/* Vista previa maximizada de un arte. Se abre desde el boton de la
+          esquina superior de cada thumbnail; no selecciona el arte, solo lo
+          muestra en grande para revisarlo. Cierra con ESC, click fuera o X. */}
+      {previewArte && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 backdrop-blur-sm"
+          onClick={() => setPreviewArte(null)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setPreviewArte(null); }}
+          tabIndex={-1}
+        >
+          <div className="relative w-full max-w-[95vw] max-h-[95dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setPreviewArte(null)}
+              className="absolute -top-2 -right-2 z-10 p-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 rounded-full text-white shadow-lg"
+              title="Cerrar (ESC)"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <div className="bg-zinc-900 rounded-xl overflow-hidden flex items-center justify-center max-h-[85vh] max-w-full">
+              {previewArte.isVideo ? (
+                <video
+                  src={getImageUrl(previewArte.url) || previewArte.url}
+                  controls
+                  autoPlay
+                  className="max-h-[85vh] max-w-[95vw]"
+                />
+              ) : (
+                <ArteImg
+                  src={previewArte.url}
+                  alt={previewArte.nombre_arte || previewArte.nombre}
+                  className="max-h-[85vh] max-w-[95vw] object-contain"
+                />
+              )}
+            </div>
+            <div className="bg-zinc-900/90 border border-border rounded-lg px-4 py-2 max-w-2xl w-full text-center">
+              <p className="text-sm text-white font-medium truncate" title={previewArte.nombre_arte || previewArte.nombre}>
+                {previewArte.nombre_arte || previewArte.nombre}
+              </p>
+              {previewArte.nota && (
+                <p className="text-xs text-zinc-400 italic mt-0.5 truncate" title={previewArte.nota}>
+                  {previewArte.nota}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -3536,8 +3953,11 @@ function FilterToolbar({
           {filters.length > 0 && <span className="px-1 py-0.5 rounded bg-purple-800 text-[10px]">{filters.length}</span>}
         </button>
         {showFilters && (
+          // Movil (<sm) sin useFixedDropdowns: cambiar a fixed anclado al
+          // viewport para que no se corte por la izquierda cuando el
+          // contenedor .relative es angosto. Feedback usuario 2026-09-23.
           <div
-            className={`${useFixedDropdowns ? 'fixed' : 'absolute right-0 top-full mt-1'} z-[100] w-[520px] ${isDark ? 'bg-[#1a1025]' : 'bg-white'} border border-purple-900/50 rounded-lg shadow-xl p-4`}
+            className={`${useFixedDropdowns ? 'fixed' : 'fixed inset-x-2 top-16 sm:absolute sm:inset-auto sm:right-0 sm:top-full sm:mt-1'} z-[100] w-auto sm:w-[520px] max-w-none sm:max-w-[calc(100vw-1rem)] max-h-[calc(100vh-5rem)] sm:max-h-none overflow-auto sm:overflow-visible ${isDark ? 'bg-[#1a1025]' : 'bg-white'} border border-purple-900/50 rounded-lg shadow-xl p-4`}
             style={useFixedDropdowns ? getDropdownPosition(filterBtnRef, 520) : undefined}
           >
             <div className="flex items-center justify-between mb-3">
@@ -3546,19 +3966,21 @@ function FilterToolbar({
             </div>
             <div className="space-y-3 max-h-[300px] overflow-visible pr-1">
               {filters.map((filter, index) => (
-                <div key={filter.id} className="flex items-center gap-2">
-                  {index > 0 && <span className="text-[10px] text-purple-400 font-medium w-8">AND</span>}
-                  {index === 0 && <span className="w-8"></span>}
-                  <select value={filter.field} onChange={(e) => updateFilter(filter.id, { field: e.target.value })} className="w-[130px] text-xs bg-background border border-border rounded px-2 py-1.5">
+                // Movil: campo/operador/valor apilados en columna para que no
+                // se corten (feedback usuario 2026-09-21). Desktop mantiene fila.
+                <div key={filter.id} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  {index > 0 && <span className="text-[10px] text-purple-400 font-medium w-full sm:w-8">AND</span>}
+                  {index === 0 && <span className="hidden sm:inline sm:w-8"></span>}
+                  <select value={filter.field} onChange={(e) => updateFilter(filter.id, { field: e.target.value })} className="w-full sm:w-[130px] text-xs bg-background border border-border rounded px-2 py-1.5">
                     {filterFields.map((f) => <option key={f.field} value={f.field}>{f.label}</option>)}
                   </select>
-                  <select value={filter.operator} onChange={(e) => updateFilter(filter.id, { operator: e.target.value as FilterOperator })} className="w-[90px] text-xs bg-background border border-border rounded px-2 py-1.5">
+                  <select value={filter.operator} onChange={(e) => updateFilter(filter.id, { operator: e.target.value as FilterOperator })} className="w-full sm:w-[90px] text-xs bg-background border border-border rounded px-2 py-1.5">
                     {FILTER_OPERATORS.filter(op => { const fc = filterFields.find(f => f.field === filter.field); return fc && op.forTypes.includes(fc.type); }).map((op) => <option key={op.value} value={op.value}>{op.label}</option>)}
                   </select>
                   {/* Combobox: input libre + dropdown de opciones que matchean.
                       Permite escribir texto cualquiera (no esta restringido al listado).
                       Pattern identico al de filtros avanzados de Campañas/Solicitudes. */}
-                  <div className="flex-1 relative">
+                  <div className="flex-1 min-w-0 relative">
                     <input
                       type="text"
                       value={filter.value}
@@ -3622,7 +4044,7 @@ function FilterToolbar({
           </button>
           {showGrouping && (
             <div
-              className={`${useFixedDropdowns ? 'fixed' : 'absolute right-0 top-full mt-1'} z-[100] ${isDark ? 'bg-[#1a1025]' : 'bg-white'} border border-purple-900/50 rounded-lg shadow-xl p-2 min-w-[200px]`}
+              className={`${useFixedDropdowns ? 'fixed' : 'fixed inset-x-2 top-16 sm:absolute sm:inset-auto sm:right-0 sm:top-full sm:mt-1'} z-[100] w-auto sm:w-auto sm:min-w-[200px] max-h-[calc(100vh-5rem)] sm:max-h-none overflow-auto sm:overflow-visible ${isDark ? 'bg-[#1a1025]' : 'bg-white'} border border-purple-900/50 rounded-lg shadow-xl p-2`}
               style={useFixedDropdowns ? getDropdownPosition(groupBtnRef, 200) : undefined}
             >
               <div className="flex items-center justify-between mb-2 px-2">
@@ -3665,7 +4087,7 @@ function FilterToolbar({
           </button>
           {showSort && (
             <div
-              className={`${useFixedDropdowns ? 'fixed' : 'absolute right-0 top-full mt-1'} z-[100] w-[240px] bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-3`}
+              className={`${useFixedDropdowns ? 'fixed' : 'fixed inset-x-2 top-16 sm:absolute sm:inset-auto sm:right-0 sm:top-full sm:mt-1'} z-[100] w-auto sm:w-[240px] max-h-[calc(100vh-5rem)] sm:max-h-none overflow-auto sm:overflow-visible bg-[#1a1025] border border-purple-900/50 rounded-lg shadow-xl p-3`}
               style={useFixedDropdowns ? getDropdownPosition(sortBtnRef, 240) : undefined}
             >
               <div className="flex items-center justify-between mb-3">
@@ -4812,8 +5234,17 @@ function TaskDetailModal({
   const [isFinalizando, setIsFinalizando] = useState(false);
   const [envioRevisionError, setEnvioRevisionError] = useState<string | null>(null);
 
-  // Estado para crear tarea de recepción (Impresión)
+  // Estado para crear tarea de recepción (Impresión).
+  // Feedback Jos 2026-10-02: el asignado debe permitir multiples usuarios de
+  // Operaciones. Antes era un input search que solo guardaba 1 usuario.
+  // Ahora usamos el mismo patrón de multi-select con checkboxes que ya existe
+  // en InstaladoChoiceDialog (operacionesAsignados: { ids, nombres }).
   const [isCreatingRecepcion, setIsCreatingRecepcion] = useState(false);
+  const [recepcionAsignadosMap, setRecepcionAsignadosMap] = useState<Map<number, string>>(new Map());
+  const [showRecepcionOpsList, setShowRecepcionOpsList] = useState(false);
+  // Compat para el search antiguo — algunos callers lo referencian para búsqueda.
+  // Mantener los dos legacy sin usar activamente evita tener que tocar refs
+  // residuales del modal; se seguirá leyendo del Map al guardar.
   const [recepcionAsignadoNombre, setRecepcionAsignadoNombre] = useState('');
   const [recepcionAsignadoId, setRecepcionAsignadoId] = useState('');
   const [recepcionAsignadoSearch, setRecepcionAsignadoSearch] = useState('');
@@ -5419,37 +5850,59 @@ function TaskDetailModal({
   // Cuando se agrupa por ciudad/grupo, también se sub-agrupa por archivo para separar artes diferentes
   const groupedInventory = useMemo(() => {
     const groups: Record<string, InventoryRow[]> = {};
-    taskInventory.forEach(item => {
-      let key = '';
-      switch (groupBy) {
-        case 'ciudad':
-          // Agrupar por ciudad + archivo (para separar artes diferentes)
-          const ciudadKey = item.ciudad || 'Sin ciudad';
-          const archivoKeyCiudad = item.archivo_arte || 'sin_arte';
-          key = `${ciudadKey}|||${archivoKeyCiudad}`;
-          break;
-        case 'grupo':
-          // Agrupar por grupo + archivo (para separar artes diferentes)
-          const grupoKey = item.grupo_id || item.id;
-          const archivoKeyGrupo = item.archivo_arte || 'sin_arte';
-          key = `${grupoKey}|||${archivoKeyGrupo}`;
-          break;
-        case 'tipo_cara': {
-          // Agrupar por Tipo de Cara (Flujo / Contraflujo / Bonificacion / etc) + archivo.
-          // Normalizamos: si comienza con "Flujo" agrupa todos en "Flujo", igual con "Contraflujo".
-          const tcRaw = (item.tipo_de_cara || 'Sin tipo').toString();
-          const tcKey = tcRaw.toLowerCase().startsWith('contraflujo') ? 'Contraflujo'
-                      : tcRaw.toLowerCase().startsWith('flujo') ? 'Flujo'
-                      : tcRaw;
-          const archivoKeyTC = item.archivo_arte || 'sin_arte';
-          key = `${tcKey}|||${archivoKeyTC}`;
-          break;
-        }
-        default:
-          key = item.id;
+    // [Fix #261] Cuando un item tiene artes_multiples con varias URLs
+    // (separadas por "||"), debemos crear un grupo por cada arte distinto
+    // para que el revisor pueda aprobar/rechazar cada uno individualmente.
+    // Antes se agrupaban todos los artes del mismo inventario en una sola
+    // card. Regresión reportada por Jos: "sigue manteniendo agrupados los
+    // dos artes, deben de quedar separados para que se puedan atender de
+    // manera individual".
+    const getArtesForItem = (item: InventoryRow): string[] => {
+      if (item.artes_multiples && item.artes_multiples.includes('||')) {
+        const artes = item.artes_multiples.split('||').map(a => a.trim()).filter(Boolean);
+        if (artes.length > 1) return artes;
       }
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(item);
+      return [item.archivo_arte || 'sin_arte'];
+    };
+    taskInventory.forEach(item => {
+      const artes = getArtesForItem(item);
+      artes.forEach(archivoKey => {
+        let key = '';
+        switch (groupBy) {
+          case 'ciudad': {
+            const ciudadKey = item.ciudad || 'Sin ciudad';
+            key = `${ciudadKey}|||${archivoKey}`;
+            break;
+          }
+          case 'grupo': {
+            const grupoKey = item.grupo_id || item.id;
+            key = `${grupoKey}|||${archivoKey}`;
+            break;
+          }
+          case 'tipo_cara': {
+            // Agrupar por Tipo de Cara (Flujo / Contraflujo / Bonificacion / etc) + archivo.
+            // Normalizamos: si comienza con "Flujo" agrupa todos en "Flujo", igual con "Contraflujo".
+            const tcRaw = (item.tipo_de_cara || 'Sin tipo').toString();
+            const tcKey = tcRaw.toLowerCase().startsWith('contraflujo') ? 'Contraflujo'
+                        : tcRaw.toLowerCase().startsWith('flujo') ? 'Flujo'
+                        : tcRaw;
+            key = `${tcKey}|||${archivoKey}`;
+            break;
+          }
+          default:
+            // 'inventario': separar también por arte para que artes múltiples
+            // en una misma ubicación generen cards independientes.
+            key = artes.length > 1 ? `${item.id}|||${archivoKey}` : item.id;
+        }
+        if (!groups[key]) groups[key] = [];
+        // Clonar el item para que `archivo_arte` apunte al arte específico de
+        // este grupo (los componentes aguas abajo leen item.archivo_arte para
+        // la miniatura y el link "Ver arte").
+        const itemForGroup = artes.length > 1
+          ? { ...item, archivo_arte: archivoKey }
+          : item;
+        groups[key].push(itemForGroup);
+      });
     });
     return groups;
   }, [taskInventory, groupBy]);
@@ -6524,7 +6977,12 @@ function TaskDetailModal({
     }
   };
 
-  // Handler para crear tarea de recepción
+  // Handler para crear tarea de recepción. Feedback Jos 2026-10-02:
+  // (1) cuando el PDF era grande (10-25MB) o el upload fallaba, el error
+  //     solo iba a console y el usuario veía el boton sin pasar nada. Ahora
+  //     cualquier fallo se muestra como alert.
+  // (2) el asignado ahora admite multiples usuarios: tomamos ids y nombres
+  //     del Map y los mandamos como strings comma-separated al back.
   const handleCrearRecepcion = async () => {
     if (!task || !task.id) return;
 
@@ -6532,15 +6990,25 @@ function TaskDetailModal({
     try {
       let guiaPdfUrlCreada: string | undefined;
       if (impresionPdfFile) {
-        const pdfResult = await campanasService.uploadTestigoFile(impresionPdfFile);
-        guiaPdfUrlCreada = pdfResult.url;
+        try {
+          const pdfResult = await campanasService.uploadTestigoFile(impresionPdfFile);
+          guiaPdfUrlCreada = pdfResult.url;
+        } catch (uploadErr) {
+          console.error('Error al subir PDF de guia:', uploadErr);
+          const msg = uploadErr instanceof Error ? uploadErr.message : 'No se pudo subir el PDF de guía';
+          alert(`No se pudo crear la tarea de recepción: ${msg}`);
+          return;
+        }
       }
+      const idsStr = Array.from(recepcionAsignadosMap.keys()).join(',');
+      const nombresStr = Array.from(recepcionAsignadosMap.values()).join(', ');
       await onCreateRecepcion(
         task.id,
-        recepcionAsignadoNombre || undefined,
-        recepcionAsignadoId || undefined,
+        nombresStr || undefined,
+        idsStr || undefined,
         guiaPdfUrlCreada
       );
+      setRecepcionAsignadosMap(new Map());
       setRecepcionAsignadoNombre('');
       setRecepcionAsignadoId('');
       setRecepcionAsignadoSearch('');
@@ -6548,6 +7016,21 @@ function TaskDetailModal({
       onClose();
     } catch (error) {
       console.error('Error al crear tarea de recepción:', error);
+      // [Fix #262] Extraer el mensaje real del back (axios lo guarda en
+      // error.response.data.error) antes de caer al generico 'Request failed
+      // with status code 400'. Jos reportaba solo ver el 400 sin pista de
+      // la causa real.
+      let msg = 'Error desconocido al crear la tarea';
+      if (error && typeof error === 'object') {
+        const anyErr = error as { response?: { data?: { error?: string; message?: string } }; message?: string };
+        msg = anyErr.response?.data?.error
+          || anyErr.response?.data?.message
+          || anyErr.message
+          || msg;
+      } else if (error instanceof Error) {
+        msg = error.message;
+      }
+      alert(`No se pudo crear la tarea de recepción: ${msg}`);
     } finally {
       setIsCreatingRecepcion(false);
     }
@@ -6725,7 +7208,15 @@ function TaskDetailModal({
         );
       }
 
-      // Subir fotos comprobatorias si existen
+      // Subir fotos comprobatorias si existen.
+      // Akary 2026-11-17: antes el catch era silencioso: si el upload tronaba
+      // (red tirada, archivo corrupto, 413 del back), archivoTestigoUrl quedaba
+      // undefined, onTaskComplete lo omitia del payload y la tarea quedaba
+      // Atendido con archivo_testigo=NULL. El usuario pensaba que habia subido
+      // la foto pero al reabrir el detalle no habia nada ("no sirve" de Jos
+      // 2026-11-10). Ahora el error se muestra con alert y ABORTA la
+      // finalizacion para que el usuario reintente conservando los files en
+      // memoria (no se cierra el modal, no se marca Atendido).
       let archivoTestigoUrl: string | undefined;
       if (recepcionFiles.length > 0) {
         setIsUploadingRecepcion(true);
@@ -6738,6 +7229,12 @@ function TaskDetailModal({
           archivoTestigoUrl = JSON.stringify(uploadedUrls);
         } catch (uploadErr) {
           console.error('Error al subir fotos comprobatorias:', uploadErr);
+          const msg = uploadErr instanceof Error ? uploadErr.message : 'Error desconocido';
+          alert(
+            `No se pudieron subir las fotos comprobatorias:\n\n${msg}\n\n` +
+            'La recepción NO se marco como completada. Revisa tu conexión o el tamaño/formato de las fotos y vuelve a intentar.'
+          );
+          return;
         } finally {
           setIsUploadingRecepcion(false);
         }
@@ -6788,7 +7285,7 @@ function TaskDetailModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
-      <div className="bg-card border border-border rounded-xl w-full max-w-[95vw] max-h-[95vh] shadow-2xl flex flex-col">
+      <div className="bg-card border border-border rounded-xl w-full max-w-[95vw] max-h-[95dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 shadow-2xl flex flex-col">
         {/* Header */}
         <div className="px-4 sm:px-6 py-4 border-b border-border bg-gradient-to-r from-purple-900/30 to-transparent flex-shrink-0">
           <div className="flex items-start sm:items-center justify-between gap-2">
@@ -7244,61 +7741,65 @@ function TaskDetailModal({
               {task.estatus === 'Activo' && canResolveProduccionTasks && (
                 <div className="bg-zinc-900/50 rounded-lg p-4 border border-border">
                   <h4 className="text-sm font-medium text-purple-300 mb-3">Crear tarea de recepción</h4>
-                  <div className="relative">
+                  {/* Multi-select de usuarios de Operaciones. Feedback Jos
+                      2026-10-02: el asesor/operaciones puede necesitar
+                      asignarla a varios responsables. Mismo patron que
+                      InstaladoChoiceDialog (checkboxes + buildOps). */}
+                  <div className="mb-3">
                     <label className="block text-xs font-medium text-muted-foreground mb-1">Asignar a *</label>
-                    <input
-                      ref={recepcionInputRef}
-                      type="text"
-                      value={recepcionAsignadoSearch}
-                      onChange={(e) => {
-                        setRecepcionAsignadoSearch(e.target.value);
-                        setShowRecepcionAsignadoDropdown(true);
-                        if (!e.target.value) {
-                          setRecepcionAsignadoNombre('');
-                          setRecepcionAsignadoId('');
-                        }
-                      }}
-                      onFocus={() => {
-                        if (recepcionInputRef.current) {
-                          const rect = recepcionInputRef.current.getBoundingClientRect();
-                          setDropdownPosition({
-                            top: rect.bottom + 4,
-                            left: rect.left,
-                            width: rect.width,
-                          });
-                        }
-                        setShowRecepcionAsignadoDropdown(true);
-                      }}
-                      onBlur={() => setTimeout(() => setShowRecepcionAsignadoDropdown(false), 200)}
-                      placeholder="Buscar usuario..."
-                      className="w-full px-3 py-2 text-sm bg-background border border-border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500"
-                    />
-                    {showRecepcionAsignadoDropdown && filteredUsuariosRecepcion.length > 0 && (
-                      <div
-                        className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
-                        style={{
-                          top: dropdownPosition.top,
-                          left: dropdownPosition.left,
-                          width: dropdownPosition.width,
-                        }}
-                      >
-                        {filteredUsuariosRecepcion.map((u) => (
-                          <button
-                            key={u.id}
-                            type="button"
-                            onClick={() => {
-                              setRecepcionAsignadoNombre(u.nombre);
-                              setRecepcionAsignadoId(String(u.id));
-                              setRecepcionAsignadoSearch(`${u.id}, ${u.nombre}`);
-                              setShowRecepcionAsignadoDropdown(false);
-                            }}
-                            className="w-full px-3 py-2 text-sm text-left hover:bg-purple-900/30 transition-colors"
-                          >
-                            {u.id}, {u.nombre}
-                          </button>
-                        ))}
+                    <button
+                      type="button"
+                      onClick={() => setShowRecepcionOpsList(s => !s)}
+                      className={`w-full text-left text-xs font-medium px-3 py-2 rounded-lg border transition-colors flex items-center justify-between ${
+                        recepcionAsignadosMap.size === 0
+                          ? 'border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-200'
+                          : 'border-zinc-700 bg-zinc-800/50 hover:bg-zinc-800 text-zinc-200'
+                      }`}
+                    >
+                      <span className="truncate">
+                        {recepcionAsignadosMap.size === 0
+                          ? 'Selecciona usuarios de Operaciones'
+                          : Array.from(recepcionAsignadosMap.values()).join(', ')}
+                        {recepcionAsignadosMap.size > 0 && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-purple-500/30 text-purple-200">
+                            {recepcionAsignadosMap.size}
+                          </span>
+                        )}
+                      </span>
+                      <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${showRecepcionOpsList ? 'rotate-180' : ''}`} />
+                    </button>
+                    {showRecepcionOpsList && (
+                      <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900/50 p-2 space-y-1">
+                        {usuarios.length === 0 ? (
+                          <p className="text-[10px] text-center py-2 text-zinc-500">No hay usuarios de Operaciones.</p>
+                        ) : (
+                          usuarios.map(u => (
+                            <label key={u.id} className="flex items-center gap-2 text-xs p-1.5 rounded cursor-pointer hover:bg-zinc-800 text-zinc-200">
+                              <input
+                                type="checkbox"
+                                checked={recepcionAsignadosMap.has(u.id)}
+                                onChange={() => {
+                                  setRecepcionAsignadosMap(prev => {
+                                    const n = new Map(prev);
+                                    if (n.has(u.id)) n.delete(u.id);
+                                    else n.set(u.id, u.nombre);
+                                    return n;
+                                  });
+                                }}
+                                className="rounded"
+                              />
+                              <span className="flex-1 truncate">{u.nombre}</span>
+                              <span className="text-[9px] text-zinc-500">{u.puesto}</span>
+                            </label>
+                          ))
+                        )}
                       </div>
                     )}
+                    <p className={`text-[10px] mt-1 ${recepcionAsignadosMap.size === 0 ? 'text-red-300' : 'text-zinc-500'}`}>
+                      {recepcionAsignadosMap.size === 0
+                        ? 'Selecciona al menos un usuario de Operaciones.'
+                        : 'La tarea de recepción les llegará a estas personas.'}
+                    </p>
                   </div>
                   <div className="mt-4">
                     <label className="block text-xs font-medium text-muted-foreground mb-1">Guía del proveedor en PDF (opcional)</label>
@@ -7508,7 +8009,7 @@ function TaskDetailModal({
                 {task.estatus === 'Activo' && canResolveProduccionTasks && (
                   <button
                     onClick={handleCrearRecepcion}
-                    disabled={isCreatingRecepcion || !recepcionAsignadoNombre}
+                    disabled={isCreatingRecepcion || recepcionAsignadosMap.size === 0}
                     className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isCreatingRecepcion ? (
@@ -7819,7 +8320,7 @@ function TaskDetailModal({
 
                         // Verificar si es una tarea de recepción faltantes (tiene evidencia especial)
                         let esFaltantes = false;
-                        let faltantesData: { arte: string; cantidad: number }[] = [];
+                        let faltantesData: { arte: string; cantidad: number; nombre_arte?: string | null }[] = [];
 
                         if (task.evidencia) {
                           try {
@@ -7865,8 +8366,10 @@ function TaskDetailModal({
                                   <p className="text-sm font-medium text-white">
                                     {faltante.cantidad} faltante{faltante.cantidad !== 1 ? 's' : ''}
                                   </p>
-                                  <p className="text-xs text-zinc-500 truncate">
-                                    {!faltante.arte ? 'Sin arte asignado' : faltante.arte.startsWith('data:') ? 'Arte' : faltante.arte.split('/').pop()}
+                                  <p className="text-xs text-zinc-500 truncate" title={faltante.arte ? faltante.arte.split('/').pop() : ''}>
+                                    {/* Priorizar nombre_arte legible (lo enriquece el back desde biblioteca_artes).
+                                        Caer al filename solo si no hay nombre guardado. */}
+                                    {!faltante.arte ? 'Sin arte asignado' : (faltante.nombre_arte || (faltante.arte.startsWith('data:') ? 'Arte' : faltante.arte.split('/').pop()))}
                                   </p>
                                 </div>
 
@@ -8294,6 +8797,76 @@ function TaskDetailModal({
                     <p className="text-green-300 font-medium">Recepción completada</p>
                     <p className="text-sm text-zinc-400 mt-1">Esta tarea de recepción ya ha sido finalizada.</p>
                   </div>
+                  {/* Desglose por arte con miniaturas: cuanto se recibio de cada arte vs
+                     lo que quedo faltante. Feedback Jos 2026-10-06: antes solo decia
+                     "Recepción completada 100" sin desglose, los ASC no sabian que
+                     recibieron especificamente. */}
+                  {(() => {
+                    let evOrig: any = null;
+                    try { evOrig = task.evidencia ? JSON.parse(task.evidencia) : null; } catch {}
+                    const impresionesMapOrig: Record<string, number> = (evOrig && typeof evOrig.impresiones === 'object' && evOrig.impresiones !== null)
+                      ? evOrig.impresiones
+                      : {};
+                    const artesSolicitados = Object.entries(impresionesMapOrig);
+                    if (artesSolicitados.length === 0) return null;
+
+                    // Buscar Faltantes hija por titulo "Recepción Faltantes - {identifier}"
+                    // para mapear cuanto quedo faltante por arte.
+                    const identifierMatch = task.titulo?.match(/TASK-\d+/) || task.identificador?.match(/TASK-\d+/);
+                    const identifier = identifierMatch ? identifierMatch[0] : `TASK-${task.id}`;
+                    const faltantesPorArte: Record<string, number> = {};
+                    const nombrePorArte: Record<string, string> = {};
+                    for (const t of tareasCampana) {
+                      if (t.tipo !== 'Recepción') continue;
+                      if (t.id === parseInt(task.id)) continue;
+                      const tituloMatch = (t.titulo || '').includes(identifier);
+                      let ev: any = null;
+                      try { ev = t.evidencia ? JSON.parse(t.evidencia) : null; } catch {}
+                      if (tituloMatch && ev?.tipo === 'recepcion_faltantes' && Array.isArray(ev.faltantesPorArte)) {
+                        ev.faltantesPorArte.forEach((f: any) => {
+                          if (!f?.arte) return;
+                          faltantesPorArte[f.arte] = (faltantesPorArte[f.arte] || 0) + (Number(f.cantidad) || 0);
+                          if (f?.nombre_arte && !nombrePorArte[f.arte]) nombrePorArte[f.arte] = f.nombre_arte;
+                        });
+                      }
+                    }
+
+                    return (
+                      <div className="mt-3 pt-3 border-t border-green-500/20">
+                        <p className="text-xs font-medium text-zinc-400 mb-2">Detalle por arte:</p>
+                        <div className="space-y-2">
+                          {artesSolicitados.map(([arteUrl, solicitadas], idx) => {
+                            const faltantes = faltantesPorArte[arteUrl] || 0;
+                            const recibidas = Math.max(0, (Number(solicitadas) || 0) - faltantes);
+                            const nombre = nombrePorArte[arteUrl] || arteUrl.split('/').pop() || 'Sin arte';
+                            return (
+                              <div key={`det-${idx}-${arteUrl}`} className="flex items-center gap-3 p-2 bg-zinc-900/40 rounded-lg border border-border/50">
+                                <div className="w-14 h-11 bg-zinc-800 rounded overflow-hidden flex-shrink-0 border border-zinc-700">
+                                  {arteUrl ? (
+                                    <ArteImg src={arteUrl} alt="Arte" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center">
+                                      <Image className="h-4 w-4 text-zinc-600" />
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs text-zinc-300 truncate" title={nombre}>{nombre}</p>
+                                  <p className="text-[10px] text-zinc-500">Solicitadas: {solicitadas}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-sm font-bold text-emerald-400">{recibidas} recibidas</p>
+                                  {faltantes > 0 && (
+                                    <p className="text-[10px] text-red-400">{faltantes} faltante{faltantes !== 1 ? 's' : ''}</p>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {task.contenido && (
                     <div className="mt-3 pt-3 border-t border-green-500/20">
                       <p className="text-xs font-medium text-zinc-400 mb-1">Observaciones:</p>
@@ -8319,22 +8892,29 @@ function TaskDetailModal({
                           // ni manejo de error — si Spaces respondia con
                           // referrer policy fallido el thumbnail quedaba en 0px
                           // y solo se veia el texto del alt.
+                          // Akary 2026-11-17: antes era <button onClick=window.open>
+                          // y los popup blockers o cualquier error silencioso del navegador
+                          // hacian que al click no pasara nada ("no sirve" de Jos 2026-11-10).
+                          // Un <a href target=_blank> es nativo y nunca se bloquea cuando
+                          // el click viene del usuario. Fallback por si getImageUrl devuelve
+                          // null (url rara): abrir la url cruda igual.
                           return urls.map((url, idx) => {
                             const imgUrl = getImageUrl(url) || url;
                             return (
-                              <button
+                              <a
                                 key={idx}
-                                type="button"
-                                onClick={() => window.open(imgUrl, '_blank')}
+                                href={imgUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="w-32 h-32 rounded-lg border border-border overflow-hidden cursor-pointer hover:opacity-90 transition-opacity bg-zinc-900/50 flex items-center justify-center"
-                                title={`Comprobante ${idx + 1}`}
+                                title={`Abrir comprobante ${idx + 1} en nueva pestaña`}
                               >
                                 <ArteImg
                                   src={url}
                                   alt={`Comprobante ${idx + 1}`}
                                   className="w-full h-full object-cover"
                                 />
-                              </button>
+                              </a>
                             );
                           });
                         })()}
@@ -8395,7 +8975,7 @@ function TaskDetailModal({
           {task.tipo === 'Gestión de Recepción Parcial' && (
             <div className="space-y-4">
               {(() => {
-                let evParcial: { tipo?: string; recepcionFaltantesTitulo?: string; totalFaltantes?: number; faltantesPorArte?: { arte: string; cantidad: number }[]; campania_nombre?: string } = {};
+                let evParcial: { tipo?: string; recepcionFaltantesTitulo?: string; totalFaltantes?: number; faltantesPorArte?: { arte: string; cantidad: number; nombre_arte?: string | null }[]; campania_nombre?: string } = {};
                 if (task.evidencia) {
                   try { evParcial = JSON.parse(task.evidencia); } catch {}
                 }
@@ -8438,7 +9018,11 @@ function TaskDetailModal({
                         </div>
                         <div className="p-4 space-y-2 max-h-[300px] overflow-y-auto">
                           {detalle.map((f, idx) => {
-                            const nombreArchivo = f.arte ? (f.arte.split('/').pop() || 'Arte') : 'Sin arte';
+                            // Preferimos el nombre_arte legible (lo guarda el back desde
+                            // biblioteca_artes al crear la Faltantes). Fallback al nombre
+                            // del archivo si la tarea es vieja o el arte no esta en biblioteca.
+                            // Feedback Jos 2026-10-06.
+                            const nombreDisplay = f.nombre_arte || (f.arte ? (f.arte.split('/').pop() || 'Arte') : 'Sin arte');
                             return (
                               <div key={idx} className="flex items-center gap-3 p-3 bg-zinc-800/30 rounded-lg border border-border/50">
                                 <div className="w-16 h-12 bg-zinc-800 rounded overflow-hidden flex-shrink-0 border border-zinc-700">
@@ -8451,7 +9035,7 @@ function TaskDetailModal({
                                   )}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-xs text-zinc-400 truncate">{nombreArchivo}</p>
+                                  <p className="text-xs text-zinc-400 truncate" title={nombreDisplay}>{nombreDisplay}</p>
                                 </div>
                                 <div className="text-right">
                                   <p className="text-lg font-bold text-red-400">{f.cantidad}</p>
@@ -10192,7 +10776,7 @@ function TaskDetailModal({
                         </div>
                       ) : (
                         /* Vista sin agrupar - tabla plana */
-                        <table className="w-full text-sm">
+                        <table className="w-full text-sm min-w-[640px]">
                           <thead className="bg-zinc-800/80 sticky top-0 z-10">
                             <tr>
                               <th className="p-2 text-left text-xs font-medium text-zinc-400">ID</th>
@@ -10627,7 +11211,7 @@ function TaskDetailModal({
                   </div>
 
                   <div className="max-h-[500px] overflow-auto border border-border rounded-lg">
-                    <table className="w-full text-sm">
+                    <table className="w-full text-sm min-w-[640px]">
                       <thead className="bg-zinc-800/80 sticky top-0 z-10">
                         <tr>
                           <th className="p-2 text-left text-xs font-medium text-zinc-400">ID</th>
@@ -10747,7 +11331,7 @@ function TaskDetailModal({
                           <ChevronDown className="h-3 w-3 flex-shrink-0 text-zinc-400" />
                         </button>
                         {asigDropdownOpen && (
-                          <div className="absolute left-0 top-full mt-1 z-50 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5 min-w-[220px] max-h-[260px] overflow-y-auto">
+                          <div className="fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:left-0 lg:top-full lg:right-auto lg:bottom-auto lg:mt-1 lg:w-auto lg:min-w-[220px] lg:max-w-[calc(100vw-2rem)] lg:max-h-[260px] z-50 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1.5">
                             {usuariosParaAsignar.map(u => (
                               <label key={u.id} className="flex items-center gap-2 px-2 py-1.5 hover:bg-zinc-800 rounded cursor-pointer">
                                 <input
@@ -11389,7 +11973,7 @@ function TaskDetailModal({
                                 </div>
                               </div>
                             ) : (
-                              <div className="grid grid-cols-4 gap-1.5">
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
                                 {digitalEditLocalArtes.map((art) => {
                                   const isVideo = /\.(mp4|mov|webm|avi)$/i.test(art.url || '');
                                   const isSelected = selectedDigitalEditImages.has(art.id);
@@ -11634,7 +12218,7 @@ function TaskDetailModal({
                                 </div>
                               </div>
                             ) : (
-                              <div className="grid grid-cols-4 gap-1.5">
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
                                 {artesExistentes.map((art) => {
                                   const isSelected = editSelectedImages.has(art.id);
                                   return (
@@ -12201,11 +12785,19 @@ function TaskDetailModal({
                                             const rsvIds = item.rsv_id?.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)) || [];
                                             if (rsvIds.length > 0) openTradicionalGallery(rsvIds, item.codigo_unico);
                                           }}
-                                          className="w-20 h-16 rounded bg-orange-500/20 border border-orange-500/50 flex flex-col items-center justify-center hover:bg-orange-500/30 transition-colors"
+                                          className="relative w-20 h-16 rounded overflow-hidden bg-zinc-800 border border-orange-500/50 hover:border-orange-400 transition-colors group"
                                           title={`Ver ${tradSummary.total} artes tradicionales`}
                                         >
-                                          <Printer className="h-5 w-5 text-orange-400 mb-1" />
-                                          <span className="text-orange-400 font-bold text-sm">{tradSummary.total}</span>
+                                          {item.archivo_arte ? (
+                                            <ArteImg src={item.archivo_arte} alt="Arte" className="w-full h-full object-cover opacity-80 group-hover:opacity-100" />
+                                          ) : (
+                                            <div className="w-full h-full flex items-center justify-center">
+                                              <Printer className="h-5 w-5 text-orange-400" />
+                                            </div>
+                                          )}
+                                          <span className="absolute top-0.5 right-0.5 bg-orange-500 text-white font-bold text-[10px] px-1.5 py-0.5 rounded shadow-sm">
+                                            +{tradSummary.total}
+                                          </span>
                                         </button>
                                       ) : item.archivo_arte ? (
                                         <button
@@ -12237,7 +12829,11 @@ function TaskDetailModal({
                                       <p className="text-sm font-medium text-white truncate">{item.codigo_unico}</p>
                                       <p className="text-xs text-zinc-400 truncate">{item.mueble}</p>
                                       <p className="text-xs text-zinc-500 truncate">
-                                        {isDigital && digitalSummary ? getDigitalSummaryText(digitalSummary) : tradSummary ? `${tradSummary.total} artes` : item.ubicacion}
+                                        {isDigital && digitalSummary
+                                          ? getDigitalSummaryText(digitalSummary)
+                                          : tradSummary
+                                            ? `${tradSummary.total} ${tradSummary.total === 1 ? 'arte' : 'artes'}`
+                                            : item.ubicacion}
                                       </p>
                                       <div className="mt-1 flex items-center gap-2">
                                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${
@@ -12297,12 +12893,22 @@ function TaskDetailModal({
                                         const rsvIds = representativeItem.rsv_id?.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)) || [];
                                         if (rsvIds.length > 0) openTradicionalGallery(rsvIds, representativeItem.codigo_unico);
                                       }}
-                                      className="w-32 h-24 rounded-lg bg-orange-500/20 border border-orange-500/50 flex flex-col items-center justify-center hover:bg-orange-500/30 transition-colors"
+                                      className="relative w-32 h-24 rounded-lg overflow-hidden bg-zinc-800 border border-orange-500/50 hover:border-orange-400 transition-colors group"
                                       title={`Ver ${tradSummary.total} artes tradicionales`}
                                     >
-                                      <Printer className="h-8 w-8 text-orange-400 mb-1" />
-                                      <span className="text-orange-400 font-bold text-lg">{tradSummary.total}</span>
-                                      <span className="text-orange-300 text-[10px]">{tradSummary.total} artes</span>
+                                      {representativeItem.archivo_arte ? (
+                                        <ArteImg src={representativeItem.archivo_arte} alt="Arte" className="w-full h-full object-cover opacity-85 group-hover:opacity-100" />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <Printer className="h-8 w-8 text-orange-400" />
+                                        </div>
+                                      )}
+                                      <span className="absolute top-1 right-1 bg-orange-500 text-white font-bold text-xs px-1.5 py-0.5 rounded shadow-sm">
+                                        +{tradSummary.total}
+                                      </span>
+                                      <span className="absolute bottom-0 inset-x-0 bg-black/70 text-orange-200 text-[10px] py-0.5 text-center">
+                                        {tradSummary.total} artes
+                                      </span>
                                     </button>
                                   ) : representativeItem?.archivo_arte ? (
                                     <button
@@ -12566,7 +13172,7 @@ function OrdenImpresionModal({
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-card border border-border rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-card border border-border rounded-xl w-full max-w-lg max-h-[90dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="px-5 py-4 border-b border-border bg-gradient-to-r from-blue-500/10 to-purple-500/10">
           <div className="flex items-center justify-between">
@@ -12879,6 +13485,14 @@ function CreateTaskModal({
   });
   // Campos específicos para Impresión - impresiones por cada arte (agrupado por archivo)
   const [impresiones, setImpresiones] = useState<Record<string, number>>({});
+
+  // #243 Guía PDF del proveedor para "Cliente imprime". El cliente ya mandó
+  // imprimir con su propio proveedor y nos entrega la guía/remisión; la
+  // adjuntamos al crear la tarea para que Operaciones tenga el documento al
+  // recibir fisicamente los artes.
+  const [guiaPdfFile, setGuiaPdfFile] = useState<File | null>(null);
+  const [guiaPdfUrl, setGuiaPdfUrl] = useState<string | null>(null);
+  const [guiaPdfUploading, setGuiaPdfUploading] = useState(false);
 
   // Campos específicos para Programación - indicaciones por cada archivo digital
   const [programacionIndicaciones, setProgramacionIndicaciones] = useState<Record<string, string>>({});
@@ -13332,10 +13946,14 @@ function CreateTaskModal({
       // Total y desglose por arte (la tabla del modal de Recepción se arma desde evidencia.impresiones)
       const totalImpresiones = Object.values(impresiones).reduce((sum, val) => sum + (val || 0), 0);
       (payload as any).num_impresiones = totalImpresiones;
-      (payload as any).evidencia = JSON.stringify({
+      // #243 Guia PDF del proveedor va en evidencia.guia_pdf; el modal de
+      // Recepción ya la lee desde ahí (ver guiaPdfUrl memo arriba).
+      const evidenciaCI: Record<string, unknown> = {
         tipo: 'recepcion_normal',
         impresiones,
-      });
+      };
+      if (guiaPdfUrl) evidenciaCI.guia_pdf = guiaPdfUrl;
+      (payload as any).evidencia = JSON.stringify(evidenciaCI);
       // Asignados (área Operaciones)
       if (selectedAsignadosImpresion.length > 0) {
         (payload as any).id_asignado = selectedAsignadosImpresion.map(u => u.id).join(',');
@@ -13462,6 +14080,10 @@ function CreateTaskModal({
     setFechaCreacion(new Date().toISOString().slice(0, 16));
     // Reset campos de Impresión
     setImpresiones({});
+    // #243 Reset guía PDF de Cliente imprime
+    setGuiaPdfFile(null);
+    setGuiaPdfUrl(null);
+    setGuiaPdfUploading(false);
     // Reset campos de Impresión (múltiples asignados)
     setSelectedAsignadosImpresion([]);
     setAsignadoSearchImpresion('');
@@ -13496,7 +14118,7 @@ function CreateTaskModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={handleClose} />
-      <div className="relative bg-card border border-border rounded-xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto">
+      <div className="relative bg-card border border-border rounded-xl w-full max-w-lg mx-4 p-6 max-h-[90dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold flex items-center gap-2">
             <Plus className="h-5 w-5 text-purple-400" />
@@ -14255,6 +14877,74 @@ function CreateTaskModal({
                         ))}
                       </select>
                     )}
+                  </div>
+                )}
+
+                {/* #243 Guía PDF del proveedor (solo Cliente imprime). El
+                    cliente ya mando imprimir y nos pasa la guia/remision; se
+                    sube ahora y queda en evidencia.guia_pdf para que
+                    Operaciones la vea al recibir fisicamente. */}
+                {tipo === 'Cliente imprime' && (
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">Guía del proveedor (PDF, opcional)</label>
+                    <div className="flex items-center gap-2">
+                      <label className={`inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer ${isDark ? 'bg-zinc-800 border-border text-zinc-200 hover:bg-zinc-700' : 'bg-white border-border text-gray-700 hover:bg-gray-50'} ${guiaPdfUploading || isSubmitting ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                        {guiaPdfUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        {guiaPdfUploading ? 'Subiendo...' : guiaPdfUrl ? 'Cambiar PDF' : 'Subir PDF'}
+                        <input
+                          type="file"
+                          accept="application/pdf,.pdf"
+                          className="hidden"
+                          disabled={guiaPdfUploading || isSubmitting}
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!f) return;
+                            setGuiaPdfUploading(true);
+                            try {
+                              const r = await campanasService.uploadTestigoFile(f);
+                              setGuiaPdfFile(f);
+                              setGuiaPdfUrl(r.url);
+                            } catch (err) {
+                              console.error('Error al subir guia PDF:', err);
+                              let msg = 'No se pudo subir el PDF';
+                              if (err && typeof err === 'object') {
+                                const anyErr = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+                                msg = anyErr.response?.data?.error
+                                  || anyErr.response?.data?.message
+                                  || anyErr.message
+                                  || msg;
+                              } else if (err instanceof Error) {
+                                msg = err.message;
+                              }
+                              alert(msg);
+                              setGuiaPdfFile(null);
+                              setGuiaPdfUrl(null);
+                            } finally {
+                              setGuiaPdfUploading(false);
+                            }
+                          }}
+                        />
+                      </label>
+                      {guiaPdfUrl && (
+                        <>
+                          <a href={guiaPdfUrl} target="_blank" rel="noopener noreferrer" className="text-xs underline truncate max-w-[220px] text-purple-400 hover:text-purple-300" title={guiaPdfFile?.name || guiaPdfUrl}>
+                            {guiaPdfFile?.name || 'guía subida'}
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => { setGuiaPdfFile(null); setGuiaPdfUrl(null); }}
+                            className="p-1 text-zinc-500 hover:text-red-400 rounded"
+                            title="Quitar PDF"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Operaciones verá esta guía en la tarea de Recepción al recibir físicamente los artes.
+                    </p>
                   </div>
                 )}
 
@@ -15224,7 +15914,10 @@ export function TareaSeguimientoPage() {
   const { data: artesExistentes = [], isLoading: isLoadingArtes } = useQuery({
     queryKey: ['campana-artes-existentes', campanaId],
     queryFn: () => campanasService.getArtesExistentes(campanaId),
-    enabled: campanaId > 0 && (isUploadArtModalOpen || isTaskDetailModalOpen),
+    // Akary 2026-11-13: tambien habilitar en el tab "atender" (Revisar y Aprobar),
+    // porque la logica del boton Aprobar directo necesita saber que artes vienen
+    // de una Revision Anticipada ya aprobada para permitir saltarse la Revision.
+    enabled: campanaId > 0 && (isUploadArtModalOpen || isTaskDetailModalOpen || activeMainTab === 'atender'),
     placeholderData: (prev) => prev,
   });
 
@@ -15688,6 +16381,7 @@ export function TareaSeguimientoPage() {
       archivo_arte: item.archivo || undefined,
       artes_multiples: item.artes_multiples || undefined,
       arte_aprobado: item.arte_aprobado || '',
+      artes_detalle: item.artes_detalle || null,
       imu: item.IMU || '',
       articulo: item.articulo || '',
     };
@@ -15944,6 +16638,9 @@ export function TareaSeguimientoPage() {
 
     // Mapa de compositeId/inventoryId -> rsv_ids para puente impresion↔recepcion
     const compositeToRsvIds = new Map<string, string[]>();
+    // Mapa inverso rsv_id -> compositeId para que normalizeIds pueda
+    // propagar la forma composite cuando parte de un rsv_id puro.
+    const rsvIdToComposite = new Map<string, string>();
     inventarioArteAPI.forEach(item => {
       const invId = String(item.id);
       const compositeId = item.grupo ? `${item.id}_${item.grupo}` : invId;
@@ -15954,6 +16651,9 @@ export function TareaSeguimientoPage() {
         if (!compositeToRsvIds.has(invId)) {
           compositeToRsvIds.set(invId, rsvIds);
         }
+        rsvIds.forEach(r => {
+          if (!rsvIdToComposite.has(r)) rsvIdToComposite.set(r, compositeId);
+        });
       }
     });
 
@@ -15971,6 +16671,17 @@ export function TareaSeguimientoPage() {
         const inventoryId = rsvIdToInventoryId.get(id);
         if (inventoryId) {
           normalizedIds.add(inventoryId);
+        }
+        // Si es un rsv_id, agregar también el compositeId correspondiente.
+        // Sin esto, la Recepción Faltantes huerfana solo escribe rsv_id puro
+        // + invId en reservaToTareaMap, pero el loop normal de la Recepción
+        // Atendida ya escribió el composite ("15768_19257") como 'recibido'.
+        // Como el matching del inventario prioriza compositeId > invId > rsvId,
+        // los items faltantes nunca pasaban a 'pendiente_recepcion' aunque el
+        // badge sí los contara via num_impresiones. Bug reportado Jos 2026-10-05.
+        const composite = rsvIdToComposite.get(id);
+        if (composite) {
+          normalizedIds.add(composite);
         }
         // Si es un composite/inventory ID, agregar sus rsv_ids correspondientes
         const rsvIds = compositeToRsvIds.get(id);
@@ -17495,8 +18206,10 @@ export function TareaSeguimientoPage() {
         }
       }
     } else if (allPendiente) {
-      // Todos pendientes de revisión: solo mostrar Revisión de artes
-      availableTipos = ['Revisión de artes'];
+      // Todos pendientes de revisión: Revisión de artes (default) + Cliente imprime
+      // como atajo opcional cuando el cliente imprime y entrega el arte directamente
+      // (va directo a Recepción sin pasar por revisión interna). Jos 2026-10-28.
+      availableTipos = ['Revisión de artes', 'Cliente imprime'];
       initialTipo = 'Revisión de artes';
     } else {
       // Mezcla: mostrar tipos según IMU y tipo de inventario (pero excluir Impresión si ya fue recibido)
@@ -17710,7 +18423,17 @@ export function TareaSeguimientoPage() {
       }
     } catch (error) {
       console.error('Error al crear tarea:', error);
-      setCreateTaskError(error instanceof Error ? error.message : 'Error al crear tarea');
+      let msg = 'Error al crear tarea';
+      if (error && typeof error === 'object') {
+        const anyErr = error as { response?: { data?: { error?: string; message?: string } }; message?: string };
+        msg = anyErr.response?.data?.error
+          || anyErr.response?.data?.message
+          || anyErr.message
+          || msg;
+      } else if (error instanceof Error) {
+        msg = error.message;
+      }
+      setCreateTaskError(msg);
     }
   }, [selectedInventoryItems, createTareaMutation, updateInstaladoMutation, campanaId, queryClient, getSelectedImpresionFlowConflicts, setActiveMainTab]);
 
@@ -17871,7 +18594,7 @@ export function TareaSeguimientoPage() {
   }, [campanaId]);
 
   // Handler para asignar arte digital desde biblioteca (wizard con notas)
-  const handleUploadDigitalFromLibrary = useCallback(async (data: { archivos: { archivo: string; nota: string; spot: number; tipo: string; nombre_arte?: string | null; estatus_operaciones?: string | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => {
+  const handleUploadDigitalFromLibrary = useCallback(async (data: { archivos: { archivo: string; nota: string; spot: number; tipo: string; nombre_arte?: string | null; estatus_operaciones?: string | null; cantidad_inicial?: number | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => {
     const reservaIds = selectedInventoryItems.flatMap(item =>
       item.rsv_id.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id))
     );
@@ -17899,6 +18622,9 @@ export function TareaSeguimientoPage() {
         nota: a.nota,
         nombre_arte: a.nombre_arte ?? null,
         estatus_operaciones: a.estatus_operaciones ?? null,
+        // Almacen Artes: cantidad inicial opcional capturada en el modal de
+        // carga (feedback Jos 2026-11-05). #1219184885843086
+        cantidad_inicial: a.cantidad_inicial ?? null,
       }));
 
       await campanasService.assignArteDigital(campanaId, reservaIds, filesWithMeta, data.markInstalado === true, data.instalacionMode, data.operacionesAsignados);
@@ -17920,7 +18646,7 @@ export function TareaSeguimientoPage() {
   }, [selectedInventoryItems, campanaId, queryClient]);
 
   // Handler para subir artes tradicionales (múltiples con notas)
-  const handleUploadTradicionalArt = useCallback(async (data: { archivos: { archivo: string; nota: string; spot: number; nombre_arte?: string | null; estatus_operaciones?: string | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => {
+  const handleUploadTradicionalArt = useCallback(async (data: { archivos: { archivo: string; nota: string; spot: number; nombre_arte?: string | null; estatus_operaciones?: string | null; cantidad_inicial?: number | null }[]; inventoryIds: string[]; markInstalado?: boolean; instalacionMode?: 'instalado' | 'rotacion'; operacionesAsignados?: { ids: number[]; nombres: string[] } | null }) => {
     const reservaIds = selectedInventoryItems.flatMap(item =>
       item.rsv_id.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id))
     );
@@ -18469,16 +19195,21 @@ export function TareaSeguimientoPage() {
             <span className="text-sm font-medium">{campana.nombre}</span>
             <Badge variant="outline" className="text-[10px]">#{campana.id}</Badge>
           </div>
-          {puedePruebaColor && campana.propuesta_id && (
-            <button
-              onClick={() => setPruebaColorOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/20 border border-fuchsia-500/30 transition-colors"
-              title="Consultar o solicitar prueba de color para un circuito"
-            >
-              <Paintbrush className="h-3.5 w-3.5" />
-              Prueba de color
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {/* Actualizar: refetch de tareas, inventario con arte, artes e
+                imágenes de la campaña sin recargar la página. */}
+            <RefreshButton isDark={isDark} variant="compact" />
+            {puedePruebaColor && campana.propuesta_id && (
+              <button
+                onClick={() => setPruebaColorOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/20 border border-fuchsia-500/30 transition-colors"
+                title="Consultar o solicitar prueba de color para un circuito"
+              >
+                <Paintbrush className="h-3.5 w-3.5" />
+                Prueba de color
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Re-impresión success banner */}
@@ -18973,40 +19704,93 @@ export function TareaSeguimientoPage() {
                       </>
                     )}
                   </button>
-                  {/* Boton Aprobar oculto en sub-tabs Sin Revisar, En Revisión
-                      y Aprobado: el flujo correcto pasa por una tarea de Revisión
-                      de artes; el atajo directo solo aplica al sub-tab Rechazado
-                      (re-aprobar algo previamente rechazado). */}
+                  {/* Boton "Aprobar" directo (sin crear tarea de Revisión).
+                      Habilitado en sub-tabs Sin Revisar, En Revisión y Rechazado
+                      (los estados pre-aprobación). Jos 2026-10-28: para evitar que
+                      se use como atajo indiscriminado, solo se activa cuando TODOS
+                      los artes seleccionados tienen Estatus Operaciones = "En Uso".
+                      Akary 2026-11-13: tambien se activa cuando TODOS los artes de
+                      los items seleccionados provienen de una Revision Anticipada
+                      ya aprobada (biblioteca de artes RA), para saltarse la tarea
+                      de Revision cuando el arte ya fue validado upstream. */}
                   {permissions.canApproveArteSinRevisar
                     && activeEstadoArteTab !== 'aprobado'
-                    && activeEstadoArteTab !== 'sin_revisar'
-                    && activeEstadoArteTab !== 'en_revision'
                     && (() => {
-                    const itemsSinRevisar = selectedInventoryItems.filter(item => item.estado_arte === 'sin_revisar');
-                    const hasSinRevisar = itemsSinRevisar.length > 0;
+                    const itemsPreAprobacion = selectedInventoryItems.filter(item =>
+                      item.estado_arte === 'sin_revisar' || item.estado_arte === 'en_revision' || item.estado_arte === 'rechazado'
+                    );
+                    const hasItems = itemsPreAprobacion.length > 0;
+                    // Verifica que TODOS los artes del item tengan estatus_operaciones = "En Uso".
+                    // Parsea artes_detalle (JSON) poblado por getInventarioConArte para tradicionales.
+                    // Items digitales (sin artes_detalle) o items sin arte asignado no pueden
+                    // aprobarse directo por este botón, siguen el flujo normal de Revisión.
+                    const itemAllEnUso = (item: InventoryRow): boolean => {
+                      if (!item.artes_detalle) return false;
+                      try {
+                        const parsed = JSON.parse(item.artes_detalle);
+                        if (!Array.isArray(parsed) || parsed.length === 0) return false;
+                        return parsed.every((art: { estatus_operaciones?: string | null }) =>
+                          ((art?.estatus_operaciones || '') + '').trim() === 'En Uso'
+                        );
+                      } catch {
+                        return false;
+                      }
+                    };
+                    const allEnUso = hasItems && itemsPreAprobacion.every(itemAllEnUso);
+                    // Akary 2026-11-13: set de URLs de artes que estan en la biblioteca
+                    // como RA aprobada. Un item califica para skip-revision si TODOS
+                    // sus artes (artes_detalle) tienen archivo en este set.
+                    const raAprobadaUrls = new Set(
+                      (artesExistentes || [])
+                        .filter(a => a.origen_prueba_color && a.prueba_color_tipo === 'revision_anticipada')
+                        .map(a => (a.url || '').trim())
+                        .filter(Boolean)
+                    );
+                    const itemAllFromRAAprobada = (item: InventoryRow): boolean => {
+                      if (!item.artes_detalle || raAprobadaUrls.size === 0) return false;
+                      try {
+                        const parsed = JSON.parse(item.artes_detalle);
+                        if (!Array.isArray(parsed) || parsed.length === 0) return false;
+                        return parsed.every((art: { archivo?: string | null }) =>
+                          raAprobadaUrls.has(((art?.archivo || '') + '').trim())
+                        );
+                      } catch {
+                        return false;
+                      }
+                    };
+                    const allFromRA = hasItems && itemsPreAprobacion.every(itemAllFromRAAprobada);
+                    const canApprove = hasItems && (allEnUso || allFromRA);
+                    const disabledReason = !hasItems
+                      ? 'Selecciona artes pendientes de aprobación'
+                      : (!allEnUso && !allFromRA)
+                        ? 'Solo se puede aprobar directo si todos los artes seleccionados tienen Estatus Operaciones = "En Uso" o provienen de una Revisión Anticipada aprobada'
+                        : '';
                     return (
                       <button
                         onClick={() => {
-                          const reservaIds = itemsSinRevisar.flatMap(item =>
+                          const reservaIds = itemsPreAprobacion.flatMap(item =>
                             item.rsv_id.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id))
                           );
                           if (reservaIds.length > 0) {
+                            const comentario = allEnUso
+                              ? 'Aprobación directa (Estatus Operaciones: En Uso)'
+                              : 'Aprobación directa (arte proviene de Revisión Anticipada aprobada)';
                             updateArteStatusMutation.mutate({
                               reservaIds,
                               status: 'Aprobado',
-                              comentario: 'Aprobación directa desde Revisar y Aprobar',
+                              comentario,
                             });
                           }
                         }}
-                        disabled={!hasSinRevisar || updateArteStatusMutation.isPending}
+                        disabled={!canApprove || updateArteStatusMutation.isPending}
                         className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                          hasSinRevisar && !updateArteStatusMutation.isPending
+                          canApprove && !updateArteStatusMutation.isPending
                             ? 'bg-green-600 hover:bg-green-700 text-white'
                             : isDark ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                         }`}
-                        title={hasSinRevisar
-                          ? `Aprobar ${itemsSinRevisar.length} arte(s) en estado "Sin revisar"`
-                          : 'Selecciona artes en estado "Sin revisar" para aprobar'}
+                        title={canApprove
+                          ? `Aprobar ${itemsPreAprobacion.length} arte(s) directamente`
+                          : disabledReason}
                       >
                         {updateArteStatusMutation.isPending ? (
                           <>
@@ -19324,11 +20108,21 @@ export function TareaSeguimientoPage() {
                     .reduce((sum, t) => sum + getNumImpresiones(t), 0);
                   const recibidoTotal = recibido + huerfanasRecibidas;
 
+                  // [Fix #263] El badge "Recibido" sumaba num_impresiones de
+                  // tareas, que duplica cuando hay artes múltiples por
+                  // ubicación (Jos: 25 impresiones × 2 artes = 50 reales, el
+                  // badge mostraba 100). Fuente de verdad real: items del tab
+                  // ya desduplicados por (reserva × arte) en
+                  // inventoryImpresionesData.
+                  const recibidoItemsCount = inventoryImpresionesData.filter(i => i.estado_impresion === 'recibido').length;
+                  // Si inventory no tiene items (fallback edge) usamos el
+                  // cálculo viejo para no mostrar 0 incorrectamente.
+                  const recibidoBadge = recibidoItemsCount > 0 ? recibidoItemsCount : recibidoTotal;
                   return [
                     { key: 'orden_impresion' as const, label: 'Orden Impresión', count: inventoryOrdenImpresionData.length },
                     { key: 'en_impresion' as const, label: 'En Impresion', count: activeImpresiones },
                     { key: 'pendiente_recepcion' as const, label: 'Pend. Recepcion', count: pendingRecepcion },
-                    { key: 'recibido' as const, label: 'Recibido', count: recibidoTotal },
+                    { key: 'recibido' as const, label: 'Recibido', count: recibidoBadge },
                   ];
                 })().map(tab => (
                   <button
@@ -19732,7 +20526,6 @@ export function TareaSeguimientoPage() {
                           return s + (ev.totalFaltantes || 0);
                         } catch { return s; }
                       }, 0);
-                    console.log('[RECIBIDO DEBUG] tareaId:', grupo.tarea_id, 'totalImpOrig:', totalImpresionesRecibido, 'faltantesTasks:', faltantesTasks.length, 'totalFaltantesPending:', totalFaltantesPending, 'faltantesDetail:', JSON.stringify(faltantesTasks.map(t => ({ id: t.id, est: t.estatus, num: t.num_impresiones, ev: (() => { try { const e = JSON.parse(t.evidencia || '{}'); return { tipo: e.tipo, totalF: e.totalFaltantes }; } catch { return 'err'; } })() }))));
                     if (totalFaltantesPending > 0 && totalImpresionesRecibido > totalFaltantesPending) {
                       totalImpresionesRecibido = totalImpresionesRecibido - totalFaltantesPending;
                     }
@@ -19785,8 +20578,13 @@ export function TareaSeguimientoPage() {
                             <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30 text-xs">
                               Recibido
                             </Badge>
+                            {/* Badge consistente con el conteo del tab Recibido:
+                                mostrar siempre items (reserva x arte) del grupo. Antes mostraba
+                                num_impresiones del back (fijo al crear), que en parciales
+                                quedaba desalineado con las ubicaciones reales (Jos 2026-10-19). */}
                             <Badge className={isDark ? "bg-purple-500/20 text-purple-300 border-purple-500/30 text-xs" : "bg-purple-100 text-purple-700 border-purple-300 text-xs"}>
-                              {totalImpresionesRecibido > 0 ? `${totalImpresionesRecibido} impresiones` : `${grupo.items.length} items`}
+                              {`${grupo.items.length} ${grupo.items.length === 1 ? 'item' : 'items'}`}
+                              {totalImpresionesRecibido > 0 && grupo.items.length !== totalImpresionesRecibido ? ` · ${totalImpresionesRecibido} impr.` : ''}
                             </Badge>
                             {permissions.canOpenTasks && (
                               <button
@@ -19844,6 +20642,37 @@ export function TareaSeguimientoPage() {
                               acc[key].items.push(item);
                               return acc;
                             }, {} as Record<string, { items: typeof grupo.items; archivo: string | undefined }>);
+
+                            // Mismo fallback que en Pend. Recepcion: cuando el inventario fisico
+                            // comparte un solo archivo_arte entre varios artes (rotacion), usamos
+                            // impresionesMapRecibido (derivado de evidencia.impresiones -
+                            // faltantes) para rendear una card por cada arte en vez de solo una.
+                            // Feedback Jos 2026-10-06 campania 81475.
+                            const primerItemR = grupo.items[0];
+                            const mapKeys = Object.keys(impresionesMapRecibido);
+                            if (mapKeys.length > Object.keys(artesAgrupados).length) {
+                              return mapKeys.map((arteUrl, idx) => (
+                                <div key={`imr-${idx}-${arteUrl || 'sin_arte'}`} className="flex items-center gap-3 p-2 border-b border-border/30 last:border-0">
+                                  <div className="w-12 h-10 bg-zinc-800 rounded overflow-hidden flex-shrink-0">
+                                    {arteUrl ? (
+                                      <ArteImg src={arteUrl} alt="Arte" className="w-full h-full object-cover" />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center">
+                                        <Image className="h-4 w-4 text-zinc-600" />
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-xs text-white">{impresionesMapRecibido[arteUrl] || 0} impresiones</p>
+                                    {primerItemR && (
+                                      <p className="text-[10px] text-zinc-500 truncate">
+                                        {primerItemR.mueble} - {primerItemR.ciudad}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              ));
+                            }
 
                             return Object.entries(artesAgrupados).map(([arteKey, arteGrupo]) => {
                               const arteSelected = arteGrupo.items.every(item => selectedInventoryIds.has(item.id));
@@ -20029,6 +20858,48 @@ export function TareaSeguimientoPage() {
                             acc[key].items.push(item);
                             return acc;
                           }, {} as Record<string, { items: typeof grupo.items; archivo: string | undefined }>);
+
+                          // Para tareas Recepción Faltantes con rotación de artes sobre
+                          // los MISMOS espacios físicos (ej. 50 inv × 2 artes = 100 impresiones):
+                          // el inventario físico solo guarda UN archivo_arte, pero la tarea
+                          // tiene varios artes en evidencia.faltantesPorArte. Si agrupamos solo
+                          // por item.archivo_arte perderíamos los demás artes. Preferimos
+                          // faltantesPorArte cuando contiene más artes que el inventario.
+                          // Feedback Jos 2026-10-06 (campania 81475): 2 artes × 25 faltantes
+                          // mostraba solo un card en Pend. Recepcion.
+                          const primerItem = grupo.items[0];
+                          let faltantesPorArteEv: { arte: string; cantidad: number }[] | null = null;
+                          if (tarea?.evidencia) {
+                            try {
+                              const ev = JSON.parse(tarea.evidencia);
+                              if (ev?.tipo === 'recepcion_faltantes' && Array.isArray(ev.faltantesPorArte) && ev.faltantesPorArte.length > 0) {
+                                faltantesPorArteEv = ev.faltantesPorArte;
+                              }
+                            } catch {}
+                          }
+                          if (faltantesPorArteEv && faltantesPorArteEv.length > Object.keys(artesAgrupados).length) {
+                            return faltantesPorArteEv.map((f, idx) => (
+                              <div key={`fpa-${idx}-${f.arte || 'sin_arte'}`} className="flex items-center gap-3 p-2 border-b border-border/30 last:border-0">
+                                <div className="w-12 h-10 bg-zinc-800 rounded overflow-hidden flex-shrink-0">
+                                  {f.arte ? (
+                                    <ArteImg src={f.arte} alt="Arte" className="w-full h-full object-cover" />
+                                  ) : (
+                                    <div className="w-full h-full flex items-center justify-center">
+                                      <Image className="h-4 w-4 text-zinc-600" />
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs text-white">{f.cantidad} impresiones</p>
+                                  {primerItem && (
+                                    <p className="text-[10px] text-zinc-500 truncate">
+                                      {primerItem.mueble} - {primerItem.ciudad}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ));
+                          }
 
                           return Object.entries(artesAgrupados).map(([arteKey, arteGrupo]) => {
                             // Buscar impresiones para este arte
@@ -20469,8 +21340,8 @@ export function TareaSeguimientoPage() {
                                             </div>
                                           </button>
                                           {level3Expanded && (
-                                            <div className="bg-card/50 ml-4">
-                                              <table className="w-full text-xs">
+                                            <div className="bg-card/50 ml-4 overflow-x-auto scrollbar-purple">
+                                              <table className="w-full text-xs min-w-[640px]">
                                                 <thead className="bg-purple-900/20">
                                                   <tr className="border-b border-border text-left">
                                                     <th className="p-1.5 w-6"></th>
@@ -20508,8 +21379,8 @@ export function TareaSeguimientoPage() {
               </div>
             ) : activeMainTab === 'atender' && activeGroupingsAtender.length === 0 ? (
               // Tabla plana de Revisar y Aprobar (sin agrupaciones)
-              <div className="bg-card/50">
-                <table className="w-full text-xs">
+              <div className="bg-card/50 overflow-x-auto scrollbar-purple">
+                <table className="w-full text-xs min-w-[640px]">
                   <thead className="sticky top-0 bg-purple-900/20 z-10">
                     <tr className="border-b border-border text-left">
                       <th className="p-2 w-8">
@@ -20704,8 +21575,8 @@ export function TareaSeguimientoPage() {
                                             <span className="text-[10px] text-zinc-500">{items.length}</span>
                                           </button>
                                           {level3Expanded && (
-                                            <div className="bg-zinc-900/20">
-                                              <table className="w-full text-xs">
+                                            <div className="bg-zinc-900/20 overflow-x-auto scrollbar-purple">
+                                              <table className="w-full text-xs min-w-[640px]">
                                                 <thead className="bg-purple-900/20">
                                                   <tr className="border-b border-border text-left">
                                                     <th className="p-2 w-8">
@@ -20763,8 +21634,8 @@ export function TareaSeguimientoPage() {
               </div>
             ) : activeMainTab === 'programacion' && activeGroupingsProgramacion.length === 0 ? (
               // Tabla plana de Programación (sin agrupaciones)
-              <div className="bg-card/50">
-                <table className="w-full text-xs">
+              <div className="bg-card/50 overflow-x-auto scrollbar-purple">
+                <table className="w-full text-xs min-w-[640px]">
                   <thead className="sticky top-0 bg-purple-900/20 z-10">
                     <tr className="border-b border-border text-left">
                       <th className="p-2 w-8">
@@ -21159,8 +22030,8 @@ export function TareaSeguimientoPage() {
                                             </div>
                                           </button>
                                           {level3Expanded && (
-                                            <div className="bg-card/50 ml-4">
-                                              <table className="w-full text-xs">
+                                            <div className="bg-card/50 ml-4 overflow-x-auto scrollbar-purple">
+                                              <table className="w-full text-xs min-w-[640px]">
                                                 <thead className="bg-purple-900/20">
                                                   <tr className="border-b border-border text-left">
                                                     <th className="p-2 w-8"></th>
@@ -21198,8 +22069,8 @@ export function TareaSeguimientoPage() {
               </div>
             ) : activeMainTab === 'testigo' && activeGroupingsTestigo.length === 0 ? (
               // Tabla plana de Validar Instalación (sin agrupaciones)
-              <div className="bg-card/50">
-                <table className="w-full text-xs">
+              <div className="bg-card/50 overflow-x-auto scrollbar-purple">
+                <table className="w-full text-xs min-w-[640px]">
                   <thead className="sticky top-0 bg-purple-900/20 z-10">
                     <tr className="border-b border-border text-left">
                       <th className="p-2 w-8">
@@ -21377,7 +22248,7 @@ export function TareaSeguimientoPage() {
                       icon={ClipboardList}
                     />
                   ) : (
-                    <table className="w-full text-xs">
+                    <table className="w-full text-xs min-w-[640px]">
                       <thead className="sticky top-0 bg-card z-10">
                         <tr className="border-b border-border text-left">
                           <th className="p-2 font-medium text-purple-300">Tipo</th>
@@ -21455,7 +22326,7 @@ export function TareaSeguimientoPage() {
                       icon={CheckCircle2}
                     />
                   ) : (
-                    <table className="w-full text-xs">
+                    <table className="w-full text-xs min-w-[640px]">
                       <thead className="sticky top-0 bg-card z-10">
                         <tr className="border-b border-border text-left">
                           <th className="p-2 font-medium text-purple-300">ID</th>

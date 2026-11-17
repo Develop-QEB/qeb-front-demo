@@ -3,9 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Search, Download, Filter, ChevronDown, ChevronRight, X, SlidersHorizontal,
-  ArrowUpDown, Calendar, DollarSign, FileText, Building2, MessageSquare,
-  CheckCircle, Users, Send, Loader2, User, Share2, MapPinned, Wrench, Clock, Paintbrush,
-  Pencil, Trash2, Package, MapPin, Eye, Plus, AlertTriangle, List, LayoutGrid,
+  Columns3, Calendar, DollarSign, FileText, Building2, MessageSquare,
+  CheckCircle, Users, Send, Loader2, User, Wrench, Clock,
+  Pencil, Trash2, Package, MapPin, Plus, AlertTriangle, List, LayoutGrid,
   Layers, Check, XCircle
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
@@ -32,60 +32,42 @@ import { getPermissions } from '../../lib/permissions';
 import { useSocketEquipos, useSocketPropuestas } from '../../hooks/useSocket';
 import { HistorialFilterPopover, type HistorialFilterValues } from '../../components/HistorialFilterPopover';
 import { ConfirmModal } from '../../components/ui/confirm-modal';
+import { PropuestaAprobadaInfoModal } from '../../components/PropuestaAprobadaInfoModal';
 import { monthLabelShort } from '../../lib/periodos';
+import {
+  getStatusColor, STATUS_OPTIONS, COMPLETITUD_STATUS, esPropuestaIncompleta, IncompletaBadge,
+  esPropuestaBloqueada, puedeAbrirPropuesta,
+} from './propuestaEstatus';
+import PropuestasTableroView, {
+  PROPUESTAS_COLUMNAS, PROPUESTAS_COLUMNAS_KEYS,
+} from './PropuestasTableroView';
+import {
+  ordenarTablero, ordenCampo, ORDEN_RAPIDO_DEFAULT, ORDEN_RAPIDO_TABLA_DEFAULT, type OrdenRapido,
+  construirOpcionesCambio, fechaUltimoCambio,
+} from '../../lib/tableroVistas';
+import { AUTORIZACION_LABELS, evalAutorizacionAvanzado, splitStatusSeleccion, estatusValorIncluye } from '../../lib/autorizacionFiltro';
+import { MultiSelectChip } from '../../components/MultiSelectChip';
+import { RefreshButton } from '../../components/RefreshButton';
+import { TableroVistasControls } from '../../components/tablero/TableroVistasControls';
+import { OrdenRapidoMenu } from '../../components/tablero/OrdenRapidoMenu';
+import { VistasGuardadasMenu } from '../../components/tablero/VistasGuardadasMenu';
+import { leerCondiciones, leerNumeroOpcional, leerObjetoStrings, leerString, leerStrings, type FiltrosDatos } from '../../lib/filtrosGuardados';
+import { VistaSelector, type VistaOpcion } from '../../components/tablero/VistaSelector';
+import { loadVistaFijaModulo, saveVistaFijaModulo } from '../../lib/vistaFija';
+import { PropuestaAcciones } from './PropuestaAcciones';
+
+type VistaPropuestas = 'tabla' | 'versionario' | 'tablero';
+const VISTAS_PROPUESTAS: readonly VistaOpcion<VistaPropuestas>[] = [
+  { key: 'tabla', label: 'Vista Tabla', icon: List },
+  { key: 'versionario', label: 'Desglose', icon: LayoutGrid },
+  { key: 'tablero', label: 'Tablero', icon: Columns3 },
+];
+const VISTAS_PROPUESTAS_KEYS = VISTAS_PROPUESTAS.map(v => v.key);
 
 function getMonthShort(dateStr: string): string {
   return monthLabelShort(dateStr) || '-';
 }
 
-// Status badge colors — dos mapas estáticos. El dark-mode toggle sigue
-// funcionando porque al cambiar `isDark` el componente re-renderiza y
-// `getStatusColor` selecciona el mapa correcto. Antes se construía un objeto
-// completo por cada fila renderizada.
-type StatusColor = { bg: string; text: string; border: string };
-
-const STATUS_COLORS_DARK: Record<string, StatusColor> = {
-  'Abierto': { bg: 'bg-blue-500/20', text: 'text-blue-300', border: 'border-blue-500/30' },
-  'Ajuste Cto-Cliente': { bg: 'bg-orange-500/20', text: 'text-orange-300', border: 'border-orange-500/30' },
-  'Ajuste Inventario': { bg: 'bg-rose-500/20', text: 'text-rose-300', border: 'border-rose-500/30' },
-  'Ajuste Comercial': { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' },
-  'Pase a ventas': { bg: 'bg-emerald-500/20', text: 'text-emerald-300', border: 'border-emerald-500/30' },
-  'Atendido': { bg: 'bg-cyan-500/20', text: 'text-cyan-300', border: 'border-cyan-500/30' },
-  'Liberada': { bg: 'bg-teal-500/20', text: 'text-teal-300', border: 'border-teal-500/30' },
-  // Legacy (datos históricos)
-  'Pendiente': { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' },
-  'Por aprobar': { bg: 'bg-amber-500/20', text: 'text-amber-300', border: 'border-amber-500/30' },
-  'Activa': { bg: 'bg-green-500/20', text: 'text-green-300', border: 'border-green-500/30' },
-  'Aprobada': { bg: 'bg-green-500/20', text: 'text-green-300', border: 'border-green-500/30' },
-  'Rechazada': { bg: 'bg-red-500/20', text: 'text-red-300', border: 'border-red-500/30' },
-  'Descartada': { bg: 'bg-zinc-500/20', text: 'text-zinc-400', border: 'border-zinc-500/30' },
-};
-
-const STATUS_COLORS_LIGHT: Record<string, StatusColor> = {
-  'Abierto': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-500/30' },
-  'Ajuste Cto-Cliente': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-500/30' },
-  'Ajuste Inventario': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-500/30' },
-  'Ajuste Comercial': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-500/30' },
-  'Pase a ventas': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-500/30' },
-  'Atendido': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-500/30' },
-  'Liberada': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-500/30' },
-  'Pendiente': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-500/30' },
-  'Por aprobar': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-500/30' },
-  'Activa': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-500/30' },
-  'Aprobada': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-500/30' },
-  'Rechazada': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-500/30' },
-  'Descartada': { bg: 'bg-zinc-50', text: 'text-zinc-600', border: 'border-zinc-500/30' },
-};
-
-const DEFAULT_STATUS_COLOR_DARK: StatusColor = { bg: 'bg-violet-500/20', text: 'text-violet-300', border: 'border-violet-500/30' };
-const DEFAULT_STATUS_COLOR_LIGHT: StatusColor = { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-500/30' };
-
-const getStatusColor = (status: string, isDark: boolean): StatusColor => {
-  const map = isDark ? STATUS_COLORS_DARK : STATUS_COLORS_LIGHT;
-  return map[status] || (isDark ? DEFAULT_STATUS_COLOR_DARK : DEFAULT_STATUS_COLOR_LIGHT);
-};
-
-const STATUS_OPTIONS = ['Atendido', 'Abierto', 'Ajuste Cto-Cliente', 'Ajuste Inventario', 'Ajuste Comercial', 'Pase a ventas', 'Liberada', 'Rechazada'];
 
 // Estatus que SOLO puede asignar el sistema, nunca un usuario. 'Liberada' es el
 // registro de que el job de liberación automática (criterio 30 días) quitó las
@@ -178,7 +160,7 @@ function FilterChip({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={handleClose} />
-          <div className={`absolute top-full left-0 mt-1.5 z-50 w-64 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-gray-200 bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+          <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-auto lg:bottom-auto lg:mt-1.5 lg:w-64 lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-hidden z-50 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-gray-200 bg-white'} backdrop-blur-xl shadow-2xl`}>
             <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
               <input
                 type="text"
@@ -265,6 +247,12 @@ function evalCondition<T>(item: T, filter: AdvancedFilterCondition): boolean {
   const fieldValue = (item as Record<string, unknown>)[filter.field];
   const filterValue = filter.value;
   if (!filterValue) return true;
+  // Status = autorización de circuitos ('Aut. Pend. DG', ...): se evalúa
+  // contra el resumen por fila que manda el back (acotado al periodo filtrado).
+  if (filter.field === 'status') {
+    const aut = evalAutorizacionAvanzado((item as Propuesta).autorizacion_resumen, filter.operator, filterValue);
+    if (aut !== null) return aut;
+  }
   if (fieldValue === null || fieldValue === undefined) {
     return filter.operator === '!=' || filter.operator === 'not_contains';
   }
@@ -410,7 +398,7 @@ function PeriodFilterPopover({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className={`absolute top-full left-0 mt-1.5 z-50 w-80 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-gray-200 bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+          <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-auto lg:bottom-auto lg:mt-1.5 lg:w-80 lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-hidden z-50 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900' : 'border-gray-200 bg-white'} backdrop-blur-xl shadow-2xl`}>
             <div className={`p-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
               <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'} flex items-center gap-2`}>
                 <Calendar className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
@@ -643,7 +631,8 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
       // - sufijo "-QR" (Gestión QTO, Querétaro/Celaya sin inventario disponible):
       //   reservar es OPCIONAL — pase a ventas funciona con o sin reservas.
       const articulo = ((cara as any).articulo || '').toUpperCase();
-      if (articulo.startsWith('IM') || articulo.startsWith('ESP') || articulo.startsWith('ES-') || articulo.endsWith('-QR')) return false;
+      // CF-#### (CF + dígitos) = servicio tipo Mantenimiento Ext: sin inventario, como IM.
+      if (articulo.startsWith('IM') || articulo.startsWith('ESP') || articulo.startsWith('ES-') || articulo.endsWith('-QR') || /^CF-?\d/.test(articulo)) return false;
 
       const caraReservas = (reservas as any[]).filter(r => r.solicitud_cara_id === cara.id);
       // Bonificacion is determined by estatus='Bonificado', not by tipo_de_cara
@@ -754,7 +743,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden flex flex-col`}>
+      <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl w-full max-w-2xl max-h-[85dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 overflow-hidden flex flex-col`}>
         {/* Header */}
         <div className={`flex items-center justify-between px-6 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-3">
@@ -823,7 +812,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
             </div>
           )}
           <label className={`block text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-2`}>Cambiar estado a:</label>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             <select
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
@@ -1126,7 +1115,7 @@ function ApproveModal({ isOpen, onClose, propuesta, onSuccess }: ApproveModalPro
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-2 sm:p-4">
-      <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl w-full max-w-xl max-h-[92vh] sm:max-h-[85vh] overflow-hidden flex flex-col`}>
+      <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl w-full max-w-xl max-h-[92dvh] sm:max-h-[85dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 overflow-hidden flex flex-col`}>
         {/* Header */}
         <div className={`flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} bg-gradient-to-r from-emerald-600/20 to-green-600/10`}>
           <div className="flex items-center gap-3 min-w-0">
@@ -1281,7 +1270,6 @@ function ApproveModal({ isOpen, onClose, propuesta, onSuccess }: ApproveModalPro
 // cuando solo cambia algo del padre (typing en search, abrir filtros, etc.).
 // Solo se vuelve a renderizar si cambia el `item`, `isDark`, o algún flag de
 // permisos/rol. Los callbacks llegan como refs estables vía useCallback.
-const ROLES_LOCKED_BY_ABIERTO = ['Asesor Comercial', 'Director Comercial Aeropuerto', 'Asesor Comercial Aeropuerto'];
 
 interface PropuestaRowProps {
   item: Propuesta & any;
@@ -1317,10 +1305,7 @@ const PropuestaRow = React.memo(function PropuestaRow({
   onPruebaColor,
 }: PropuestaRowProps) {
   const statusColor = getStatusColor(item.status, isDark);
-  const isActiva = item.status === 'Activa';
-  const isAprobada = item.status === 'Aprobada';
-  const isLockedByAbierto = ROLES_LOCKED_BY_ABIERTO.includes(userRol) && item.status === 'Abierto';
-  const isLocked = isActiva || isLockedByAbierto || isAprobada;
+  const isLocked = esPropuestaBloqueada(item, userRol);
 
   return (
     <tr key={`prop-${item.id}-${index}`} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-200 hover:bg-gray-50'} transition-colors`}>
@@ -1339,7 +1324,9 @@ const PropuestaRow = React.memo(function PropuestaRow({
                 ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'
                 : item.sap_database === 'TEST'
                   ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200'
-                  : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : item.sap_database === 'UDC'
+                    ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200'
+                    : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
             }`}>{item.sap_database}</span>
           )}
         </div>
@@ -1403,71 +1390,38 @@ const PropuestaRow = React.memo(function PropuestaRow({
         )}
       </td>
       <td className="px-4 py-3">
-        {canEditStatusPerm && !isLocked ? (
-          <button
-            onClick={() => onStatus(item)}
-            className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border} hover:opacity-80 transition-opacity cursor-pointer`}
-          >
-            {item.status}
-          </button>
-        ) : (
-          <span className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
-            {item.status}
-          </span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-1">
-          {canAprobarPerm && (
+        <div className="flex items-center gap-1 flex-wrap">
+          {canEditStatusPerm && !isLocked ? (
             <button
-              onClick={() => onApprove(item)}
-              disabled={item.status !== 'Pase a ventas' || isLocked}
-              className={`p-2 rounded-lg border transition-all ${item.status !== 'Pase a ventas' || isLocked
-                ? isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
-                : isDark ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 border-emerald-500/20 hover:border-emerald-500/40' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 hover:text-emerald-700 border-emerald-200 hover:border-emerald-300'
-                }`}
-              title={isLocked ? 'No disponible en este estatus' : (item.status !== 'Pase a ventas' ? 'Solo disponible con estatus Pase a ventas' : 'Aprobar propuesta')}
+              onClick={() => onStatus(item)}
+              className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border} hover:opacity-80 transition-opacity cursor-pointer`}
             >
-              <CheckCircle className="h-3.5 w-3.5" />
+              {item.status}
             </button>
+          ) : (
+            <span className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
+              {item.status}
+            </span>
           )}
-          <button
-            onClick={() => onAssign(item)}
-            disabled={canAsignarInventarioPerm && (item.status === 'Aprobada' || isLocked)}
-            className={`p-2 rounded-lg border transition-all ${canAsignarInventarioPerm && (item.status === 'Aprobada' || isLocked)
-              ? isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
-              : isDark ? 'bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 hover:text-fuchsia-300 border-fuchsia-500/20 hover:border-fuchsia-500/40' : 'bg-fuchsia-50 text-fuchsia-600 hover:bg-fuchsia-100 hover:text-fuchsia-700 border-fuchsia-200 hover:border-fuchsia-300'
-              }`}
-            title={canAsignarInventarioPerm ? (isLocked ? 'No disponible en este estatus' : (item.status === 'Aprobada' ? 'No disponible para propuestas aprobadas' : (item.status === 'Pase a ventas' ? 'Ver Inventario (solo lectura)' : 'Asignar a Inventario'))) : 'Ver Propuesta'}
-          >
-            {canAsignarInventarioPerm && item.status !== 'Pase a ventas' ? <MapPinned className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-          </button>
-          {canPruebaColor && (
-            <button
-              onClick={() => onPruebaColor(item)}
-              className={`p-2 rounded-lg border transition-all ${isDark
-                ? 'bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 hover:text-fuchsia-300 border-fuchsia-500/20 hover:border-fuchsia-500/40'
-                : 'bg-fuchsia-50 text-fuchsia-600 hover:bg-fuchsia-100 hover:text-fuchsia-700 border-fuchsia-200 hover:border-fuchsia-300'
-              }`}
-              title="Solicitar prueba de color"
-            >
-              <Paintbrush className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {canCompartirPerm && (
-            <button
-              disabled={(item.status !== 'Aprobada' && item.status !== 'Atendido' && item.status !== 'Pase a ventas') || isLocked}
-              onClick={() => !isLocked && (item.status === 'Aprobada' || item.status === 'Atendido' || item.status === 'Pase a ventas') && onShare(item.id)}
-              className={`p-2 rounded-lg border transition-all ${(item.status === 'Aprobada' || item.status === 'Atendido' || item.status === 'Pase a ventas') && !isLocked
-                ? isDark ? 'bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 hover:text-cyan-300 border-cyan-500/20 hover:border-cyan-500/40' : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700 border-cyan-200 hover:border-cyan-300'
-                : isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
-                }`}
-              title={isLocked ? 'No disponible en este estatus' : (item.status === 'Aprobada' || item.status === 'Atendido' || item.status === 'Pase a ventas' ? 'Compartir propuesta' : 'Solo disponible en status Aprobada o Pase a ventas')}
-            >
-              <Share2 className="h-3.5 w-3.5" />
-            </button>
+          {esPropuestaIncompleta(item) && (
+            <IncompletaBadge propuesta={item} isDark={isDark} />
           )}
         </div>
+      </td>
+      <td className="px-4 py-3">
+        <PropuestaAcciones
+          item={item}
+          isDark={isDark}
+          userRol={userRol}
+          canAprobarPerm={canAprobarPerm}
+          canAsignarInventarioPerm={canAsignarInventarioPerm}
+          canCompartirPerm={canCompartirPerm}
+          canPruebaColor={canPruebaColor}
+          onApprove={onApprove}
+          onAssign={onAssign}
+          onShare={onShare}
+          onPruebaColor={onPruebaColor}
+        />
       </td>
     </tr>
   );
@@ -1490,15 +1444,14 @@ export function PropuestasPage() {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearchTags, setDebouncedSearchTags] = useState<string[]>([]);
   const [debouncedSearchInput, setDebouncedSearchInput] = useState('');
-  const [status, setStatus] = useState('');
+  // Filtro Status (multiselect): estatus de propuesta + completitud + autorización de circuitos.
+  const [statusSel, setStatusSel] = useState<string[]>([]);
   const [tipoPeriodo, setTipoPeriodo] = useState('');
   const [yearInicio, setYearInicio] = useState<number | undefined>(undefined);
   const [yearFin, setYearFin] = useState<number | undefined>(undefined);
   const [catorcenaInicio, setCatorcenaInicio] = useState<number | undefined>(undefined);
   const [catorcenaFin, setCatorcenaFin] = useState<number | undefined>(undefined);
   const [historialFilter, setHistorialFilter] = useState<HistorialFilterValues>({});
-  const [sortBy, setSortBy] = useState('fecha');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [groupBy, setGroupBy] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [advancedFilters, setAdvancedFilters] = useState<AdvancedFilterCondition[]>([]);
@@ -1507,7 +1460,24 @@ export function PropuestasPage() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const limit = 20;
-  const [activeView, setActiveView] = useState<'tabla' | 'versionario'>('tabla');
+  // Vista fija del modulo (por usuario, localStorage): con cual de las tres
+  // vistas abre Propuestas. null = default ('tabla').
+  const [vistaFija, setVistaFija] = useState<VistaPropuestas | null>(
+    () => loadVistaFijaModulo('propuestas', user?.id, VISTAS_PROPUESTAS_KEYS),
+  );
+  const [activeView, setActiveView] = useState<VistaPropuestas>(() => vistaFija ?? 'tabla');
+  // Vista Tablero: columnas visibles, orden rápido y filtro de incompletos.
+  // Viven aquí (no en el tablero) porque el orden y el filtro también aplican a
+  // la Vista Tabla: una sola fuente de verdad para las dos.
+  const [tableroColumnas, setTableroColumnas] = useState<string[]>(PROPUESTAS_COLUMNAS_KEYS);
+  // Si el modulo abre directo en el tablero (vista fija), arranca con el orden
+  // fijo del tablero; si no, con el de la tabla.
+  const [ordenRapido, setOrdenRapido] = useState<OrdenRapido>(
+    () => (activeView === 'tablero' ? ORDEN_RAPIDO_DEFAULT : ORDEN_RAPIDO_TABLA_DEFAULT),
+  );
+  // Qué cambios cuentan para "Último cambio" (null = todos). Ver fechaUltimoCambio.
+  const [cambiosSeleccion, setCambiosSeleccion] = useState<string[] | null>(null);
+  const [soloIncompletos, setSoloIncompletos] = useState(false);
   const [exportingLayout, setExportingLayout] = useState(false);
   const [exportingOcupacion, setExportingOcupacion] = useState(false);
   // Versionario (Desglose) grouping config — controlled here so the filter chip lives in the filters bar
@@ -1528,26 +1498,82 @@ export function PropuestasPage() {
   };
   const resetVersionarioGroupings = () => setVersionarioGroupings(VERSIONARIO_DEFAULT_GROUPINGS);
 
+  const cambiarVista = (v: VistaPropuestas) => {
+    setActiveView(v);
+    setPage(1);
+    // El tablero trae su propio orden fijo (ultimo cambio arriba). Solo se
+    // impone si el usuario no eligio otro: si ya venia ordenando distinto en
+    // la tabla, se respeta.
+    if (v === 'tablero') setOrdenRapido(prev => (prev === ORDEN_RAPIDO_TABLA_DEFAULT ? ORDEN_RAPIDO_DEFAULT : prev));
+  };
+  const fijarVista = (v: VistaPropuestas | null) => {
+    setVistaFija(v);
+    saveVistaFijaModulo('propuestas', user?.id, v);
+  };
+
   // Modals
   const [statusPropuesta, setStatusPropuesta] = useState<Propuesta | null>(null);
   const [approvePropuesta, setApprovePropuesta] = useState<Propuesta | null>(null);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [pruebaColorPropuesta, setPruebaColorPropuesta] = useState<Propuesta | null>(null);
+  // Jos 2026-10-12: cuando la propuesta se abre desde la tarea de rechazo
+  // de prueba de color, abrimos el modal directo en el formulario de nueva
+  // solicitud con el circuito original preseleccionado para subir v2.
+  const [pruebaColorInitialScId, setPruebaColorInitialScId] = useState<number | undefined>(undefined);
+  const [pruebaColorInitialTab, setPruebaColorInitialTab] = useState<'pruebas' | 'nueva' | undefined>(undefined);
+  // Jos 2026-11-12: deep-link desde Mis Tareas para abrir la tarea exacta.
+  // El consumo one-shot lo hace el propio PruebasColorModal con useRef, así
+  // que aquí lo mantenemos vivo mientras el modal esté abierto; sólo se
+  // limpia en el onClose del modal junto con el resto del state de contexto.
+  const [pruebaColorInitialTareaId, setPruebaColorInitialTareaId] = useState<number | undefined>(undefined);
   const puedePruebaColor = puedeGestionarPruebaColor(user?.rol);
   const [selectedPropuestaForAssign, setSelectedPropuestaForAssign] = useState<Propuesta | null>(null);
+  // Modal informativo cuando se intenta abrir el modal sobre propuesta ya pasada a ventas (bug Oral B)
+  const [propuestaBloqueadaStatus, setPropuestaBloqueadaStatus] = useState<string | null>(null);
 
   // Handle URL params: viewId opens modal, search fills search bar
   useEffect(() => {
     const viewIdParam = searchParams.get('viewId');
     const searchParam = searchParams.get('search');
+    // Deep-link desde notificacion de tarea Revisión / Seguimiento Prueba de Color:
+    // abrir el modal de prueba de color de la propuesta directamente, en vez
+    // de mandar al Gestor de Artes. Feedback Jos 2026-10-06.
+    const pruebaColorTareaId = searchParams.get('pruebaColorTareaId');
+    // Jos 2026-10-12: deep-link para abrir modal en 'nueva' con circuito
+    // preseleccionado (caso: tarea de rechazo → subir v2).
+    const pruebaColorNuevaScIdParam = searchParams.get('pruebaColorNuevaScId');
 
     if (viewIdParam) {
       const id = parseInt(viewIdParam, 10);
       if (!isNaN(id)) {
-        // Fetch propuesta and open modal
+        // Fetch propuesta y abrir el modal correspondiente.
         propuestasService.getById(id).then((propuesta) => {
-          setSelectedPropuestaForAssign(propuesta);
-          setShowAssignModal(true);
+          if (pruebaColorNuevaScIdParam) {
+            // Jos 2026-10-12: abrir en tab 'pruebas' con el acordeon del
+            // circuito expandido para que vea la prueba rechazada primero;
+            // desde la card rechazada hay boton 'Subir nueva version'.
+            const scId = parseInt(pruebaColorNuevaScIdParam, 10);
+            setPruebaColorInitialScId(Number.isFinite(scId) ? scId : undefined);
+            setPruebaColorInitialTab('pruebas');
+            setPruebaColorPropuesta(propuesta);
+          } else if (pruebaColorTareaId) {
+            setPruebaColorInitialScId(undefined);
+            setPruebaColorInitialTab(undefined);
+            const parsed = parseInt(pruebaColorTareaId, 10);
+            setPruebaColorInitialTareaId(Number.isFinite(parsed) ? parsed : undefined);
+            setPruebaColorPropuesta(propuesta);
+          } else {
+            // Guard: no abrir el modal de Asignar Inventario si la propuesta
+            // ya paso a ventas (caso Oral B 30-oct-2026). El modal permitia
+            // agregar circuitos y las reservas nacian 'Reservado' colgadas,
+            // invisibles para candados anti-choque.
+            if (propuesta.status === 'Aprobada' || propuesta.status === 'Pase a ventas') {
+              setPropuestaBloqueadaStatus(propuesta.status);
+              return;
+            }
+            setSelectedPropuestaForAssign(propuesta);
+            setShowAssignModal(true);
+          }
         }).catch(console.error);
       }
       setSearchParams({}, { replace: true });
@@ -1602,8 +1628,35 @@ export function PropuestasPage() {
   // por lo que cada tag viaja como UNA frase. Esto evita que palabras cortas
   // ("y", "de") generen un OR que matchee la mayoría de los registros.
   const serverSearch = allSearchTerms.length > 0 ? allSearchTerms.join('|') : undefined;
-  const needsAllData = !!groupBy || advancedFilters.length > 0;
-  const effectiveLimit = needsAllData ? 200 : limit;
+  // 'Incompleta'/'Completa' son pseudo-estatus: se evalúan en cliente contra
+  // los totales de completitud, así que el server no recibe status y se pide
+  // todo el universo (igual que con agrupación/filtros avanzados).
+  // Pseudo-estatus de completitud seleccionados (se filtran en cliente).
+  const completitudSel = useMemo(() => statusSel.filter(s => COMPLETITUD_STATUS.includes(s)), [statusSel]);
+  const statusCompletitud = completitudSel.length > 0;
+  // El orden rápido y el filtro de incompletos se evalúan en cliente, así que
+  // necesitan el universo completo o estarían ordenando/filtrando sólo las 20
+  // filas de la página visible (que es el bug que tenía el chip "Ordenar").
+  //
+  // 'nueva_vieja' es la excepción: equivale al ORDER BY pr.id DESC del backend,
+  // así que con ese orden la Vista Tabla sigue paginando normal y la carga
+  // inicial no cambia de costo. El tablero siempre pide todo: sin todas las
+  // propuestas, las columnas mostrarían conteos falsos.
+  // Default de orden segun la vista: en el tablero el fijo es "ultimo cambio",
+  // en tabla/desglose es el orden que ya hace el backend. Se usa para no contar
+  // el default como "filtro activo" y para que "Limpiar todo" regrese al que
+  // corresponde a la vista en la que esta el usuario.
+  const ordenDefaultVista = activeView === 'tablero' ? ORDEN_RAPIDO_DEFAULT : ORDEN_RAPIDO_TABLA_DEFAULT;
+  const ordenNecesitaTodo = ordenRapido !== ORDEN_RAPIDO_TABLA_DEFAULT;
+  const needsAllData = !!groupBy
+    || advancedFilters.length > 0
+    || statusCompletitud
+    || activeView === 'tablero'
+    || soloIncompletos
+    || ordenNecesitaTodo;
+  // 5000 (antes 200): con agrupación/filtros avanzados/completitud el filtro
+  // cliente debe ver TODAS las propuestas (~1.7k), no solo las 200 más nuevas.
+  const effectiveLimit = needsAllData ? 5000 : limit;
 
   // El listado oculta 'Rechazada' por default. PERO si el usuario agrega un
   // filtro avanzado sobre el campo 'status' (p.ej. status = Rechazada), dejamos
@@ -1620,8 +1673,18 @@ export function PropuestasPage() {
   // exclude por default — si no, el filtro daria 0 porque la pagina oculta
   // todo lo que tiene status='Rechazada' actual.
   const effectiveExcludeRechazadas = (
-    historialFilter.modo === 'cambio_estatus' && historialFilter.estatusValor === 'Rechazada'
+    historialFilter.modo === 'cambio_estatus' && estatusValorIncluye(historialFilter.estatusValor, 'Rechazada')
   ) ? false : excludeRechazadas;
+
+  // El chip "Status" (multiselect) mezcla estatus de propuesta, pseudo-estatus
+  // de completitud (cliente) y estatus de autorización de circuitos ('Aut.
+  // Pend. DG', ...). Los de autorización viajan al back como `autorizacion` y
+  // el back aplica OR entre estatus y autorización. Ver lib/autorizacionFiltro.
+  const statusFiltro = splitStatusSeleccion(statusSel, COMPLETITUD_STATUS);
+  // Fechas de último cambio por estatus/autorización: solo hacen falta para
+  // el orden "Último cambio" (el back las calcula desde historial).
+  // El tablero los pide siempre: la tarjeta muestra la fecha del ultimo cambio.
+  const includeCambios = ordenCampo(ordenRapido) === 'cambio' || activeView === 'tablero';
 
   // Stats: WS invalida en cambios reales; staleTime corto evita refetches en
   // re-renders del padre. Pasamos `search` para que total/chart reflejen los
@@ -1629,9 +1692,10 @@ export function PropuestasPage() {
   // + `effectiveExcludeRechazadas` para que los KPIs no queden en un universo
   // distinto al del listado.
   const { data: stats } = useQuery({
-    queryKey: ['propuestas-stats', status, yearInicio, yearFin, catorcenaInicio, catorcenaFin, tipoPeriodo, serverSearch, historialFilter, effectiveExcludeRechazadas],
+    queryKey: ['propuestas-stats', statusSel, yearInicio, yearFin, catorcenaInicio, catorcenaFin, tipoPeriodo, serverSearch, historialFilter, effectiveExcludeRechazadas],
     queryFn: () => propuestasService.getStats({
-      status: status || undefined,
+      status: statusFiltro.status,
+      autorizacion: statusFiltro.autorizacion,
       yearInicio,
       yearFin,
       catorcenaInicio,
@@ -1645,12 +1709,14 @@ export function PropuestasPage() {
   });
 
   const { data, isLoading } = useQuery({
-    queryKey: ['propuestas', needsAllData ? 1 : page, status, serverSearch, yearInicio, yearFin, catorcenaInicio, catorcenaFin, sortBy, sortOrder, groupBy, tipoPeriodo, needsAllData, historialFilter, effectiveExcludeRechazadas],
+    queryKey: ['propuestas', needsAllData ? 1 : page, statusSel, serverSearch, yearInicio, yearFin, catorcenaInicio, catorcenaFin, groupBy, tipoPeriodo, needsAllData, historialFilter, effectiveExcludeRechazadas, includeCambios],
     queryFn: () =>
       propuestasService.getAll({
         page: needsAllData ? 1 : page,
         limit: effectiveLimit,
-        status: status || undefined,
+        status: statusFiltro.status,
+        autorizacion: statusFiltro.autorizacion,
+        includeCambios: includeCambios || undefined,
         search: serverSearch,
         yearInicio,
         yearFin,
@@ -1667,11 +1733,15 @@ export function PropuestasPage() {
 
   // 'Rechazada' se oculta del chip simple de Status (las propuestas rechazadas
   // están ocultas por default). Sigue disponible en el filtro avanzado para
-  // quien quiera verlas explícitamente.
-  const allStatuses = STATUS_OPTIONS.filter(s => s !== 'Rechazada');
+  // quien quiera verlas explícitamente. 'Incompleta'/'Completa' son pseudo-
+  // estatus de completitud de reservas (se filtran en cliente).
+  // Al final, los estatus de autorización de circuitos (ver lib/autorizacionFiltro).
+  const allStatuses = [...STATUS_OPTIONS.filter(s => s !== 'Rechazada'), ...COMPLETITUD_STATUS, ...AUTORIZACION_LABELS];
+  // Cambios que puede considerar el orden "Último cambio" (popover del chip).
+  const cambiosOpciones = useMemo(() => construirOpcionesCambio(STATUS_OPTIONS), []);
 
   const hasPeriodFilter = yearInicio !== undefined && yearFin !== undefined;
-  const hasActiveFilters = !!(status || tipoPeriodo || hasPeriodFilter || groupBy || sortBy !== 'fecha' || advancedFilters.length > 0 || searchTags.length > 0);
+  const hasActiveFilters = !!(statusSel.length > 0 || tipoPeriodo || hasPeriodFilter || groupBy || ordenRapido !== ordenDefaultVista || soloIncompletos || advancedFilters.length > 0 || searchTags.length > 0);
 
   // Get unique values for each field (for advanced filter dropdowns).
   // Solo se calcula cuando el panel de filtros avanzados está abierto: evita
@@ -1694,6 +1764,8 @@ export function PropuestasPage() {
       // puede seleccionarlos en el filtro avanzado para verlos.
       if (fieldConfig.field === 'status') {
         STATUS_OPTIONS.forEach(s => values.add(s));
+        // Autorización de circuitos (se evalúa contra autorizacion_resumen).
+        AUTORIZACION_LABELS.forEach(s => values.add(s));
       }
       valuesMap[fieldConfig.field] = Array.from(values).sort();
     });
@@ -1707,13 +1779,31 @@ export function PropuestasPage() {
   // paginación al filtrar únicamente la página visible.
   const filteredData = useMemo(() => {
     if (!data?.data) return [];
-    return applyAdvancedFilters(data.data, advancedFilters);
-  }, [data?.data, advancedFilters]);
+    let result = applyAdvancedFilters(data.data, advancedFilters);
+    // Pseudo-estatus de completitud (cliente-side, mismo criterio que el badge).
+    // Con los dos marcados no acota nada (Incompleta o Completa = todas).
+    const soloIncompletas = completitudSel.includes('Incompleta') && !completitudSel.includes('Completa');
+    const soloCompletas = completitudSel.includes('Completa') && !completitudSel.includes('Incompleta');
+    if (soloIncompletas) result = result.filter(esPropuestaIncompleta);
+    else if (soloCompletas) result = result.filter(p => !esPropuestaIncompleta(p));
+    // Filtro rápido de incompletos: mismo criterio que el badge y que el
+    // pseudo-estatus, solo que disponible como chip en las dos vistas.
+    if (soloIncompletos) result = result.filter(esPropuestaIncompleta);
+    // Orden rápido, SOLO cuando tenemos el universo completo. Si estamos
+    // paginando, ordenar aquí reacomodaría únicamente las 20 filas visibles y
+    // daría una lista que miente sobre el orden global; en ese caso vale el
+    // ORDER BY pr.id DESC del backend, que es justo 'nueva_vieja'.
+    // 'Último cambio' considera edición (updated_at), cambios de estatus y
+    // cambios de autorización de circuitos según `cambiosSeleccion`; 'Fecha
+    // de creación' usa `fecha` y 'Presupuesto' usa `inversion`.
+    if (!needsAllData) return result;
+    return ordenarTablero(result, ordenRapido, p => p.fecha, p => fechaUltimoCambio(p, cambiosSeleccion), p => p.inversion);
+  }, [data?.data, advancedFilters, completitudSel, soloIncompletos, ordenRapido, needsAllData, cambiosSeleccion]);
 
   // Sólo cuando hay filtros avanzados activos necesitamos recalcular stats en
   // cliente (el backend no soporta esos operadores Y/O custom). El search va
   // como queryKey en `propuestas-stats`, así que `stats` ya viene filtrado.
-  const needsClientFilter = advancedFilters.length > 0;
+  const needsClientFilter = advancedFilters.length > 0 || statusCompletitud;
   const effectiveStats = useMemo(() => {
     if (needsClientFilter && data?.data) {
       const byStatus: Record<string, number> = {};
@@ -1751,16 +1841,44 @@ export function PropuestasPage() {
     setAdvancedFilters([]);
   };
 
+  // Foto de la barra de filtros que guarda una vista (menu "Vistas" junto al
+  // boton Filtros), y como volver a aplicarla. El orden y "solo incompletos"
+  // van aparte en la vista (son campos propios de VistaTablero). Lo que no
+  // venga en la foto se resetea: aplicar una vista es "dejar la barra asi",
+  // no "sumar a lo que ya tenia". Ver lib/filtrosGuardados.
+  const filtrosSnapshot = useMemo<FiltrosDatos>(() => ({
+    statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin,
+    historialFilter, cambiosSeleccion, groupBy, advancedFilters, searchTags,
+  }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, groupBy, advancedFilters, searchTags]);
+  const aplicarFiltrosGuardados = React.useCallback((d: FiltrosDatos) => {
+    setStatusSel(leerStrings(d.statusSel));
+    setTipoPeriodo(leerString(d.tipoPeriodo));
+    setYearInicio(leerNumeroOpcional(d.yearInicio));
+    setYearFin(leerNumeroOpcional(d.yearFin));
+    setCatorcenaInicio(leerNumeroOpcional(d.catorcenaInicio));
+    setCatorcenaFin(leerNumeroOpcional(d.catorcenaFin));
+    setHistorialFilter(leerObjetoStrings(d.historialFilter) as HistorialFilterValues);
+    setCambiosSeleccion(Array.isArray(d.cambiosSeleccion) ? leerStrings(d.cambiosSeleccion) : null);
+    setGroupBy(leerString(d.groupBy));
+    setAdvancedFilters(leerCondiciones<AdvancedFilterCondition>(d.advancedFilters));
+    setSearchTags(leerStrings(d.searchTags));
+    setSearchInput('');
+    setExpandedGroups(new Set());
+    setShowFilters(true);
+    setPage(1);
+  }, []);
+
   const clearAllFilters = () => {
-    setStatus('');
+    setStatusSel([]);
     setTipoPeriodo('');
     setYearInicio(undefined);
     setYearFin(undefined);
     setCatorcenaInicio(undefined);
     setCatorcenaFin(undefined);
     setHistorialFilter({});
-    setSortBy('fecha');
-    setSortOrder('desc');
+    setOrdenRapido(ordenDefaultVista);
+    setCambiosSeleccion(null);
+    setSoloIncompletos(false);
     setGroupBy('');
     setExpandedGroups(new Set());
     setAdvancedFilters([]);
@@ -1834,7 +1952,8 @@ export function PropuestasPage() {
     setExportingLayout(true);
     try {
       const exportData = await propuestasService.getVersionarioData({
-        status: status || undefined,
+        status: statusFiltro.status,
+        autorizacion: statusFiltro.autorizacion,
         search: serverSearch,
         yearInicio,
         yearFin,
@@ -1937,7 +2056,8 @@ export function PropuestasPage() {
     setExportingOcupacion(true);
     try {
       const exportData = await propuestasService.getVersionarioData({
-        status: status || undefined,
+        status: statusFiltro.status,
+        autorizacion: statusFiltro.autorizacion,
         search: serverSearch,
         yearInicio,
         yearFin,
@@ -2076,9 +2196,23 @@ export function PropuestasPage() {
   // El search ya viaja al backend, así que la paginación del servidor sigue
   // siendo correcta. Sólo cuando hay filtros avanzados activos (cliente-side)
   // forzamos página única con el conteo local.
-  const hasLocalFilters = advancedFilters.length > 0;
-  const totalPages = hasLocalFilters ? 1 : (data?.pagination?.totalPages || 1);
+  // Cuando el filtrado/orden corre en cliente la paginación del servidor ya no
+  // aplica: se pidió el universo completo (needsAllData) y la tabla pinta todo
+  // filteredData, así que el contador y las páginas salen de aquí.
+  const hasLocalFilters = advancedFilters.length > 0 || statusCompletitud || soloIncompletos || ordenNecesitaTodo;
+  // Con filtros/orden en cliente se pagina en cliente sobre filteredData con
+  // el mismo `limit` (antes se pintaba todo en una sola página). Con
+  // agrupación no se pagina: cada grupo pinta completo.
+  const paginaEnCliente = hasLocalFilters && !groupBy;
+  const totalPages = paginaEnCliente
+    ? Math.max(1, Math.ceil(filteredData.length / limit))
+    : (data?.pagination?.totalPages || 1);
   const total = hasLocalFilters ? filteredData.length : (data?.pagination?.total ?? 0);
+  // `page` puede quedar arriba del total al cambiar de modo/filtro: se acota.
+  const pageActual = Math.min(page, totalPages);
+  const filasTabla = paginaEnCliente
+    ? filteredData.slice((pageActual - 1) * limit, pageActual * limit)
+    : filteredData;
 
   return (
     <div className="min-h-screen">
@@ -2099,7 +2233,7 @@ export function PropuestasPage() {
             </div>
             <div className="mt-4 flex items-center gap-2">
               <span className={`text-xs px-2 py-1 rounded-full ${isDark ? 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50' : 'bg-gray-100 text-gray-700 border-gray-200'} border`}>
-                {(status || allSearchTerms.length > 0 || advancedFilters.length > 0 || hasPeriodFilter || tipoPeriodo) ? 'Filtrado' : 'Todas las catorcenas'}
+                {(statusSel.length > 0 || allSearchTerms.length > 0 || advancedFilters.length > 0 || hasPeriodFilter || tipoPeriodo) ? 'Filtrado' : 'Todas las catorcenas'}
               </span>
             </div>
           </div>
@@ -2179,7 +2313,7 @@ export function PropuestasPage() {
         <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'border-gray-200 bg-white'} backdrop-blur-xl p-4 relative z-30`}>
           <div className="flex flex-col gap-4">
             {/* Top Row: Search + Filter Toggle + Export */}
-            <div className="flex flex-col lg:flex-row items-start lg:items-center gap-4">
+            <div className="flex flex-col lg:flex-row lg:flex-wrap items-start lg:items-center gap-3">
               {/* Search with Tags */}
               <div className={`relative flex-1 w-full lg:max-w-xl flex items-center flex-wrap gap-1.5 min-h-[44px] px-3 py-1.5 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900/80 hover:border-purple-500/40' : 'border-gray-200 bg-gray-50 hover:border-gray-300'} focus-within:ring-2 focus-within:ring-purple-500/30 focus-within:border-purple-500/40 transition-all`}>
                 <Search className={`h-4 w-4 shrink-0 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
@@ -2224,10 +2358,14 @@ export function PropuestasPage() {
                 )}
               </div>
 
+              {/* Actualizar: refetch de listado, KPIs y desglose sin recargar la página */}
+              <RefreshButton isDark={isDark} />
+
               {/* Filter Toggle */}
               <button
                 onClick={() => setShowFilters(!showFilters)}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${showFilters || hasActiveFilters
+                title="Filtros"
+                className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${showFilters || hasActiveFilters
                   ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
                   : isDark
                     ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800'
@@ -2235,35 +2373,40 @@ export function PropuestasPage() {
                   }`}
               >
                 <SlidersHorizontal className="h-4 w-4" />
-                Filtros
+                <span className="hidden xl:inline">Filtros</span>
                 {hasActiveFilters && (
                   <span className={`w-2 h-2 rounded-full ${isDark ? 'bg-purple-400' : 'bg-purple-500'}`} />
                 )}
               </button>
 
-              {/* View Toggle - idéntico a campañas */}
-              <button
-                onClick={() => setActiveView('tabla')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                  activeView === 'tabla'
-                    ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-100 text-purple-700 border border-purple-200'
-                    : isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'
-                }`}
-              >
-                <List className="h-4 w-4" />
-                Vista Tabla
-              </button>
-              <button
-                onClick={() => setActiveView('versionario')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                  activeView === 'versionario'
-                    ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-100 text-purple-700 border border-purple-200'
-                    : isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'
-                }`}
-              >
-                <LayoutGrid className="h-4 w-4" />
-                Desglose
-              </button>
+              {/* Vistas guardadas por usuario: filtros + orden + incompletos +
+                  columnas del tablero. Guardar / aplicar / renombrar / fijar. */}
+              <VistasGuardadasMenu
+                isDark={isDark}
+                scope="propuestas"
+                userId={user?.id}
+                columnasValidas={PROPUESTAS_COLUMNAS_KEYS}
+                columnasVisibles={tableroColumnas}
+                onColumnasChange={setTableroColumnas}
+                orden={ordenRapido}
+                onOrdenChange={setOrdenRapido}
+                soloIncompletos={soloIncompletos}
+                onSoloIncompletosChange={setSoloIncompletos}
+                filtrosActuales={filtrosSnapshot}
+                onAplicarFiltros={aplicarFiltrosGuardados}
+              />
+
+              {/* Selector de vista (Tabla / Desglose / Tablero) + estrella para
+                  fijar con cual abre el modulo. Un solo grupo compacto en vez
+                  de tres botones sueltos. */}
+              <VistaSelector
+                isDark={isDark}
+                opciones={VISTAS_PROPUESTAS}
+                value={activeView}
+                onChange={cambiarVista}
+                fija={vistaFija}
+                onFijar={fijarVista}
+              />
 
               {/* Botones de export */}
               {activeView === 'versionario' ? (
@@ -2271,29 +2414,30 @@ export function PropuestasPage() {
                   <button
                     onClick={handleExportLayout}
                     disabled={exportingLayout || exportingOcupacion}
-                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
                     title="Exporta CSV en formato Layout (Campaña, Anunciante, Inversión, APS, etc.)"
                   >
                     {exportingLayout ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    {exportingLayout ? 'Generando...' : 'Exportar Layout'}
+                    <span className="hidden xl:inline">{exportingLayout ? 'Generando...' : 'Exportar Layout'}</span>
                   </button>
                   <button
                     onClick={handleExportOcupacion}
                     disabled={exportingLayout || exportingOcupacion}
-                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
                     title="Exporta Excel formato Orden de Montaje (Plaza, Tipo, Vendedor, APS, CUIC, Caras, Tarifa, Monto)"
                   >
                     {exportingOcupacion ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    {exportingOcupacion ? 'Generando...' : 'Exportar Ocupación'}
+                    <span className="hidden xl:inline">{exportingOcupacion ? 'Generando...' : 'Exportar Ocupación'}</span>
                   </button>
                 </>
               ) : (
                 <button
                   onClick={handleExportCSV}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all`}
+                  title="Exportar CSV"
+                  className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all`}
                 >
                   <Download className="h-4 w-4" />
-                  Exportar CSV
+                  <span className="hidden xl:inline">Exportar CSV</span>
                 </button>
               )}
             </div>
@@ -2323,7 +2467,7 @@ export function PropuestasPage() {
                     )}
                   </button>
                   {showAdvancedFilters && (
-                    <div className={`absolute left-0 top-full mt-1 z-[100] w-[520px] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-gray-200'} border rounded-xl shadow-2xl p-4`}>
+                    <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-auto lg:left-0 lg:bottom-auto lg:mt-1 lg:w-[520px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible z-[100] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-gray-200'} border rounded-xl shadow-2xl p-4`}>
                       <div className="flex items-center justify-between mb-3">
                         <span className={`text-sm font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>Filtros avanzados</span>
                         <button
@@ -2335,7 +2479,7 @@ export function PropuestasPage() {
                       </div>
                       <div className="space-y-2 max-h-[300px] overflow-visible pr-1">
                         {advancedFilters.map((filter, index) => (
-                          <div key={filter.id} className="flex items-center gap-2">
+                          <div key={filter.id} className="flex flex-wrap items-center gap-2">
                             {index > 0 && (
                               <button
                                 onClick={() => {
@@ -2454,20 +2598,19 @@ export function PropuestasPage() {
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
                 {/* Status Filter */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>Status:</span>
-                <FilterChip
+                <MultiSelectChip
                   label="Status"
                   options={allStatuses}
-                  value={status}
-                  onChange={(val) => { setStatus(val); setPage(1); }}
-                  onClear={() => { setStatus(''); setPage(1); }}
+                  separatorBefore={AUTORIZACION_LABELS[0]}
+                  values={statusSel}
+                  onChange={(vals) => { setStatusSel(vals); setPage(1); }}
+                  onClear={() => { setStatusSel([]); setPage(1); }}
                   isDark={isDark}
                 />
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
                 {/* Tipo Periodo Filter */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>Periodo:</span>
                 <FilterChip
                   label="Tipo Periodo"
                   options={['catorcena', 'mensual']}
@@ -2526,29 +2669,29 @@ export function PropuestasPage() {
                 {/* Divider */}
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700/50' : 'bg-gray-200'} mx-1`} />
 
-                {/* Sort Options */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>
-                  <ArrowUpDown className="h-3 w-3 inline mr-1" />
-                  Ordenar:
-                </span>
-                <FilterChip
-                  label="Campo"
-                  options={['fecha', 'precio', 'inversion', 'status']}
-                  value={sortBy}
-                  onChange={(val) => { setSortBy(val); setPage(1); }}
-                  onClear={() => { setSortBy('fecha'); setPage(1); }}
+                {/* Menú "Ordenar" (creación / presupuesto / último cambio) +
+                    chip de incompletos. Reemplazan al chip "Ordenar: Campo /
+                    Asc-Desc" anterior, que no ordenaba nada: sortBy/sortOrder
+                    viajaban en el queryKey pero nunca llegaban al backend (que
+                    ordena fijo por pr.id DESC) ni se aplicaban en cliente. */}
+                <OrdenRapidoMenu
                   isDark={isDark}
+                  orden={ordenRapido}
+                  onOrdenChange={(o) => { setOrdenRapido(o); setPage(1); }}
+                  soloIncompletos={soloIncompletos}
+                  onSoloIncompletosChange={(v) => { setSoloIncompletos(v); setPage(1); }}
+                  entidadPlural="propuestas"
+                  cambiosOpciones={cambiosOpciones}
+                  cambiosSeleccion={cambiosSeleccion}
+                  onCambiosSeleccionChange={setCambiosSeleccion}
                 />
-                <button
-                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                  className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs transition-all ${isDark ? 'bg-zinc-800/80 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'}`}
-                >
-                  {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
-                </button>
 
-                {/* Group By — Tabla: FilterChip single. Desglose: multi-select max 4. */}
-                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700/50' : 'bg-gray-200'} mx-1`} />
-                {activeView === 'tabla' ? (
+                {/* Group By — Tabla: FilterChip single. Desglose: multi-select max 4.
+                    El Tablero no lo ofrece: ya agrupa por estatus por definición. */}
+                {activeView !== 'tablero' && (
+                  <div className={`h-4 w-px ${isDark ? 'bg-zinc-700/50' : 'bg-gray-200'} mx-1`} />
+                )}
+                {activeView === 'tablero' ? null : activeView === 'tabla' ? (
                   <FilterChip
                     label="Agrupar"
                     options={['status', 'asignado', 'asesor', 'creador_nombre']}
@@ -2638,12 +2781,53 @@ export function PropuestasPage() {
           </div>
         </div>
 
+        {/* Tablero View — columnas por estatus. Solo lectura: el estatus se
+            cambia con el mismo modal de la tabla (permisos + comentario). */}
+        {activeView === 'tablero' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                {filteredData.length} {filteredData.length === 1 ? 'propuesta' : 'propuestas'} en el tablero
+              </span>
+              <TableroVistasControls
+                isDark={isDark}
+                todasColumnas={PROPUESTAS_COLUMNAS}
+                columnasVisibles={tableroColumnas}
+                onColumnasChange={setTableroColumnas}
+              />
+            </div>
+            <PropuestasTableroView
+              items={filteredData}
+              columnasVisibles={tableroColumnas}
+              isDark={isDark}
+              isLoading={isLoading}
+              puedeEditarStatus={(p) => permissions.canEditPropuestaStatus && !esPropuestaBloqueada(p, user?.rol || '')}
+              puedeAbrir={(p) => puedeAbrirPropuesta(p, user?.rol || '', permissions.canAsignarInventario)}
+              onStatus={handleRowStatus}
+              onAssign={handleRowAssign}
+              acciones={{
+                userRol: user?.rol || '',
+                canAprobarPerm: permissions.canAprobarPropuesta,
+                canAsignarInventarioPerm: permissions.canAsignarInventario,
+                canCompartirPerm: permissions.canCompartirPropuesta,
+                canPruebaColor: puedePruebaColor,
+                onApprove: handleRowApprove,
+                onAssign: handleRowAssign,
+                onShare: handleRowShare,
+                onPruebaColor: handleRowPruebaColor,
+              }}
+            />
+          </div>
+        )}
+
         {/* Versionario View */}
         {activeView === 'versionario' && (
           <PropuestasVersionarioView
             isDark={isDark}
             filters={{
-              status: status || undefined,
+              // Estatus de autorización de circuitos viaja aparte (`autorizacion`).
+              status: statusFiltro.status,
+              autorizacion: statusFiltro.autorizacion,
               // Mismo `serverSearch` que usa la tabla: si hay tags Y texto
               // escrito, viajan los dos (antes el texto se perdia).
               search: serverSearch,
@@ -2670,20 +2854,20 @@ export function PropuestasPage() {
           {!groupBy && data?.pagination && totalPages > 1 && (
             <div className={`flex items-center justify-between border-b px-4 py-3 ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-gray-200 bg-gray-50'}`}>
               <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>
-                Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{totalPages}</span>
+                Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{pageActual}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{totalPages}</span>
                 <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-gray-400'}`}>({total} total)</span>
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setPage(Math.max(1, page - 1))}
-                  disabled={page === 1}
+                  onClick={() => setPage(Math.max(1, pageActual - 1))}
+                  disabled={pageActual === 1}
                   className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
                 >
                   Anterior
                 </button>
                 <button
-                  onClick={() => setPage(Math.min(totalPages, page + 1))}
-                  disabled={page === totalPages}
+                  onClick={() => setPage(Math.min(totalPages, pageActual + 1))}
+                  disabled={pageActual === totalPages}
                   className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
                 >
                   Siguiente
@@ -2768,7 +2952,7 @@ export function PropuestasPage() {
                     </td>
                   </tr>
                 ) : (
-                  filteredData.map((item, idx) => (
+                  filasTabla.map((item, idx) => (
                     <PropuestaRow
                       key={`prop-${item.id}-${idx}`}
                       item={item}
@@ -2796,20 +2980,20 @@ export function PropuestasPage() {
           {!groupBy && data?.pagination && totalPages > 1 && (
             <div className={`flex items-center justify-between border-t px-4 py-3 ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-gray-200 bg-gray-50'}`}>
               <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>
-                Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{totalPages}</span>
+                Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{pageActual}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-gray-700'}`}>{totalPages}</span>
                 <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-gray-400'}`}>({total} total)</span>
               </span>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setPage(Math.max(1, page - 1))}
-                  disabled={page === 1}
+                  onClick={() => setPage(Math.max(1, pageActual - 1))}
+                  disabled={pageActual === 1}
                   className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
                 >
                   Anterior
                 </button>
                 <button
-                  onClick={() => setPage(Math.min(totalPages, page + 1))}
-                  disabled={page === totalPages}
+                  onClick={() => setPage(Math.min(totalPages, pageActual + 1))}
+                  disabled={pageActual === totalPages}
                   className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'}`}
                 >
                   Siguiente
@@ -2853,16 +3037,30 @@ export function PropuestasPage() {
           isOpen={showAssignModal}
           onClose={() => { setShowAssignModal(false); queryClient.invalidateQueries({ queryKey: ['propuesta-caras', selectedPropuestaForAssign?.id] }); queryClient.invalidateQueries({ queryKey: ['propuesta-reservas-modal', selectedPropuestaForAssign?.id] }); queryClient.invalidateQueries({ queryKey: ['propuesta-fresh'] }); queryClient.invalidateQueries({ queryKey: ['propuestas'] }); setSelectedPropuestaForAssign(null); }}
           propuesta={selectedPropuestaForAssign}
-          readOnly={!permissions.canAsignarInventario || selectedPropuestaForAssign.status === 'Pase a ventas'}
+          readOnly={!permissions.canAsignarInventario || selectedPropuestaForAssign.status === 'Pase a ventas' || selectedPropuestaForAssign.status === 'Aprobada'}
         />
       )}
+
+      <PropuestaAprobadaInfoModal
+        isOpen={!!propuestaBloqueadaStatus}
+        onClose={() => setPropuestaBloqueadaStatus(null)}
+        propuestaStatus={propuestaBloqueadaStatus ?? undefined}
+      />
 
       {pruebaColorPropuesta && (
         <PruebasColorModal
           isOpen={!!pruebaColorPropuesta}
-          onClose={() => setPruebaColorPropuesta(null)}
+          onClose={() => {
+            setPruebaColorPropuesta(null);
+            setPruebaColorInitialScId(undefined);
+            setPruebaColorInitialTab(undefined);
+            setPruebaColorInitialTareaId(undefined);
+          }}
           propuestaId={pruebaColorPropuesta.id}
           contextoNombre={pruebaColorPropuesta.nombre_campania || undefined}
+          initialScId={pruebaColorInitialScId}
+          initialTab={pruebaColorInitialTab}
+          initialTareaId={pruebaColorInitialTareaId}
         />
       )}
     </div>

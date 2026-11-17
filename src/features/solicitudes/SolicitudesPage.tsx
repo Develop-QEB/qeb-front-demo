@@ -3,8 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Search, Download, Trash2, FileText,
-  Filter, ChevronDown, ChevronRight, X, Layers, SlidersHorizontal,
-  ArrowUpDown, Calendar, Clock, Plus, Eye, Edit2, PlayCircle, MessageSquare
+  Filter, ChevronDown, ChevronRight, X, SlidersHorizontal,
+  Calendar, Clock, Plus, List, Columns3
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend } from 'recharts';
 
@@ -20,6 +20,31 @@ import { useThemeStore } from '../../store/themeStore';
 import { getPermissions } from '../../lib/permissions';
 import { useSocketSolicitudes } from '../../hooks/useSocket';
 import { HistorialFilterPopover, type HistorialFilterValues } from '../../components/HistorialFilterPopover';
+import SolicitudesTableroView, {
+  SOLICITUDES_COLUMNAS, SOLICITUDES_COLUMNAS_KEYS, esSolicitudIncompleta,
+} from './SolicitudesTableroView';
+import {
+  ordenarTablero, ordenCampo, ordenEsAsc, ORDEN_RAPIDO_DEFAULT, ORDEN_RAPIDO_TABLA_DEFAULT, type OrdenRapido,
+  construirOpcionesCambio, fechaUltimoCambio,
+} from '../../lib/tableroVistas';
+import { AUTORIZACION_LABELS, evalAutorizacionAvanzado, splitStatusSeleccion, estatusValorIncluye } from '../../lib/autorizacionFiltro';
+import { MultiSelectChip } from '../../components/MultiSelectChip';
+import { RefreshButton } from '../../components/RefreshButton';
+import { TableroVistasControls } from '../../components/tablero/TableroVistasControls';
+import { OrdenRapidoMenu } from '../../components/tablero/OrdenRapidoMenu';
+import { VistasGuardadasMenu } from '../../components/tablero/VistasGuardadasMenu';
+import { leerCondiciones, leerNumeroOpcional, leerObjetoStrings, leerString, leerStrings, type FiltrosDatos } from '../../lib/filtrosGuardados';
+import { VistaSelector, type VistaOpcion } from '../../components/tablero/VistaSelector';
+import { loadVistaFijaModulo, saveVistaFijaModulo } from '../../lib/vistaFija';
+import { SolicitudAcciones, puedeCambiarStatusSolicitud } from './SolicitudAcciones';
+
+// Vistas del modulo (selector compacto + vista fija por usuario).
+type VistaSolicitudes = 'tabla' | 'tablero';
+const VISTAS_SOLICITUDES: readonly VistaOpcion<VistaSolicitudes>[] = [
+  { key: 'tabla', label: 'Vista Tabla', icon: List },
+  { key: 'tablero', label: 'Tablero', icon: Columns3 },
+];
+const VISTAS_SOLICITUDES_KEYS = VISTAS_SOLICITUDES.map(v => v.key);
 
 // Filter Chip Component with Search - same as ClientesPage
 function FilterChip({
@@ -72,7 +97,7 @@ function FilterChip({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={handleClose} />
-          <div className={`absolute top-full left-0 mt-1.5 z-50 w-64 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+          <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-auto lg:bottom-auto lg:mt-1.5 lg:w-64 lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-hidden z-50 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl`}>
             <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
               <input
                 type="text"
@@ -159,6 +184,12 @@ function evalCondition<T>(item: T, filter: AdvancedFilterCondition): boolean {
   const fieldValue = (item as Record<string, unknown>)[filter.field];
   const filterValue = filter.value;
   if (!filterValue) return true;
+  // Status = autorización de circuitos ('Aut. Pend. DG', ...): se evalúa
+  // contra el resumen por fila que manda el back (acotado al periodo filtrado).
+  if (filter.field === 'status') {
+    const aut = evalAutorizacionAvanzado((item as Solicitud).autorizacion_resumen, filter.operator, filterValue);
+    if (aut !== null) return aut;
+  }
   if (fieldValue === null || fieldValue === undefined) {
     return filter.operator === '!=' || filter.operator === 'not_contains';
   }
@@ -308,7 +339,7 @@ function PeriodFilterPopover({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className={`absolute top-full left-0 mt-1.5 z-50 w-80 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+          <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-auto lg:bottom-auto lg:mt-1.5 lg:w-80 lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-hidden z-50 rounded-xl border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl`}>
             <div className={`p-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
               <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'} flex items-center gap-2`}>
                 <Calendar className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
@@ -548,15 +579,9 @@ const SolicitudRow = React.memo(function SolicitudRow({
   onDelete,
 }: SolicitudRowProps) {
   const statusColor = getStatusColor(item.status, isDark);
+  // El badge de estatus de la fila usa la misma regla que SolicitudAcciones.
+  const canChangeStatus = puedeCambiarStatusSolicitud(item);
 
-  const isDesactivada = item.status === 'Desactivada';
-  const isAprobada = item.status === 'Aprobada';
-  const isAtendida = item.status === 'Atendida';
-
-  const canEdit = !isDesactivada && !isAprobada && !isAtendida;
-  const canAtender = isAprobada;
-  const canChangeStatus = !isAtendida;
-  const canDelete = !isDesactivada && !isAprobada && !isAtendida;
 
   return (
     <tr key={`sol-${item.id}-${index}`} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-200 hover:bg-gray-50'} transition-colors`}>
@@ -574,6 +599,7 @@ const SolicitudRow = React.memo(function SolicitudRow({
               <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${
                 item.sap_database === 'CIMU' ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-50 text-blue-700') + ' border-blue-500/30' :
                 item.sap_database === 'TEST' ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-50 text-amber-700') + ' border-amber-500/30' :
+                item.sap_database === 'UDC' ? (isDark ? 'bg-cyan-500/20 text-cyan-300' : 'bg-cyan-50 text-cyan-700') + ' border-cyan-500/30' :
                 (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-50 text-emerald-700') + ' border-emerald-500/30'
               }`}>{item.sap_database}</span>
             )}
@@ -638,74 +664,19 @@ const SolicitudRow = React.memo(function SolicitudRow({
         </button>
       </td>
       <td className="px-4 py-3">
-        <div className="flex items-center gap-1">
-          {/* Ver */}
-          <button
-            onClick={(e) => { e.stopPropagation(); onView(item); }}
-            className={`p-2 rounded-lg transition-all border ${isDark ? 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 hover:text-purple-300 border-purple-500/20 hover:border-purple-500/40' : 'bg-purple-50 text-purple-600 hover:bg-purple-100 hover:text-purple-700 border-purple-200 hover:border-purple-300'}`}
-            title="Ver detalles"
-          >
-            <Eye className="h-3.5 w-3.5" />
-          </button>
-
-          {/* Editar */}
-          {canEditPerm && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onEdit(item); }}
-              disabled={!canEdit}
-              className={`p-2 rounded-lg transition-all border ${canEdit
-                ? isDark ? 'bg-zinc-500/10 text-zinc-400 hover:bg-zinc-500/20 hover:text-zinc-300 border-zinc-500/20 hover:border-zinc-500/40' : 'bg-gray-50 text-gray-500 hover:bg-gray-100 hover:text-gray-700 border-gray-200 hover:border-gray-300'
-                : `${isDark ? 'bg-zinc-800/50 text-zinc-600 border-zinc-700/30' : 'bg-gray-100 text-gray-400 border-gray-200'} cursor-not-allowed`
-                }`}
-              title={canEdit ? 'Editar solicitud' : 'No disponible'}
-            >
-              <Edit2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-
-          {/* Atender */}
-          {canAtenderPerm && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onAtender(item); }}
-              disabled={!canAtender}
-              className={`p-2 rounded-lg transition-all border ${canAtender
-                ? isDark ? 'bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 hover:text-fuchsia-300 border-fuchsia-500/20 hover:border-fuchsia-500/40' : 'bg-fuchsia-50 text-fuchsia-600 hover:bg-fuchsia-100 hover:text-fuchsia-700 border-fuchsia-200 hover:border-fuchsia-300'
-                : `${isDark ? 'bg-zinc-800/50 text-zinc-600 border-zinc-700/30' : 'bg-gray-100 text-gray-400 border-gray-200'} cursor-not-allowed`
-                }`}
-              title={canAtender ? 'Atender solicitud' : 'Solo disponible para solicitudes aprobadas'}
-            >
-              <PlayCircle className="h-3.5 w-3.5" />
-            </button>
-          )}
-
-          {/* Estatus/Comentarios */}
-          <button
-            onClick={(e) => { e.stopPropagation(); if (canChangeStatus) onStatus(item); }}
-            disabled={!canChangeStatus}
-            className={`p-2 rounded-lg transition-all border ${canChangeStatus
-              ? isDark ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 hover:text-amber-300 border-amber-500/20 hover:border-amber-500/40' : 'bg-amber-50 text-amber-600 hover:bg-amber-100 hover:text-amber-700 border-amber-200 hover:border-amber-300'
-              : `${isDark ? 'bg-zinc-800/50 text-zinc-600 border-zinc-700/30' : 'bg-gray-100 text-gray-400 border-gray-200'} cursor-not-allowed`
-              }`}
-            title={!canChangeStatus ? 'No disponible' : canChangeEstadoPerm ? 'Ver/Cambiar estatus' : 'Ver estatus y comentarios'}
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-          </button>
-
-          {/* Rechazar (marca status='Rechazada' + libera reservas, NO elimina) */}
-          {canDeletePerm && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(item.id); }}
-              disabled={!canDelete}
-              className={`p-2 rounded-lg transition-all border ${canDelete
-                ? isDark ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 border-red-500/20 hover:border-red-500/40' : 'bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-700 border-red-200 hover:border-red-300'
-                : `${isDark ? 'bg-zinc-800/50 text-zinc-600 border-zinc-700/30' : 'bg-gray-100 text-gray-400 border-gray-200'} cursor-not-allowed`
-                }`}
-              title={canDelete ? 'Rechazar solicitud' : 'No disponible'}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+        <SolicitudAcciones
+          item={item}
+          isDark={isDark}
+          canEditPerm={canEditPerm}
+          canAtenderPerm={canAtenderPerm}
+          canDeletePerm={canDeletePerm}
+          canChangeEstadoPerm={canChangeEstadoPerm}
+          onView={onView}
+          onEdit={onEdit}
+          onAtender={onAtender}
+          onStatus={onStatus}
+          onDelete={onDelete}
+        />
       </td>
     </tr>
   );
@@ -725,15 +696,33 @@ export function SolicitudesPage() {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearchTags, setDebouncedSearchTags] = useState<string[]>([]);
   const [debouncedSearchInput, setDebouncedSearchInput] = useState('');
-  const [status, setStatus] = useState('');
+  // Filtro Status (multiselect): estatus de solicitud + autorización de circuitos.
+  const [statusSel, setStatusSel] = useState<string[]>([]);
   const [yearInicio, setYearInicio] = useState<number | undefined>(undefined);
   const [yearFin, setYearFin] = useState<number | undefined>(undefined);
   const [catorcenaInicio, setCatorcenaInicio] = useState<number | undefined>(undefined);
   const [catorcenaFin, setCatorcenaFin] = useState<number | undefined>(undefined);
   const [historialFilter, setHistorialFilter] = useState<HistorialFilterValues>({});
   const [tipoPeriodo, setTipoPeriodo] = useState('');
-  const [sortBy, setSortBy] = useState('fecha');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  // Vista fija del modulo (por usuario, localStorage): con cual de las dos
+  // vistas abre Solicitudes. null = default ('tabla').
+  const [vistaFija, setVistaFija] = useState<VistaSolicitudes | null>(
+    () => loadVistaFijaModulo('solicitudes', user?.id, VISTAS_SOLICITUDES_KEYS),
+  );
+  const [activeView, setActiveView] = useState<VistaSolicitudes>(() => vistaFija ?? 'tabla');
+  // Vista Tablero: columnas visibles, orden rápido y filtro de incompletos.
+  // El orden y el filtro aplican también a la Vista Tabla; por eso viven aquí.
+  // El orden rápido sustituye al chip "Orden: asc/desc": la dirección del
+  // ORDER BY del backend sale de aquí (ver backendSortOrder).
+  const [tableroColumnas, setTableroColumnas] = useState<string[]>(SOLICITUDES_COLUMNAS_KEYS);
+  // Si el modulo abre directo en el tablero (vista fija), arranca con el orden
+  // fijo del tablero; si no, con el de la tabla.
+  const [ordenRapido, setOrdenRapido] = useState<OrdenRapido>(
+    () => (activeView === 'tablero' ? ORDEN_RAPIDO_DEFAULT : ORDEN_RAPIDO_TABLA_DEFAULT),
+  );
+  // Qué cambios cuentan para "Último cambio" (null = todos). Ver fechaUltimoCambio.
+  const [cambiosSeleccion, setCambiosSeleccion] = useState<string[] | null>(null);
+  const [soloIncompletos, setSoloIncompletos] = useState(false);
   const [groupBy, setGroupBy] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [advancedFilters, setAdvancedFilters] = useState<AdvancedFilterCondition[]>([]);
@@ -852,19 +841,46 @@ export function SolicitudesPage() {
   // El filtro SIMPLE de status también puede pedir 'Rechazada'. Si lo hace, no
   // debemos excluirlas: de lo contrario el backend ignora el filtro y devuelve
   // "todo MENOS rechazadas", así que el chip de Rechazada no mostraba nada.
-  const excludeRechazadas = !statusInAdvanced && status !== 'Rechazada';
+  const excludeRechazadas = !statusInAdvanced && !statusSel.includes('Rechazada');
 
   // Fetch ALL data sólo cuando hay groupBy o filtros avanzados (esos siguen
   // siendo cliente-side). Search ya va al backend con paginación normal.
-  const needsAllData = !!groupBy || advancedFilters.length > 0;
+  // Default de orden según la vista (ver ORDEN_RAPIDO_TABLA_DEFAULT).
+  const ordenDefaultVista = activeView === 'tablero' ? ORDEN_RAPIDO_DEFAULT : ORDEN_RAPIDO_TABLA_DEFAULT;
+  // A diferencia de Propuestas/Campañas, aquí el backend sí acepta
+  // sortBy/sortOrder, así que 'Fecha de creación' y 'Presupuesto' viajan como
+  // columna + dirección del ORDER BY y siguen paginando barato. Solo 'Último
+  // cambio' ordena en cliente (updated_at + historial) y necesita el universo
+  // completo; para ese caso el backend recibe el default (fecha desc).
+  const campoOrden = ordenCampo(ordenRapido);
+  const backendSortBy = campoOrden === 'presupuesto' ? 'presupuesto' : 'fecha';
+  const backendSortOrder: 'asc' | 'desc' = campoOrden !== 'cambio' && ordenEsAsc(ordenRapido) ? 'asc' : 'desc';
+  const ordenNecesitaTodo = campoOrden === 'cambio';
+  // El tablero necesita TODAS las solicitudes para que los conteos por
+  // columna sean reales; va aquí (y no solo en el limit) porque needsAllData
+  // es lo que fija page=1.
+  const needsAllData = !!groupBy
+    || advancedFilters.length > 0
+    || soloIncompletos
+    || ordenNecesitaTodo
+    || activeView === 'tablero';
   const effectiveLimit = needsAllData ? 9999 : limit;
 
   // Si el filtro de historial pide "cambió a Rechazada", desactivamos el
   // exclude por default — si no, el filtro daria 0 porque la pagina oculta
   // todo lo que tiene status='Rechazada' actual.
   const effectiveExcludeRechazadas = (
-    historialFilter.modo === 'cambio_estatus' && historialFilter.estatusValor === 'Rechazada'
+    historialFilter.modo === 'cambio_estatus' && estatusValorIncluye(historialFilter.estatusValor, 'Rechazada')
   ) ? false : excludeRechazadas;
+
+  // El chip "Status" (multiselect) mezcla estatus de solicitud y estatus de
+  // autorización de circuitos ('Aut. Pend. DG', ...). Los segundos viajan al
+  // back como `autorizacion`; el back aplica OR entre ambos. Ver lib/autorizacionFiltro.
+  const statusFiltro = splitStatusSeleccion(statusSel);
+  // Fechas de último cambio por estatus/autorización: solo hacen falta para
+  // el orden "Último cambio" (el back las calcula desde historial).
+  // El tablero los pide siempre: la tarjeta muestra la fecha del ultimo cambio.
+  const includeCambios = campoOrden === 'cambio' || activeView === 'tablero';
 
   // Fetch stats with all active filters.
   // staleTime corto: el WebSocket invalida la query en cambios reales, así
@@ -873,13 +889,14 @@ export function SolicitudesPage() {
   // exclude efectivo): si alguno falta, el total y el chart quedan en un
   // universo distinto al de la tabla.
   const { data: stats } = useQuery({
-    queryKey: ['solicitudes-stats', yearInicio, yearFin, catorcenaInicio, catorcenaFin, status, searchForBackend, tipoPeriodo, historialFilter, effectiveExcludeRechazadas],
+    queryKey: ['solicitudes-stats', yearInicio, yearFin, catorcenaInicio, catorcenaFin, statusSel, searchForBackend, tipoPeriodo, historialFilter, effectiveExcludeRechazadas],
     queryFn: () => solicitudesService.getStats({
       yearInicio,
       yearFin,
       catorcenaInicio,
       catorcenaFin,
-      status: status || undefined,
+      status: statusFiltro.status,
+      autorizacion: statusFiltro.autorizacion,
       search: searchForBackend,
       tipoPeriodo: tipoPeriodo || undefined,
       excludeRechazadas: effectiveExcludeRechazadas,
@@ -890,19 +907,21 @@ export function SolicitudesPage() {
 
   // Fetch solicitudes
   const { data, isLoading } = useQuery({
-    queryKey: ['solicitudes', page, status, searchForBackend, yearInicio, yearFin, catorcenaInicio, catorcenaFin, sortBy, sortOrder, groupBy, tipoPeriodo, needsAllData, historialFilter, effectiveExcludeRechazadas],
+    queryKey: ['solicitudes', needsAllData ? 1 : page, statusSel, searchForBackend, yearInicio, yearFin, catorcenaInicio, catorcenaFin, backendSortBy, backendSortOrder, groupBy, tipoPeriodo, needsAllData, historialFilter, effectiveExcludeRechazadas, includeCambios],
     queryFn: () =>
       solicitudesService.getAll({
         page: needsAllData ? 1 : page,
         limit: effectiveLimit,
-        status: status || undefined,
+        status: statusFiltro.status,
+        autorizacion: statusFiltro.autorizacion,
+        includeCambios: includeCambios || undefined,
         search: searchForBackend,
         yearInicio,
         yearFin,
         catorcenaInicio,
         catorcenaFin,
-        sortBy,
-        sortOrder,
+        sortBy: backendSortBy,
+        sortOrder: backendSortOrder,
         groupBy: groupBy || undefined,
         tipoPeriodo: tipoPeriodo || undefined,
         excludeRechazadas: effectiveExcludeRechazadas,
@@ -942,6 +961,8 @@ export function SolicitudesPage() {
     if (stats?.byStatus) Object.keys(stats.byStatus).forEach(s => set.add(s));
     return Array.from(set).sort();
   }, [stats]);
+  // Cambios que puede considerar el orden "Último cambio" (popover del chip).
+  const cambiosOpciones = useMemo(() => construirOpcionesCambio(allStatuses), [allStatuses]);
 
   // Mini Donut Chart Component - compact version
   // Custom Tooltip for Chart
@@ -1027,7 +1048,7 @@ export function SolicitudesPage() {
   };
 
   const hasPeriodFilter = yearInicio !== undefined && yearFin !== undefined;
-  const hasActiveFilters = !!(status || hasPeriodFilter || groupBy || sortBy !== 'fecha' || advancedFilters.length > 0 || searchTags.length > 0);
+  const hasActiveFilters = !!(statusSel.length > 0 || hasPeriodFilter || groupBy || ordenRapido !== ordenDefaultVista || soloIncompletos || advancedFilters.length > 0 || searchTags.length > 0);
 
   // Get unique values for each field (for advanced filter dropdowns).
   // Solo se calcula cuando el panel de filtros avanzados está abierto: evita
@@ -1049,6 +1070,8 @@ export function SolicitudesPage() {
       // puede seleccionarlos en el filtro avanzado para verlos.
       if (fieldConfig.field === 'status') {
         Object.keys(STATUS_COLORS_DARK).forEach(s => values.add(s));
+        // Autorización de circuitos (se evalúa contra autorizacion_resumen).
+        AUTORIZACION_LABELS.forEach(s => values.add(s));
       }
       valuesMap[fieldConfig.field] = Array.from(values).sort();
     });
@@ -1060,8 +1083,19 @@ export function SolicitudesPage() {
   // aquí ya no es necesario re-filtrar por tags.
   const filteredData = useMemo(() => {
     if (!data?.data) return [];
-    return applyAdvancedFilters(data.data, advancedFilters);
-  }, [data?.data, advancedFilters]);
+    let result = applyAdvancedFilters(data.data, advancedFilters);
+    // Filtro rápido: solicitudes sin circuitos cargados (ver esSolicitudIncompleta).
+    if (soloIncompletos) result = result.filter(esSolicitudIncompleta);
+    // 'Último cambio' es el único orden que corre en cliente; creación y
+    // presupuesto ya vienen ordenados del backend. Solo con el universo
+    // completo, para no reordenar nada más la página visible. La fecha
+    // considera edición, cambios de estatus y de autorización según
+    // `cambiosSeleccion`.
+    if (ordenCampo(ordenRapido) === 'cambio' && needsAllData) {
+      result = ordenarTablero(result, ordenRapido, s => s.fecha, s => fechaUltimoCambio(s, cambiosSeleccion));
+    }
+    return result;
+  }, [data?.data, advancedFilters, soloIncompletos, ordenRapido, needsAllData, cambiosSeleccion]);
 
   // Group data
   const groupedData = useMemo(() => {
@@ -1134,16 +1168,44 @@ export function SolicitudesPage() {
     setAdvancedFilters([]);
   };
 
+  // Foto de la barra de filtros que guarda una vista (menu "Vistas" junto al
+  // boton Filtros), y como volver a aplicarla. El orden y "solo incompletos"
+  // van aparte en la vista (son campos propios de VistaTablero). Lo que no
+  // venga en la foto se resetea: aplicar una vista es "dejar la barra asi",
+  // no "sumar a lo que ya tenia". Ver lib/filtrosGuardados.
+  const filtrosSnapshot = useMemo<FiltrosDatos>(() => ({
+    statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin,
+    historialFilter, cambiosSeleccion, groupBy, advancedFilters, searchTags,
+  }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, groupBy, advancedFilters, searchTags]);
+  const aplicarFiltrosGuardados = React.useCallback((d: FiltrosDatos) => {
+    setStatusSel(leerStrings(d.statusSel));
+    setTipoPeriodo(leerString(d.tipoPeriodo));
+    setYearInicio(leerNumeroOpcional(d.yearInicio));
+    setYearFin(leerNumeroOpcional(d.yearFin));
+    setCatorcenaInicio(leerNumeroOpcional(d.catorcenaInicio));
+    setCatorcenaFin(leerNumeroOpcional(d.catorcenaFin));
+    setHistorialFilter(leerObjetoStrings(d.historialFilter) as HistorialFilterValues);
+    setCambiosSeleccion(Array.isArray(d.cambiosSeleccion) ? leerStrings(d.cambiosSeleccion) : null);
+    setGroupBy(leerString(d.groupBy));
+    setAdvancedFilters(leerCondiciones<AdvancedFilterCondition>(d.advancedFilters));
+    setSearchTags(leerStrings(d.searchTags));
+    setSearchInput('');
+    setExpandedGroups(new Set());
+    setShowFilters(true);
+    setPage(1);
+  }, []);
+
   const clearAllFilters = () => {
-    setStatus('');
+    setStatusSel([]);
     setTipoPeriodo('');
     setYearInicio(undefined);
     setYearFin(undefined);
     setCatorcenaInicio(undefined);
     setCatorcenaFin(undefined);
     setHistorialFilter({});
-    setSortBy('fecha');
-    setSortOrder('desc');
+    setOrdenRapido(ordenDefaultVista);
+    setCambiosSeleccion(null);
+    setSoloIncompletos(false);
     setGroupBy('');
     setExpandedGroups(new Set());
     setAdvancedFilters([]);
@@ -1161,8 +1223,33 @@ export function SolicitudesPage() {
   const handleRowStatus = React.useCallback((item: Solicitud) => setStatusSolicitud(item), []);
   const handleRowDelete = React.useCallback((id: number) => setDeleteId(id), []);
 
-  const totalPages = data?.pagination?.totalPages || 1;
-  const total = data?.pagination?.total ?? 0;
+  const cambiarVista = (v: VistaSolicitudes) => {
+    setActiveView(v);
+    setPage(1);
+    // Orden fijo del tablero (ultimo cambio arriba), salvo que el usuario ya
+    // hubiera elegido otro en la tabla.
+    if (v === 'tablero') setOrdenRapido(prev => (prev === ORDEN_RAPIDO_TABLA_DEFAULT ? ORDEN_RAPIDO_DEFAULT : prev));
+  };
+  const fijarVista = (v: VistaSolicitudes | null) => {
+    setVistaFija(v);
+    saveVistaFijaModulo('solicitudes', user?.id, v);
+  };
+
+  // Paginación. Cuando el filtrado/orden corre en cliente (needsAllData: orden
+  // "Último cambio", filtros avanzados, incompletos...) se pidió el universo
+  // completo y la paginación del servidor ya no aplica: se pagina en cliente
+  // sobre filteredData con el mismo `limit`, en vez de pintar todo de golpe.
+  // Con agrupación no se pagina (cada grupo pinta completo).
+  const paginaEnCliente = needsAllData && !groupBy;
+  const totalPages = paginaEnCliente
+    ? Math.max(1, Math.ceil(filteredData.length / limit))
+    : (data?.pagination?.totalPages || 1);
+  const total = paginaEnCliente ? filteredData.length : (data?.pagination?.total ?? 0);
+  // `page` puede quedar arriba del total al cambiar de modo/filtro: se acota.
+  const pageActual = Math.min(page, totalPages);
+  const filasTabla = paginaEnCliente
+    ? filteredData.slice((pageActual - 1) * limit, pageActual * limit)
+    : filteredData;
 
   return (
     <div className="min-h-screen">
@@ -1177,13 +1264,13 @@ export function SolicitudesPage() {
             <div className={`absolute top-0 right-0 w-32 h-32 rounded-full blur-3xl -mr-10 -mt-10 pointer-events-none transition-all duration-500 ${isDark ? 'bg-purple-500/10 group-hover:bg-purple-500/20' : 'bg-purple-200/30 group-hover:bg-purple-200/50'}`} />
             <div>
               <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>Total Solicitudes</p>
-              <h3 className={`text-4xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} tracking-tight`}>
+              <h3 className={`text-3xl sm:text-4xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} tracking-tight`}>
                 {(effectiveStats?.total ?? data?.pagination?.total ?? 0).toLocaleString()}
               </h3>
             </div>
             <div className="mt-4 flex items-center gap-2">
               <span className={`text-xs px-2 py-1 rounded-full ${isDark ? 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50' : 'bg-gray-100 text-gray-700 border-gray-200'} border`}>
-                {(status || allSearchTerms.length > 0 || advancedFilters.length > 0) ? 'Filtrado' : 'Todas las catorcenas'}
+                {(statusSel.length > 0 || allSearchTerms.length > 0 || advancedFilters.length > 0) ? 'Filtrado' : 'Todas las catorcenas'}
               </span>
             </div>
           </div>
@@ -1192,8 +1279,8 @@ export function SolicitudesPage() {
           <div className={`col-span-1 md:col-span-2 lg:col-span-2 rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-4 flex items-center relative overflow-hidden`}>
 
             {chartData ? (
-              <div className="w-full h-[140px] flex items-center">
-                <div className="h-full min-w-[140px]">
+              <div className="w-full min-h-[140px] flex flex-col sm:flex-row sm:h-[140px] sm:items-center gap-3 sm:gap-0">
+                <div className="h-[140px] w-full sm:h-full sm:w-auto sm:min-w-[140px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -1216,7 +1303,7 @@ export function SolicitudesPage() {
                 </div>
 
                 {/* Legend / List */}
-                <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-2 pl-4 h-full overflow-y-auto custom-scrollbar auto-rows-min content-start">
+                <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-2 sm:pl-4 max-sm:max-h-[180px] sm:h-full overflow-y-auto custom-scrollbar auto-rows-min content-start">
                   {chartData.map((item, i) => (
                     <div key={i} className={`flex items-center gap-2 p-2 rounded-lg ${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} border min-w-0`}>
                       <div className="w-2 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
@@ -1241,7 +1328,7 @@ export function SolicitudesPage() {
             <div>
               <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>Pendientes / Ajustar</p>
               <div className="flex items-baseline gap-2">
-                <h3 className={`text-3xl font-bold ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+                <h3 className={`text-2xl sm:text-3xl font-bold ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
                   {((effectiveStats?.byStatus['Pendiente'] || 0) + (effectiveStats?.byStatus['Ajustar'] || 0)).toLocaleString()}
                 </h3>
                 <span className={`text-xs font-medium ${isDark ? 'text-amber-500/80' : 'text-amber-600/80'}`}>Atención requerida</span>
@@ -1263,7 +1350,7 @@ export function SolicitudesPage() {
         <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90' : 'border-purple-200 bg-white'} backdrop-blur-xl p-4 relative z-30`}>
           <div className="flex flex-col gap-4">
             {/* Top Row: Search + Filter Toggle + Export */}
-            <div className="flex flex-col lg:flex-row items-start lg:items-center gap-4">
+            <div className="flex flex-col lg:flex-row lg:flex-wrap items-start lg:items-center gap-3">
               {/* Search with Tags */}
               <div className={`relative flex-1 w-full lg:max-w-xl flex items-center flex-wrap gap-1.5 min-h-[44px] px-3 py-1.5 rounded-xl border ${isDark ? 'border-purple-500/20 bg-zinc-900/80 hover:border-purple-500/40' : 'border-purple-200 bg-gray-50 hover:border-purple-300'} focus-within:ring-2 focus-within:ring-purple-500/30 focus-within:border-purple-500/40 transition-all`}>
                 <Search className={`h-4 w-4 shrink-0 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
@@ -1308,35 +1395,68 @@ export function SolicitudesPage() {
                 )}
               </div>
 
+              {/* Actualizar: refetch de listado y KPIs sin recargar la página */}
+              <RefreshButton isDark={isDark} queryKeys={[['solicitudes'], ['solicitudes-stats']]} />
+
               {/* Filter Toggle */}
               <button
                 onClick={() => setShowFilters(!showFilters)}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${showFilters || hasActiveFilters
+                title="Filtros"
+                className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${showFilters || hasActiveFilters
                   ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
                   : `${isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200'}`
                   }`}
               >
                 <SlidersHorizontal className="h-4 w-4" />
-                Filtros
+                <span className="hidden xl:inline">Filtros</span>
                 {hasActiveFilters && (
                   <span className="w-2 h-2 rounded-full bg-purple-400" />
                 )}
               </button>
 
+              {/* Vistas guardadas por usuario: filtros + orden + incompletos +
+                  columnas del tablero. Guardar / aplicar / renombrar / fijar. */}
+              <VistasGuardadasMenu
+                isDark={isDark}
+                scope="solicitudes"
+                userId={user?.id}
+                columnasValidas={SOLICITUDES_COLUMNAS_KEYS}
+                columnasVisibles={tableroColumnas}
+                onColumnasChange={setTableroColumnas}
+                orden={ordenRapido}
+                onOrdenChange={setOrdenRapido}
+                soloIncompletos={soloIncompletos}
+                onSoloIncompletosChange={setSoloIncompletos}
+                filtrosActuales={filtrosSnapshot}
+                onAplicarFiltros={aplicarFiltrosGuardados}
+              />
+
+              {/* Selector de vista (Tabla / Tablero) + estrella para fijar con
+                  cual abre el modulo. Mismo control que Propuestas y Campanas. */}
+              <VistaSelector
+                isDark={isDark}
+                opciones={VISTAS_SOLICITUDES}
+                value={activeView}
+                onChange={cambiarVista}
+                fija={vistaFija}
+                onFijar={fijarVista}
+              />
+
               {/* Export CSV */}
               <button
                 onClick={handleExportCSV}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'} transition-all`}
+                title="Exportar CSV"
+                className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap ${isDark ? 'bg-zinc-800/60 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:bg-gray-200 hover:text-gray-700'} transition-all`}
               >
                 <Download className="h-4 w-4" />
-                Exportar CSV
+                <span className="hidden xl:inline">Exportar CSV</span>
               </button>
 
               {/* Nueva Solicitud */}
               {permissions.canCreateSolicitudes && (
                 <button
                   onClick={() => setShowCreateModal(true)}
-                  className="flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all"
+                  className="flex shrink-0 items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold whitespace-nowrap text-white bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40 transition-all"
                 >
                   <Plus className="h-4 w-4" />
                   Nueva Solicitud
@@ -1367,7 +1487,7 @@ export function SolicitudesPage() {
                     )}
                   </button>
                   {showAdvancedFilters && (
-                    <div className={`absolute left-0 top-full mt-1 z-[100] w-[520px] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-purple-200'} border rounded-xl shadow-2xl p-4`}>
+                    <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:left-0 lg:right-auto lg:top-full lg:bottom-auto lg:mt-1 lg:w-[520px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible z-[100] ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-purple-200'} border rounded-xl shadow-2xl p-4`}>
                       <div className="flex items-center justify-between mb-3">
                         <span className={`text-sm font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>Filtros avanzados</span>
                         <button
@@ -1377,9 +1497,9 @@ export function SolicitudesPage() {
                           <X className="h-4 w-4" />
                         </button>
                       </div>
-                      <div className="space-y-2 max-h-[300px] overflow-visible pr-1">
+                      <div className="space-y-2 max-h-[300px] max-lg:landscape:max-h-32 overflow-visible pr-1">
                         {advancedFilters.map((filter, index) => (
-                          <div key={filter.id} className="flex items-center gap-2">
+                          <div key={filter.id} className="flex flex-wrap lg:flex-nowrap items-center gap-2">
                             {index > 0 && (
                               <button
                                 onClick={() => {
@@ -1497,21 +1617,20 @@ export function SolicitudesPage() {
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
-                {/* Status Filter */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>Status:</span>
-                <FilterChip
+                {/* Status Filter — estatus de solicitud + autorización de circuitos */}
+                <MultiSelectChip
                   label="Status"
-                  options={allStatuses}
-                  value={status}
-                  onChange={(val) => { setStatus(val); setPage(1); }}
-                  onClear={() => { setStatus(''); setPage(1); }}
+                  options={[...allStatuses, ...AUTORIZACION_LABELS]}
+                  separatorBefore={AUTORIZACION_LABELS[0]}
+                  values={statusSel}
+                  onChange={(vals) => { setStatusSel(vals); setPage(1); }}
+                  onClear={() => { setStatusSel([]); setPage(1); }}
                   isDark={isDark}
                 />
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
                 {/* Tipo Periodo Filter */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>Periodo:</span>
                 <FilterChip
                   label="Tipo Periodo"
                   options={['catorcena', 'mensual']}
@@ -1569,35 +1688,26 @@ export function SolicitudesPage() {
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
-                {/* Sort */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>
-                  <ArrowUpDown className="h-3 w-3 inline mr-1" />
-                  Ordenar:
-                </span>
-                <FilterChip
-                  label="Campo"
-                  options={['fecha', 'presupuesto', 'razon_social', 'status']}
-                  value={sortBy}
-                  onChange={(val) => { setSortBy(val); setPage(1); }}
-                  onClear={() => { setSortBy('fecha'); setPage(1); }}
+                {/* Menú "Ordenar" (creación / presupuesto / último cambio) +
+                    chip de incompletos (aplican a Tabla y Tablero). Sustituyen
+                    a los chips "Orden: asc/desc" y "Campo": la columna y la
+                    dirección del ORDER BY del backend salen de aquí. */}
+                <OrdenRapidoMenu
                   isDark={isDark}
-                />
-                <FilterChip
-                  label="Orden"
-                  options={['desc', 'asc']}
-                  value={sortOrder}
-                  onChange={(val) => { setSortOrder(val as 'asc' | 'desc'); setPage(1); }}
-                  onClear={() => { setSortOrder('desc'); setPage(1); }}
-                  isDark={isDark}
+                  orden={ordenRapido}
+                  onOrdenChange={(o) => { setOrdenRapido(o); setPage(1); }}
+                  soloIncompletos={soloIncompletos}
+                  onSoloIncompletosChange={(v) => { setSoloIncompletos(v); setPage(1); }}
+                  entidadPlural="solicitudes"
+                  incompletosHint="Solo solicitudes sin circuitos cargados"
+                  cambiosOpciones={cambiosOpciones}
+                  cambiosSeleccion={cambiosSeleccion}
+                  onCambiosSeleccionChange={setCambiosSeleccion}
                 />
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
                 {/* Group By */}
-                <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mr-1`}>
-                  <Layers className="h-3 w-3 inline mr-1" />
-                  Agrupar:
-                </span>
                 <FilterChip
                   label="Sin agrupar"
                   options={['status', 'marca_nombre', 'asignado', 'razon_social', 'asesor', 'nombre_usuario']}
@@ -1632,7 +1742,46 @@ export function SolicitudesPage() {
           </div>
         )}
 
+        {/* Vista Tablero — columnas por estatus. Solo lectura: clic abre el
+            ViewSolicitudModal y el badge el StatusModal, con los mismos
+            candados por estatus que la tabla (Atendida no se edita aquí). */}
+        {activeView === 'tablero' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                {filteredData.length} {filteredData.length === 1 ? 'solicitud' : 'solicitudes'} en el tablero
+              </span>
+              <TableroVistasControls
+                isDark={isDark}
+                todasColumnas={SOLICITUDES_COLUMNAS}
+                columnasVisibles={tableroColumnas}
+                onColumnasChange={setTableroColumnas}
+              />
+            </div>
+            <SolicitudesTableroView
+              items={filteredData}
+              columnasVisibles={tableroColumnas}
+              isDark={isDark}
+              isLoading={isLoading}
+              onStatus={handleRowStatus}
+              onAbrir={handleRowView}
+              acciones={{
+                canEditPerm: permissions.canEditSolicitudes,
+                canAtenderPerm: permissions.canAtenderSolicitudes,
+                canDeletePerm: permissions.canDeleteSolicitudes,
+                canChangeEstadoPerm: permissions.canChangeEstadoSolicitud,
+                onView: handleRowView,
+                onEdit: handleRowEdit,
+                onAtender: handleRowAtender,
+                onStatus: handleRowStatus,
+                onDelete: handleRowDelete,
+              }}
+            />
+          </div>
+        )}
+
         {/* Data Table */}
+        {activeView === 'tabla' && (
         <div className={`rounded-2xl border ${isDark ? 'border-purple-500/20 bg-gradient-to-br from-zinc-900/90 via-purple-950/20 to-zinc-900/90 shadow-xl shadow-purple-500/5' : 'border-purple-200 bg-white shadow-lg shadow-gray-200/50'} backdrop-blur-xl overflow-hidden relative z-10`}>
           {isLoading ? (
             <div className="flex items-center justify-center h-64">
@@ -1644,20 +1793,20 @@ export function SolicitudesPage() {
               {!groupBy && data?.pagination && totalPages > 1 && (
                 <div className={`flex items-center justify-between border-b px-4 py-3 ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-purple-200 bg-gradient-to-r from-purple-50/50 via-transparent to-fuchsia-50/50'}`}>
                   <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-purple-600/70'}`}>
-                    Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{totalPages}</span>
-                    <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-purple-600/50'}`}>({data.pagination.total} total)</span>
+                    Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{pageActual}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{totalPages}</span>
+                    <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-purple-600/50'}`}>({total} total)</span>
                   </span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setPage(p => Math.max(1, p - 1))}
-                      disabled={page === 1}
+                      onClick={() => setPage(Math.max(1, pageActual - 1))}
+                      disabled={pageActual === 1}
                       className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'}`}
                     >
                       Anterior
                     </button>
                     <button
-                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                      disabled={page === totalPages}
+                      onClick={() => setPage(Math.min(totalPages, pageActual + 1))}
+                      disabled={pageActual === totalPages}
                       className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'}`}
                     >
                       Siguiente
@@ -1714,7 +1863,7 @@ export function SolicitudesPage() {
                         </React.Fragment>
                       ))
                     ) : (
-                      filteredData.map((item, idx) => (
+                      filasTabla.map((item, idx) => (
                         <SolicitudRow
                           key={`sol-${item.id}-${idx}`}
                           item={item}
@@ -1752,20 +1901,20 @@ export function SolicitudesPage() {
               {!groupBy && data?.pagination && totalPages > 1 && (
                 <div className={`flex items-center justify-between border-t px-4 py-3 ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-purple-200 bg-gradient-to-r from-purple-50/50 via-transparent to-fuchsia-50/50'}`}>
                   <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-purple-600/70'}`}>
-                    Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{totalPages}</span>
-                    <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-purple-600/50'}`}>({data.pagination.total} total)</span>
+                    Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{pageActual}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{totalPages}</span>
+                    <span className={`ml-2 ${isDark ? 'text-purple-300/50' : 'text-purple-600/50'}`}>({total} total)</span>
                   </span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setPage(p => Math.max(1, p - 1))}
-                      disabled={page === 1}
+                      onClick={() => setPage(Math.max(1, pageActual - 1))}
+                      disabled={pageActual === 1}
                       className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'}`}
                     >
                       Anterior
                     </button>
                     <button
-                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                      disabled={page === totalPages}
+                      onClick={() => setPage(Math.min(totalPages, pageActual + 1))}
+                      disabled={pageActual === totalPages}
                       className={`px-4 py-2 rounded-lg border text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'}`}
                     >
                       Siguiente
@@ -1785,19 +1934,20 @@ export function SolicitudesPage() {
             </>
           )}
         </div>
+        )}
       </div>
 
       {/* Rechazo Confirmation Modal — NO elimina, solo marca status='Rechazada'
           (el back libera reservas y oculta del listado). */}
       {deleteId && (
-        <div className={`fixed inset-0 ${isDark ? 'bg-black/70' : 'bg-black/40'} flex items-center justify-center z-50`}>
-          <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl p-6 max-w-md`}>
+        <div className={`fixed inset-0 ${isDark ? 'bg-black/70' : 'bg-black/40'} flex items-center justify-center z-50 p-3 sm:p-4`}>
+          <div className={`${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-2xl p-4 sm:p-6 w-full max-w-md max-h-[calc(100dvh-1.5rem)] overflow-y-auto`}>
             <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'} mb-2`}>Rechazar solicitud</h3>
             <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-6`}>
               Esto cambiara el status a <strong>Rechazada</strong> y liberara las reservas asociadas.
               La solicitud no se borra: puedes verla filtrando por status &ldquo;Rechazada&rdquo;.
             </p>
-            <div className="flex justify-end gap-3">
+            <div className="flex flex-wrap justify-end gap-2 sm:gap-3">
               <button
                 onClick={() => setDeleteId(null)}
                 className={`px-4 py-2 rounded-lg text-sm border ${isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border-zinc-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-gray-200'}`}

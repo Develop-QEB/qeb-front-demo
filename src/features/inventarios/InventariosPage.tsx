@@ -25,6 +25,43 @@ import { AnalisisOcupacionListModal } from './AnalisisOcupacionListModal';
 import { AuditoriaConflictosModal } from './AuditoriaConflictosModal';
 import { ReorganizarOcupacionModal } from './ReorganizarOcupacionModal';
 import { BloqueoMasivoModal } from './BloqueoMasivoModal';
+import {
+  TIPO_BLOQUEO_TEXTOS,
+  TipoBloqueoInventario,
+  VigenciaBloqueo,
+  esInventarioBloqueado,
+  esBloqueoProgramado,
+  describirVigencia,
+  fechaCorta,
+  vigenciaEsProgramada,
+} from '../../lib/bloqueoInventario';
+
+// Textos del modal de revertir según el estado de la pieza: bloqueada
+// (Habilitar / Marcar Disponible) o con bloqueo programado aún no aplicado
+// (cancelar la programación). En ambos casos el back recibe el toggle sin tipo.
+function textosRevertir(item: Inventario): { titulo: string; pregunta: string; boton: string } {
+  if (esBloqueoProgramado(item)) {
+    return {
+      titulo: 'Cancelar bloqueo programado',
+      pregunta: `¿Deseas cancelar el bloqueo programado (${item.bloqueo_tipo}) de este inventario? La pieza seguirá disponible.`,
+      boton: 'Cancelar programación',
+    };
+  }
+  const verbo = item.estatus === 'Inhabilitado' ? 'Habilitar' : 'Marcar Disponible';
+  return {
+    titulo: `${verbo} inventario`,
+    pregunta: `¿Estás seguro de que deseas ${item.estatus === 'Inhabilitado' ? 'habilitar' : 'marcar como Disponible'} este inventario?`,
+    boton: verbo,
+  };
+}
+
+// Vigencia tal como viene en la fila (fechas DATE serializadas como ISO).
+function vigenciaDeItem(item: Inventario): VigenciaBloqueo {
+  return {
+    fecha_inicio: item.bloqueo_fecha_inicio ? item.bloqueo_fecha_inicio.slice(0, 10) : null,
+    fecha_fin: item.bloqueo_fecha_fin ? item.bloqueo_fecha_fin.slice(0, 10) : null,
+  };
+}
 
 const getEstatusStyles = (isDark: boolean): Record<string, { bg: string; text: string; border: string }> => ({
   Activo: { bg: isDark ? 'bg-emerald-500/20' : 'bg-emerald-50', text: isDark ? 'text-emerald-300' : 'text-emerald-700', border: 'border-emerald-500/30' },
@@ -32,7 +69,10 @@ const getEstatusStyles = (isDark: boolean): Record<string, { bg: string; text: s
   Reservado: { bg: isDark ? 'bg-amber-500/20' : 'bg-amber-50', text: isDark ? 'text-amber-300' : 'text-amber-700', border: 'border-amber-500/30' },
   Ocupado: { bg: isDark ? 'bg-cyan-500/20' : 'bg-cyan-50', text: isDark ? 'text-cyan-300' : 'text-cyan-700', border: 'border-cyan-500/30' },
   Mantenimiento: { bg: isDark ? 'bg-zinc-500/20' : 'bg-zinc-50', text: isDark ? 'text-zinc-300' : 'text-zinc-700', border: 'border-zinc-500/30' },
+  // 'No Disponible' = nombre nuevo de 'Bloqueado'; el legacy se conserva para filas pre-migración.
+  'No Disponible': { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
   Bloqueado: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
+  Inhabilitado: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
 });
 const getDefaultEstatus = (isDark: boolean) => ({ bg: isDark ? 'bg-violet-500/20' : 'bg-violet-50', text: isDark ? 'text-violet-300' : 'text-violet-700', border: 'border-violet-500/30' });
 
@@ -319,9 +359,12 @@ export function InventariosPage() {
     enabled: isHistorialOpen && selectedId !== null && historialTab === 'acciones',
   });
 
+  // `tipo` (y la vigencia) solo se mandan al bloquear; al desbloquear o cancelar
+  // un bloqueo programado va sin body.
   const toggleBlockMutation = useMutation({
-    mutationFn: (id: number) => inventariosService.toggleBlock(id),
-    onSuccess: (_data, id) => {
+    mutationFn: ({ id, tipo, vigencia }: { id: number; tipo?: TipoBloqueoInventario; vigencia?: VigenciaBloqueo }) =>
+      inventariosService.toggleBlock(id, tipo, vigencia),
+    onSuccess: (_data, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['inventarios'] });
       queryClient.invalidateQueries({ queryKey: ['inventario-acciones', id] });
       queryClient.invalidateQueries({ queryKey: ['inventario-historial', id] });
@@ -332,7 +375,8 @@ export function InventariosPage() {
   const EN_USO_ESTATUS = ['Reservado', 'Ocupado', 'Vendido'];
 
   const handleBloquearClick = (item: Inventario) => {
-    if (item.estatus === 'Bloqueado') {
+    // Bloqueada o con bloqueo programado pendiente → modal de revertir.
+    if (esInventarioBloqueado(item.estatus) || esBloqueoProgramado(item)) {
       setDesbloqueoItem(item);
     } else {
       setBloqueoItem(item);
@@ -344,24 +388,28 @@ export function InventariosPage() {
     setIsBloqueoSubmitting(true);
     try {
       const realEstatus = bloqueoItem.estatus_real || bloqueoItem.estatus || '';
-      const esLibre = bloqueoItem.estatus !== 'Bloqueado' && !EN_USO_ESTATUS.includes(realEstatus) && data.campanas.length === 0;
+      const yaBloqueado = esInventarioBloqueado(bloqueoItem.estatus);
+      const esLibre = !yaBloqueado && !EN_USO_ESTATUS.includes(realEstatus) && data.campanas.length === 0;
       const fechaBloqueo = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const textos = TIPO_BLOQUEO_TEXTOS[data.tipo];
 
       // Info del inventario para descripción
       const infoInventario = [
         `Inventario: #${bloqueoItem.id}${bloqueoItem.codigo_unico ? ` — ${bloqueoItem.codigo_unico}` : ''}`,
         bloqueoItem.ubicacion ? `Ubicación: ${bloqueoItem.ubicacion}` : null,
         bloqueoItem.plaza ? `Plaza: ${bloqueoItem.plaza}` : null,
+        `Tipo: ${textos.opcion}`,
+        `Vigencia: ${describirVigencia(data.vigencia)}${vigenciaEsProgramada(data.vigencia) ? ' (programado: el bloqueo se aplica ese día)' : ''}`,
       ].filter(Boolean).join('\n');
 
       if (esLibre) {
         // Disponible y sin campañas activas → bloquear directo
-        await toggleBlockMutation.mutateAsync(bloqueoItem.id);
+        await toggleBlockMutation.mutateAsync({ id: bloqueoItem.id, tipo: data.tipo, vigencia: data.vigencia });
       } else {
         // En uso, ya bloqueado, o con campañas activas → crear una tarea de ajuste por cada campaña
         // Si no está bloqueado aún, bloquearlo
-        if (bloqueoItem.estatus !== 'Bloqueado') {
-          await toggleBlockMutation.mutateAsync(bloqueoItem.id);
+        if (!yaBloqueado) {
+          await toggleBlockMutation.mutateAsync({ id: bloqueoItem.id, tipo: data.tipo, vigencia: data.vigencia });
         }
         const campanasList = data.campanas.map(c => `  • ${c.campana_nombre} (${c.cliente_nombre})`).join('\n');
 
@@ -375,7 +423,7 @@ export function InventariosPage() {
 
             const descripcion = [
               infoInventario,
-              `\nFecha de bloqueo: ${fechaBloqueo}`,
+              `\nFecha de ${textos.sustantivo}: ${fechaBloqueo}`,
               //`\nCampañas afectadas:\n${campanasList}`,
               `\nIndicaciones: ${data.motivo}`,
               user ? `\nSolicitado por: ${user.nombre}` : null,
@@ -398,13 +446,13 @@ export function InventariosPage() {
       // Tarea de seguimiento de bloqueo asignada al usuario que bloqueó
       const seguimientoDesc = [
         infoInventario,
-        `\nFecha de bloqueo: ${fechaBloqueo}`,
+        `\nFecha de ${textos.sustantivo}: ${fechaBloqueo}`,
         `\nIndicaciones: ${data.motivo}`,
-        user ? `\nBloqueado por: ${user.nombre}` : null,
+        user ? `\n${textos.participio} por: ${user.nombre}` : null,
       ].filter(Boolean).join('\n');
 
       await notificacionesService.create({
-        titulo: `Seguimiento de bloqueo — #${bloqueoItem.id}${bloqueoItem.codigo_unico ? ` ${bloqueoItem.codigo_unico}` : ''}`,
+        titulo: `Seguimiento de ${textos.sustantivo} — #${bloqueoItem.id}${bloqueoItem.codigo_unico ? ` ${bloqueoItem.codigo_unico}` : ''}`,
         descripcion: seguimientoDesc,
         tipo: 'Notificación',
         ...(user && {
@@ -434,6 +482,7 @@ export function InventariosPage() {
     setIsBloqueoBulkSubmitting(true);
     try {
       const fechaBloqueo = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const textos = TIPO_BLOQUEO_TEXTOS[data.tipo];
 
       await Promise.all(data.perItem.map(async (entry) => {
         const inv = entry.item;
@@ -441,11 +490,13 @@ export function InventariosPage() {
           `Inventario: #${inv.id}${inv.codigo_unico ? ` — ${inv.codigo_unico}` : ''}`,
           inv.ubicacion ? `Ubicación: ${inv.ubicacion}` : null,
           inv.plaza ? `Plaza: ${inv.plaza}` : null,
+          `Tipo: ${textos.opcion}`,
+          `Vigencia: ${describirVigencia(data.vigencia)}${vigenciaEsProgramada(data.vigencia) ? ' (programado: el bloqueo se aplica ese día)' : ''}`,
         ].filter(Boolean).join('\n');
 
         // 1) Bloquear (libera reservas en el back) — solo si no estaba bloqueado.
         if (!entry.yaEstaBloquedo) {
-          await toggleBlockMutation.mutateAsync(inv.id);
+          await toggleBlockMutation.mutateAsync({ id: inv.id, tipo: data.tipo, vigencia: data.vigencia });
         }
 
         // 2) Tareas por campaña afectada
@@ -453,7 +504,7 @@ export function InventariosPage() {
           const asignados = [...p.analistas, ...p.trafico];
           const descripcion = [
             infoInventario,
-            `\nFecha de bloqueo: ${fechaBloqueo}`,
+            `\nFecha de ${textos.sustantivo}: ${fechaBloqueo}`,
             `\nIndicaciones: ${data.motivo}`,
             user ? `\nSolicitado por: ${user.nombre}` : null,
           ].filter(Boolean).join('\n');
@@ -473,13 +524,13 @@ export function InventariosPage() {
         // 3) Notificación de seguimiento por inventario
         const seguimientoDesc = [
           infoInventario,
-          `\nFecha de bloqueo: ${fechaBloqueo}`,
+          `\nFecha de ${textos.sustantivo}: ${fechaBloqueo}`,
           `\nIndicaciones: ${data.motivo}`,
-          user ? `\nBloqueado por: ${user.nombre}` : null,
+          user ? `\n${textos.participio} por: ${user.nombre}` : null,
         ].filter(Boolean).join('\n');
 
         await notificacionesService.create({
-          titulo: `Seguimiento de bloqueo — #${inv.id}${inv.codigo_unico ? ` ${inv.codigo_unico}` : ''}`,
+          titulo: `Seguimiento de ${textos.sustantivo} — #${inv.id}${inv.codigo_unico ? ` ${inv.codigo_unico}` : ''}`,
           descripcion: seguimientoDesc,
           tipo: 'Notificación',
           ...(user && {
@@ -999,7 +1050,9 @@ export function InventariosPage() {
     { key: 'total_espacios', label: 'Total Espacios', type: 'number' },
     { key: 'tarifa_publica', label: 'Tarifa Pública', type: 'number' },
     { key: 'tarifa_piso', label: 'Tarifa Piso', type: 'number' },
-    { key: 'estatus', label: 'Estatus', options: ['Disponible', 'Reservado', 'Ocupado', 'Mantenimiento', 'Bloqueado'] },
+    // 'No Disponible' reemplaza a 'Bloqueado' como opción visible; el back expande
+    // el filtro a ambos valores (filas legacy incluidas).
+    { key: 'estatus', label: 'Estatus', options: ['Disponible', 'Reservado', 'Ocupado', 'Mantenimiento', 'No Disponible', 'Inhabilitado'] },
   ];
 
   const renderFormModal = (isEdit: boolean) => (
@@ -1102,11 +1155,11 @@ export function InventariosPage() {
             </div>
           </div>
 
-          {/* Bloqueados */}
+          {/* No Disponibles (bloqueados) */}
           <div className={`rounded-2xl border ${isDark ? 'border-zinc-800/80 bg-zinc-900/50' : 'border-gray-200 bg-white'} backdrop-blur-sm p-5 flex flex-col justify-between relative overflow-hidden group`}>
             <div className="absolute bottom-0 right-0 w-24 h-24 bg-red-500/10 rounded-full blur-2xl -mr-5 -mb-5 pointer-events-none group-hover:bg-red-500/20 transition-all duration-500" />
             <div>
-              <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>Bloqueados</p>
+              <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm font-medium mb-1`}>No Disponibles</p>
               <div className="flex items-baseline gap-2">
                 <h3 className="text-3xl font-bold text-red-400">
                   {isLoadingStats ? '...' : (statsData?.bloqueados ?? 0)}
@@ -1520,7 +1573,9 @@ export function InventariosPage() {
                       {sortedData.map(item => {
                         const realEstatus = item.estatus_real || item.estatus;
                         const estStyle = getEstatusStyle(realEstatus);
-                        const isBlocked = item.estatus === 'Bloqueado';
+                        const isBlocked = esInventarioBloqueado(item.estatus);
+                        const programado = esBloqueoProgramado(item);
+                        const vigenciaItem = vigenciaDeItem(item);
                         const isSelected = selectedRows.has(item.id);
                         return (
                           <tr key={item.id} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-200 hover:bg-gray-50'} transition-colors ${isBlocked ? 'opacity-40' : ''} ${isSelected ? (isDark ? 'bg-purple-500/10' : 'bg-purple-50/60') : ''}`}>
@@ -1579,13 +1634,28 @@ export function InventariosPage() {
                               </span>
                             </td>
                             <td className="px-4 py-3">
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                                isBlocked
-                                  ? isDark ? 'bg-red-500/20 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'
-                                  : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              } border`}>
-                                {isBlocked ? 'Bloqueado' : 'Activo'}
-                              </span>
+                              <div className="flex flex-col items-start gap-0.5">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                                  isBlocked
+                                    ? isDark ? 'bg-red-500/20 text-red-300 border-red-500/30' : 'bg-red-50 text-red-700 border-red-200'
+                                    : programado
+                                      ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200'
+                                      : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                } border`}>
+                                  {isBlocked ? item.estatus : programado ? `${item.bloqueo_tipo} programado` : 'Activo'}
+                                </span>
+                                {/* Vigencia del bloqueo: hasta cuándo, o indefinido; programado = desde cuándo */}
+                                {isBlocked && (
+                                  <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} title={`Vigencia: ${describirVigencia(vigenciaItem)}`}>
+                                    {vigenciaItem.fecha_fin ? `hasta ${fechaCorta(vigenciaItem.fecha_fin)}` : 'indefinido'}
+                                  </span>
+                                )}
+                                {programado && (
+                                  <span className={`text-[10px] ${isDark ? 'text-amber-400/80' : 'text-amber-600'}`} title={`Vigencia: ${describirVigencia(vigenciaItem)}`}>
+                                    desde {fechaCorta(vigenciaItem.fecha_inicio)}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center justify-center gap-1">
@@ -1605,16 +1675,18 @@ export function InventariosPage() {
                                 </button>
                                 <button
                                   onClick={() => handleBloquearClick(item)}
-                                  disabled={toggleBlockMutation.isPending && toggleBlockMutation.variables === item.id}
+                                  disabled={toggleBlockMutation.isPending && toggleBlockMutation.variables?.id === item.id}
                                   className={`p-1.5 rounded-lg transition-colors ${isBlocked
                                     ? isDark ? 'hover:bg-amber-500/10 text-red-400 hover:text-amber-300' : 'hover:bg-amber-50 text-red-600 hover:text-amber-700'
-                                    : `${isDark ? 'hover:bg-red-500/10 hover:text-red-400' : 'hover:bg-red-50 hover:text-red-600'} ${isDark ? 'text-zinc-500' : 'text-gray-400'}`
+                                    : programado
+                                      ? isDark ? 'hover:bg-amber-500/10 text-amber-400 hover:text-amber-300' : 'hover:bg-amber-50 text-amber-600 hover:text-amber-700'
+                                      : `${isDark ? 'hover:bg-red-500/10 hover:text-red-400' : 'hover:bg-red-50 hover:text-red-600'} ${isDark ? 'text-zinc-500' : 'text-gray-400'}`
                                   } disabled:opacity-50`}
-                                  title={isBlocked ? 'Crear tarea de revisión' : 'Bloquear'}
+                                  title={isBlocked ? (item.estatus === 'Inhabilitado' ? 'Habilitar' : 'Marcar Disponible') : programado ? 'Cancelar bloqueo programado' : 'Marcar No Disponible / Inhabilitar'}
                                 >
-                                  {toggleBlockMutation.isPending && toggleBlockMutation.variables === item.id
+                                  {toggleBlockMutation.isPending && toggleBlockMutation.variables?.id === item.id
                                     ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    : isBlocked ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
+                                    : (isBlocked || programado) ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />
                                   }
                                 </button>
                               </div>
@@ -1838,25 +1910,77 @@ export function InventariosPage() {
                       ) : (
                         <div className="space-y-2">
                           {accionesData.map((accion) => {
-                            const accionStyles: Record<string, { bg: string; text: string; border: string }> = {
-                              reservado: { bg: isDark ? 'bg-amber-500/20' : 'bg-amber-50', text: isDark ? 'text-amber-300' : 'text-amber-700', border: 'border-amber-500/30' },
-                              quitado_de_campana: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
-                              bloqueado: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
-                              desbloqueado: { bg: isDark ? 'bg-emerald-500/20' : 'bg-emerald-50', text: isDark ? 'text-emerald-300' : 'text-emerald-700', border: 'border-emerald-500/30' },
-                              actualizado: { bg: isDark ? 'bg-cyan-500/20' : 'bg-cyan-50', text: isDark ? 'text-cyan-300' : 'text-cyan-700', border: 'border-cyan-500/30' },
-                              creado: { bg: isDark ? 'bg-blue-500/20' : 'bg-blue-50', text: isDark ? 'text-blue-300' : 'text-blue-700', border: 'border-blue-500/30' },
+                            // El color sale de la accion (mas especifica) y cae al
+                            // tipo_evento que manda el back. Vendida/venta en rojo,
+                            // apartado en ambar, liberacion en gris: el mismo
+                            // codigo de color que usa el resto del modulo.
+                            const paleta = {
+                              rojo: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: 'border-red-500/30' },
+                              ambar: { bg: isDark ? 'bg-amber-500/20' : 'bg-amber-50', text: isDark ? 'text-amber-300' : 'text-amber-700', border: 'border-amber-500/30' },
+                              verde: { bg: isDark ? 'bg-emerald-500/20' : 'bg-emerald-50', text: isDark ? 'text-emerald-300' : 'text-emerald-700', border: 'border-emerald-500/30' },
+                              cyan: { bg: isDark ? 'bg-cyan-500/20' : 'bg-cyan-50', text: isDark ? 'text-cyan-300' : 'text-cyan-700', border: 'border-cyan-500/30' },
+                              azul: { bg: isDark ? 'bg-blue-500/20' : 'bg-blue-50', text: isDark ? 'text-blue-300' : 'text-blue-700', border: 'border-blue-500/30' },
+                              gris: { bg: isDark ? 'bg-zinc-500/20' : 'bg-zinc-100', text: isDark ? 'text-zinc-300' : 'text-zinc-700', border: 'border-zinc-500/30' },
                             };
-                            const style = accionStyles[accion.accion.toLowerCase()] || { bg: isDark ? 'bg-zinc-500/20' : 'bg-zinc-50', text: isDark ? 'text-zinc-300' : 'text-zinc-700', border: 'border-zinc-500/30' };
+                            const a = accion.accion.toLowerCase();
+                            const style =
+                              a.startsWith('vendida') || a.startsWith('pasó a ventas') ? paleta.rojo
+                              : a.startsWith('reservada') ? paleta.ambar
+                              : a.startsWith('liberada') ? paleta.gris
+                              : a.startsWith('bloqueado') || a.startsWith('inhabilitado') || a.startsWith('no disponible') ? paleta.rojo
+                              : a.startsWith('desbloqueado') || a.startsWith('habilitado') ? paleta.verde
+                              : a.startsWith('actualizado') ? paleta.cyan
+                              : a.startsWith('creado') ? paleta.azul
+                              : a.includes('conflicto') || a.includes('limpieza') ? paleta.ambar
+                              : accion.tipo_evento === 'venta' ? paleta.rojo
+                              : accion.tipo_evento === 'reserva' ? paleta.ambar
+                              : accion.tipo_evento === 'liberacion' ? paleta.gris
+                              : accion.tipo_evento === 'conflicto' ? paleta.ambar
+                              : paleta.gris;
+                            const href = accion.campana_id
+                              ? `/campanas/detail/${accion.campana_id}`
+                              : accion.propuesta_id
+                                ? `/propuestas?viewId=${accion.propuesta_id}`
+                                : null;
+                            const dondeLabel = accion.campana_id
+                              ? (accion.campana_nombre || `Campaña #${accion.campana_id}`)
+                              : accion.propuesta_id
+                                ? `Propuesta #${accion.propuesta_id}`
+                                : null;
                             return (
                               <div key={accion.id} className={`p-4 rounded-xl ${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} border`}>
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex items-start gap-2 flex-1 min-w-0">
                                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${style.bg} ${style.text} border ${style.border} shrink-0`}>
                                       {accion.accion}
                                     </span>
-                                    {accion.detalles && (
-                                      <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} truncate`}>{accion.detalles}</p>
-                                    )}
+                                    <div className="min-w-0 flex-1">
+                                      {accion.detalles && (
+                                        <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{accion.detalles}</p>
+                                      )}
+                                      {(dondeLabel || accion.catorcena || accion.articulo) && (
+                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+                                          {dondeLabel && href && (
+                                            <a
+                                              href={href}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className={`text-[10px] underline underline-offset-2 ${accion.campana_id ? (isDark ? 'text-purple-300 hover:text-purple-200' : 'text-purple-700') : (isDark ? 'text-amber-300 hover:text-amber-200' : 'text-amber-700')}`}
+                                            >
+                                              {dondeLabel}
+                                            </a>
+                                          )}
+                                          {accion.catorcena && (
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${isDark ? 'border-zinc-700 text-zinc-400' : 'border-gray-300 text-gray-500'}`}>
+                                              {accion.catorcena}
+                                            </span>
+                                          )}
+                                          {accion.articulo && (
+                                            <span className={`text-[10px] font-mono ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>{accion.articulo}</span>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                   <div className="text-right shrink-0">
                                     <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
@@ -2461,7 +2585,7 @@ export function InventariosPage() {
             <div className={`flex items-center justify-between px-5 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
               <div className="flex items-center gap-2">
                 <CheckCircle className="h-5 w-5 text-emerald-400" />
-                <h2 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Desbloquear inventario</h2>
+                <h2 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{textosRevertir(desbloqueoItem).titulo}</h2>
               </div>
               <button onClick={() => setDesbloqueoItem(null)} className={`${isDark ? 'text-zinc-500 hover:text-zinc-300' : 'text-gray-400 hover:text-gray-600'}`}>
                 <X className="h-4 w-4" />
@@ -2477,10 +2601,15 @@ export function InventariosPage() {
                 </p>
                 {desbloqueoItem.ubicacion && <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} truncate`}>{desbloqueoItem.ubicacion}</p>}
                 {desbloqueoItem.plaza && <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{desbloqueoItem.plaza}</p>}
+                {(desbloqueoItem.bloqueo_fecha_inicio || desbloqueoItem.bloqueo_fecha_fin) && (
+                  <p className={`text-xs ${isDark ? 'text-amber-300/90' : 'text-amber-700'}`}>
+                    Vigencia: {describirVigencia(vigenciaDeItem(desbloqueoItem))}
+                  </p>
+                )}
               </div>
 
               <p className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
-                ¿Estás seguro de que deseas desbloquear este inventario?
+                {textosRevertir(desbloqueoItem).pregunta}
               </p>
             </div>
 
@@ -2493,13 +2622,13 @@ export function InventariosPage() {
               </button>
               <button
                 onClick={() => {
-                  toggleBlockMutation.mutate(desbloqueoItem.id);
+                  toggleBlockMutation.mutate({ id: desbloqueoItem.id });
                   setDesbloqueoItem(null);
                 }}
                 className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors"
               >
                 <CheckCircle className="h-4 w-4" />
-                Desbloquear
+                {textosRevertir(desbloqueoItem).boton}
               </button>
             </div>
           </div>

@@ -8,14 +8,15 @@ import {
   MessageSquare, Send, Plus, Pencil, Trash2, StickyNote,
   Users, Tag, Building2, Download, Table2, ExternalLink, Bell, ClipboardList,
   Filter, Layers, ArrowUpDown, ArrowUp, ArrowDown, Check, Loader2, UserCheck, UserPlus,
-  ShieldCheck, DollarSign
+  ShieldCheck, DollarSign, Ban, Briefcase, Upload
 } from 'lucide-react';
 import { Header } from '../../components/layout/Header';
-import { notificacionesService, CaraAutorizacion, ResumenAutorizacion, HistorialAutorizacion } from '../../services/notificaciones.service';
+import { notificacionesService, CaraAutorizacion, ResumenAutorizacion, HistorialAutorizacion, HistorialTareaRow } from '../../services/notificaciones.service';
 import { notasService, NotaPersonal } from '../../services/notas.service';
 import { usuariosService } from '../../services/usuarios.service';
 import { Notificacion, ComentarioTarea } from '../../types';
 import { formatDate, formatDateCompact } from '../../lib/utils';
+import { motivoRechazoValido, limpiarMotivo } from '../../lib/historial';
 import { STATUS_CONFIG, getTipoConfig, getStatusConfig } from '../../lib/taskConfig';
 import { useAuthStore } from '../../store/authStore';
 import { useThemeStore } from '../../store/themeStore';
@@ -24,18 +25,28 @@ import { UserAvatar } from '../../components/ui/user-avatar';
 import { useSocketNotificaciones } from '../../hooks/useSocket';
 import { CreateSolicitudModal } from '../solicitudes/CreateSolicitudModal';
 import { AssignInventarioModal } from '../propuestas/AssignInventarioModal';
+import { PropuestaAprobadaInfoModal } from '../../components/PropuestaAprobadaInfoModal';
 import { AssignInventarioCampanaModal } from '../campanas/AssignInventarioCampanaModal';
 import { propuestasService } from '../../services/propuestas.service';
 import { campanasService } from '../../services/campanas.service';
 import { NotasDireccionBitacora } from './NotasDireccionBitacora';
 import { DesposteoModal, ModoDesposteo } from '../desposteo/DesposteoModal';
+import { puedeFiltrarDesposteo, puedeAprobarDesposteoFacturacion } from '../../services/desposteo.service';
 import { NuevaActividadComercialModal } from './NuevaActividadComercialModal';
+import { inventariosService } from '../../services/inventarios.service';
+import { TAREA_TIPO_VIGENCIA_BLOQUEO, esInventarioBloqueado, describirVigencia } from '../../lib/bloqueoInventario';
+
+// [TEMPORAL] Ocultar "Actividad Comercial" en producción (pedido de Dirección,
+// oct 2026): la feature de Akary entró a main con el merge de release del 29-sep
+// pero aún no debía estar visible. Para reactivarla: poner en false.
+const OCULTAR_ACTIVIDAD_COMERCIAL = false;
 
 // Roles que pueden crear tarea manual "Actividad Comercial".
 // Se muestra el boton solo a estos. El back re-valida.
 const ROLES_ACTIVIDAD_COMERCIAL = new Set([
   'Asesor Comercial',
   'Asesor Comercial Aeropuerto',
+  'Asesor Analista',
   'Gerente Comercial',
   'Director Comercial',
   'Administrador',
@@ -43,6 +54,133 @@ const ROLES_ACTIVIDAD_COMERCIAL = new Set([
 ]);
 
 // ============ HELPERS ============
+
+// Bitacora de ediciones de la tarea. Se muestra en el drawer lateral debajo
+// del bloque amarillo "Informacion de la Actividad" (feedback Jos 2026-11-06).
+// El back ya registra cada edicion via logHistorial con un diff por campo;
+// este componente solo lo renderiza. Para no romper si una fila trae mal el
+// JSON de `detalles`, cada parse se protege con try/catch.
+function BitacoraTareaInline({ tareaId, isDark }: { tareaId: number; isDark: boolean }) {
+  // Colapsado por defecto: una tarea puede acumular muchas ediciones y no
+  // conviene que ocupe la mitad del drawer antes de que el usuario pida verlo.
+  const [collapsed, setCollapsed] = useState(true);
+  const { data: rows = [], isLoading } = useQuery<HistorialTareaRow[]>({
+    queryKey: ['historial-tarea', tareaId],
+    queryFn: () => notificacionesService.getHistorialTarea(tareaId),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const parsed = useMemo(() => rows.map(r => {
+    let cambios: Array<{ campo?: string; label?: string; antes?: unknown; despues?: unknown }> = [];
+    let usuarioNombre: string | null = null;
+    try {
+      if (r.detalles) {
+        const j = JSON.parse(r.detalles) as { cambios?: typeof cambios; usuario?: string };
+        if (Array.isArray(j.cambios)) cambios = j.cambios;
+        if (typeof j.usuario === 'string') usuarioNombre = j.usuario;
+      }
+    } catch { /* fila corrupta: la ignoramos silenciosamente */ }
+    return { ...r, cambios, usuarioNombre };
+  }), [rows]);
+
+  if (isLoading) return null;
+  if (parsed.length === 0) return null;
+
+  const borderCls = isDark ? 'border-zinc-800/50' : 'border-gray-200';
+  const subText = isDark ? 'text-zinc-500' : 'text-gray-400';
+  const headText = isDark ? 'text-zinc-400' : 'text-gray-500';
+
+  // Formato: fechas ISO salen bonitas, el resto va tal cual. Detectar fecha
+  // por regex para no confundir con numeros u otros strings (el back no manda
+  // tipo).
+  const fmt = (v: unknown): string => {
+    if (v == null || v === '') return '—';
+    if (Array.isArray(v)) return v.length === 0 ? '—' : v.map(x => fmt(x)).join(', ');
+    if (typeof v === 'boolean') return v ? 'Sí' : 'No';
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(v)) {
+      try { return formatDate(v); } catch { return v; }
+    }
+    return String(v);
+  };
+
+  return (
+    <div className={`p-5 border-b ${borderCls}`}>
+      <button
+        type="button"
+        onClick={() => setCollapsed(c => !c)}
+        className={`w-full flex items-center justify-between gap-2 rounded-lg transition-colors ${
+          collapsed
+            ? (isDark
+              ? 'bg-amber-500/10 border border-amber-500/30 px-3 py-2 hover:bg-amber-500/20'
+              : 'bg-amber-50 border border-amber-300 px-3 py-2 hover:bg-amber-100')
+            : 'mb-3'
+        }`}
+      >
+        <h3 className={`text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 ${
+          collapsed ? (isDark ? 'text-amber-200' : 'text-amber-700') : headText
+        }`}>
+          {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          Historial de cambios
+          <span className={`normal-case tracking-normal font-normal ${
+            collapsed ? (isDark ? 'text-amber-300/80' : 'text-amber-600') : subText
+          }`}>({parsed.length})</span>
+        </h3>
+        {collapsed && (
+          <span className={`text-[10px] font-medium ${isDark ? 'text-amber-300/80' : 'text-amber-600'}`}>Ver</span>
+        )}
+      </button>
+      {!collapsed && (
+        <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+          {parsed.map((row, idx) => (
+            <div key={`${row.id}-${idx}`} className={`rounded-lg border px-3 py-2 ${isDark ? 'bg-zinc-900/40 border-zinc-800' : 'bg-gray-50 border-gray-200'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className={`text-xs font-medium ${isDark ? 'text-zinc-200' : 'text-gray-800'}`}>
+                  {row.accion}
+                </div>
+                <div className={`text-[10px] shrink-0 ${subText}`}>
+                  {formatDate(row.fecha_hora)}
+                </div>
+              </div>
+              {row.usuarioNombre && (
+                <div className={`text-[10px] mt-0.5 ${subText}`}>por {row.usuarioNombre}</div>
+              )}
+              {row.cambios.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {row.cambios.map((c, i) => (
+                    <div key={i} className="text-[11px] flex items-start gap-2">
+                      <span className={`shrink-0 font-medium ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>{c.label || c.campo || '—'}:</span>
+                      <span className={isDark ? 'text-zinc-300' : 'text-gray-700'}>
+                        <span className={isDark ? 'text-zinc-500 line-through' : 'text-gray-400 line-through'}>{fmt(c.antes)}</span>
+                        <span className="mx-1">→</span>
+                        <span className={isDark ? 'text-zinc-100 font-medium' : 'text-gray-900 font-medium'}>{fmt(c.despues)}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// El id de la solicitud de desposteo viaja serializado en `contenido` de la
+// tarea ({"desposteoId":N}), no en una columna propia. Si el JSON viene mal
+// devolvemos null y el botón simplemente no se pinta, en vez de tronar.
+function getDesposteoIdDeTarea(tarea: { contenido?: string | null }): number | null {
+  try {
+    const raw = typeof tarea.contenido === 'string' ? tarea.contenido : '';
+    if (!raw) return null;
+    const id = Number(JSON.parse(raw)?.desposteoId);
+    return Number.isFinite(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 // Tipos de tareas creadas desde el Gestor de Artes. Estas tareas se
 // atienden en su modal real (con side-effects: aprobar arte, subir foto,
 // rotar roles, marcar instalado, etc). NUNCA deben cerrarse via el boton
@@ -62,6 +200,7 @@ const TIPOS_GESTOR_ARTES = new Set([
   'Programación para Tráfico', 'Programacion para Trafico',
   'Orden de Programación', 'Orden de Programacion',
   'Orden de Instalación', 'Orden de Instalacion',
+  'Seguimiento Prueba de color', 'Seguimiento prueba de color',
 ]);
 function isTareaGestorArtes(tipo?: string | null): boolean {
   if (!tipo) return false;
@@ -142,8 +281,31 @@ type QuickFilterKey =
 // Estatus "resueltos": no cuentan en la campanita ni en "Sin finalizar" / "No
 // leídas". Debe coincidir con ESTATUS_RESUELTOS del backend
 // (notificaciones.controller.ts) o el conteo de la lista se descuadra del badge.
-const ESTATUS_RESUELTOS = ['Atendido', 'Rechazado', 'Cancelado'];
+const ESTATUS_RESUELTOS = ['Atendido', 'Finalizada', 'Aprobada', 'Completado', 'Rechazado', 'Cancelado'];
 const esResuelta = (estatus?: string | null) => !!estatus && ESTATUS_RESUELTOS.includes(estatus);
+
+// Roles de dirección: su listado de tareas se muestra SIEMPRE extendido (los
+// grupos nunca arrancan contraídos) y no cierran tareas a mano.
+const ROLES_DIRECCION = ['Director General', 'Director Comercial'];
+
+// Roles que NO pueden marcar tareas como finalizadas / sin finalizar a mano.
+// Mismo criterio que el botón del drawer de "Mis Tareas".
+const ROLES_SIN_CIERRE_MANUAL = ['Director General', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'];
+
+// ¿Esta fila admite selección masiva para finalizar / reabrir?
+// - En Notificaciones: siempre (Atendido = leída).
+// - En Mis Tareas: solo tareas cuyo cierre es manual. Quedan fuera las de
+//   Autorización / Filtro (las cierra aprobar/rechazar), las del gestor de
+//   artes (las cierra su flujo) y las de Desposteo (su propio modal).
+function esSeleccionableMasivo(tarea: Notificacion, contentType: ContentType, rol?: string | null): boolean {
+  if (contentType === 'notificaciones') return true;
+  if (ROLES_SIN_CIERRE_MANUAL.includes(rol || '')) return false;
+  const tipo = tarea.tipo || '';
+  if (tipo.includes('Autorización') || tipo.includes('Autorizacion')) return false;
+  if (isTareaGestorArtes(tipo)) return false;
+  if (tipo === 'Filtro Desposteo') return false;
+  return true;
+}
 
 const QUICK_FILTERS_NOTIFICACIONES: { key: QuickFilter; label: string }[] = [
   { key: 'all', label: 'Todas' },
@@ -415,12 +577,21 @@ function TareaRow({
   showBorder = true,
   selected,
   onToggleSelection,
+  canSelect,
+  currentUserId,
+  onEditActividad,
 }: {
   tarea: Notificacion;
   onSelect: () => void;
   showBorder?: boolean;
   selected?: boolean;
   onToggleSelection?: (id: number) => void;
+  // Si viene, decide por fila si se pinta el checkbox. Si la fila no es
+  // seleccionable se deja un espaciador para no desalinear el listado.
+  canSelect?: (tarea: Notificacion) => boolean;
+  // Si el user actual es creador de la Actividad Comercial, mostramos plumita.
+  currentUserId?: number;
+  onEditActividad?: (tarea: Notificacion) => void;
 }) {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
   const statusConfig = getStatusConfig(tarea.estatus);
@@ -439,7 +610,7 @@ function TareaRow({
     if (isCancelado) return { bg: 'bg-zinc-500/20', border: 'border-zinc-500/30', color: 'text-zinc-400', label: 'Cancelado' };
     // Filtro DG/DCM devuelto a corrección: se marca 'Rechazado' en BD, pero NO es un rechazo
     // total — el Gerente lo devolvió al asesor para corregir. Badge ámbar, no rojo/verde.
-    if ((tarea.tipo === 'Filtro Autorización DG' || tarea.tipo === 'Filtro Autorización DCM') && isRechazado) return { bg: 'bg-amber-500/20', border: 'border-amber-500/30', color: 'text-amber-400', label: 'Devuelta a corrección' };
+    if (tarea.tipo === 'Filtro Autorización DG' && isRechazado) return { bg: 'bg-amber-500/20', border: 'border-amber-500/30', color: 'text-amber-400', label: 'Devuelta a corrección' };
     if (isRechazo) return { bg: 'bg-red-500/20', border: 'border-red-500/30', color: 'text-red-400', label: 'Rechazo' };
     if (isAprobacion) return { bg: 'bg-emerald-500/20', border: 'border-emerald-500/30', color: 'text-emerald-400', label: 'Aprobada' };
     if (isRechazado) return { bg: 'bg-red-500/20', border: 'border-red-500/30', color: 'text-red-400', label: 'Rechazo' };
@@ -456,13 +627,17 @@ function TareaRow({
     >
       {/* Checkbox de selección masiva */}
       {onToggleSelection && (
-        <input
-          type="checkbox"
-          checked={!!selected}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => { e.stopPropagation(); onToggleSelection(tarea.id); }}
-          className="w-4 h-4 accent-purple-500 cursor-pointer flex-shrink-0"
-        />
+        (!canSelect || canSelect(tarea)) ? (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => { e.stopPropagation(); onToggleSelection(tarea.id); }}
+            className="w-4 h-4 accent-purple-500 cursor-pointer flex-shrink-0"
+          />
+        ) : (
+          <span className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
+        )
       )}
 
       {/* Indicador de estado visual */}
@@ -492,6 +667,15 @@ function TareaRow({
             <TipoIcon className={`h-3 w-3 ${tipoConfig.color}`} />
             <span className={`text-[11px] font-medium ${tipoConfig.color}`}>{tarea.tipo}</span>
           </div>
+          {/* Badge de ESTATUS en el listado (feedback Jos 2026-10-20).
+              Para Actividad Comercial mostramos siempre el estatus; para otras
+              tareas lo mostramos salvo que sea 'Pendiente' por default
+              (ya se nota con el icono gris). */}
+          {!isNotificacion && tarea.estatus && (tarea.tipo === 'Actividad Comercial' || tarea.estatus !== 'Pendiente') && (
+            <div className={`flex-shrink-0 px-2 py-0.5 rounded-full ${statusConfig.bg} border ${statusConfig.border}`}>
+              <span className={`text-[10px] font-semibold ${statusConfig.color}`}>{tarea.estatus}</span>
+            </div>
+          )}
           {authBadge && !isRechazo && !isAprobacion && (
             <div className={`flex-shrink-0 px-2 py-0.5 rounded-full ${authBadge.bg} border ${authBadge.border}`}>
               <span className={`text-[10px] font-semibold ${authBadge.color}`}>{authBadge.label}</span>
@@ -557,6 +741,19 @@ function TareaRow({
           <span className="text-[11px] font-mono px-2 py-1 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
             #{tarea.referencia_id}
           </span>
+        )}
+
+        {/* Editar Actividad Comercial — solo el creador ve la plumita.
+            Feedback Jos 2026-09-25: reabre el mismo modal precargado. */}
+        {tarea.tipo === 'Actividad Comercial' && onEditActividad && currentUserId != null && tarea.id_responsable === currentUserId && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onEditActividad(tarea); }}
+            title="Editar actividad comercial"
+            className={`p-1.5 rounded-lg transition-colors ${isDark ? 'text-amber-300 hover:bg-amber-500/15' : 'text-amber-600 hover:bg-amber-50'}`}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
     </div>
@@ -661,6 +858,10 @@ function NestedSection({
   onSelectTarea,
   selectedIds,
   onToggleSelection,
+  canSelect,
+  currentUserId,
+  onEditActividad,
+  defaultOpen = true,
 }: {
   group: NestedGroup;
   level?: number;
@@ -668,9 +869,15 @@ function NestedSection({
   onSelectTarea: (tarea: Notificacion) => void;
   selectedIds?: Set<number>;
   onToggleSelection?: (id: number) => void;
+  canSelect?: (tarea: Notificacion) => boolean;
+  currentUserId?: number;
+  onEditActividad?: (tarea: Notificacion) => void;
+  // Estado inicial del grupo. En "Mis Tareas" arranca contraído (salvo roles de
+  // dirección); en Notificaciones, extendido.
+  defaultOpen?: boolean;
 }) {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(defaultOpen);
   const statusConfig = getStatusConfig(group.key);
   const currentGroupType = groupByList[level];
   const groupOption = GROUP_BY_OPTIONS.find(o => o.value === currentGroupType);
@@ -697,6 +904,9 @@ function NestedSection({
                 showBorder={idx !== group.tareas.length - 1}
                 selected={selectedIds?.has(tarea.id)}
                 onToggleSelection={onToggleSelection}
+                canSelect={canSelect}
+                currentUserId={currentUserId}
+                onEditActividad={onEditActividad}
               />
             ))}
       </div>
@@ -747,6 +957,10 @@ function NestedSection({
                   onSelectTarea={onSelectTarea}
                   selectedIds={selectedIds}
                   onToggleSelection={onToggleSelection}
+                  canSelect={canSelect}
+                  currentUserId={currentUserId}
+                  onEditActividad={onEditActividad}
+                  defaultOpen={defaultOpen}
                 />
               ))}
             </div>
@@ -760,6 +974,9 @@ function NestedSection({
                 showBorder={idx !== group.tareas.length - 1}
                 selected={selectedIds?.has(tarea.id)}
                 onToggleSelection={onToggleSelection}
+                canSelect={canSelect}
+                currentUserId={currentUserId}
+                onEditActividad={onEditActividad}
               />
             ))
           )}
@@ -1392,6 +1609,56 @@ function isGestionArtesTarea(tipo?: string | null): boolean {
   return !!tipo && GESTION_ARTES_TIPOS.includes(tipo);
 }
 
+// Las tareas "Revisión de artes" generadas desde el modulo de prueba de color
+// NO pertenecen al flujo de gestion de artes de campaña — se consumen desde el
+// modal de prueba de color (de propuesta o campaña). Las identificamos por el
+// prefijo del titulo que les asigna crearTareaRevisionArte en el back.
+// Feedback Jos 2026-10-06: abrir estas tareas enviaba al gestor de artes modo
+// campaña aunque la prueba se originó en propuesta, lo cual confundia porque
+// el arte no se mostraba y la "campaña" aún no estaba lista para ese flujo.
+function isPruebaColorRevisionTarea(tipo?: string | null, titulo?: string | null): boolean {
+  if (tipo !== 'Revisión de artes') return false;
+  if (!titulo) return false;
+  const t = titulo.toLowerCase();
+  return t.includes('prueba de color');
+}
+
+// Tarea de Seguimiento de prueba de color — misma logica: se consume desde
+// el modal, no desde gestor de artes.
+function isPruebaColorSeguimientoTarea(tipo?: string | null): boolean {
+  return tipo === 'Seguimiento Prueba de color';
+}
+
+// Tarea de notificacion al creador cuando cambia el estatus de la prueba
+// (incluye el flujo de rechazo con requiereNuevaVersion). Jos 2026-10-12:
+// desde el boton 'Ver' se abre el modal con el acordeon del circuito
+// expandido para que el analista vea la prueba rechazada y re-suba v2.
+function isPruebaColorNotificacionTarea(tipo?: string | null): boolean {
+  return tipo === 'Prueba de Color';
+}
+// Tarea Impresión/Recepción originada desde el drawer de Pruebas de Color:
+// detectar por tipo + presencia de pruebaColorId en contenido JSON. Permite
+// deep-linkear al submodal de la prueba en vez de al Gestor de Artes.
+function isPruebaColorImpresionORecepcionTarea(tipo?: string | null, contenido?: string | null): boolean {
+  if (tipo !== 'Impresión' && tipo !== 'Recepción') return false;
+  if (!contenido) return false;
+  try {
+    const c = JSON.parse(contenido);
+    return Number.isFinite(Number(c?.pruebaColorId));
+  } catch { return false; }
+}
+// Parsea el contenido JSON de una tarea tipo 'Prueba de Color' para
+// extraer scId / propuestaId / requiereNuevaVersion.
+function parsePruebaColorNotifContent(contenido?: string | null): {
+  scId?: number; propuestaId?: number; requiereNuevaVersion?: boolean;
+} {
+  if (!contenido) return {};
+  try {
+    const c = JSON.parse(contenido);
+    return { scId: c.scId, propuestaId: c.propuestaId, requiereNuevaVersion: !!c.requiereNuevaVersion };
+  } catch { return {}; }
+}
+
 // Tarea informativa "Gestión de Recepción Parcial" (ASC): navega al gestor
 // de artes → tab Impresiones → sub-tab Pend. Recepción para ver el detalle.
 function isRecepcionParcialTarea(tipo?: string | null): boolean {
@@ -1420,10 +1687,105 @@ function isConflictoOcupacionNotification(titulo?: string | null): boolean {
   return /conflictos? de ocupaci[oó]n/i.test(titulo);
 }
 
+// Tarea 'Vigencia Bloqueo Inventario': la crea el job diario del back cuando se
+// cumple la fecha fin de un bloqueo (No Disponible / Inhabilitado) y le llega a
+// quien bloqueó. Pinta la pieza con su vigencia y permite rehabilitarla desde
+// aquí: toggle-block sin tipo (= habilitar) y la tarea pasa a Atendido. Si
+// alguien ya la habilitó desde Inventarios, lo indica y solo queda finalizar.
+function VigenciaBloqueoTareaCard({ tarea, isDark }: { tarea: Notificacion; isDark: boolean }) {
+  const queryClient = useQueryClient();
+  const contenido = useMemo(() => {
+    try {
+      const c = JSON.parse(tarea.contenido || '') as {
+        inventario_id?: number;
+        codigo_unico?: string | null;
+        ubicacion?: string | null;
+        plaza?: string | null;
+        tipo?: string | null;
+        fecha_inicio?: string | null;
+        fecha_fin?: string | null;
+      };
+      return c && typeof c.inventario_id === 'number' ? c : null;
+    } catch {
+      return null;
+    }
+  }, [tarea.contenido]);
+  const inventarioId = contenido?.inventario_id ?? null;
+
+  const { data: inventario, isLoading } = useQuery({
+    queryKey: ['inventario-vigencia-tarea', inventarioId],
+    queryFn: () => inventariosService.getById(inventarioId as number),
+    enabled: inventarioId !== null,
+  });
+
+  const rehabilitar = useMutation({
+    mutationFn: async () => {
+      await inventariosService.toggleBlock(inventarioId as number);
+      await notificacionesService.update(tarea.id, { estatus: 'Atendido' });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['inventario-vigencia-tarea', inventarioId] });
+      queryClient.invalidateQueries({ queryKey: ['inventarios'] });
+      queryClient.invalidateQueries({ queryKey: ['notificaciones'] });
+      queryClient.invalidateQueries({ queryKey: ['notificaciones-stats'] });
+    },
+  });
+
+  if (!contenido || inventarioId === null) return null;
+
+  const bloqueada = inventario ? esInventarioBloqueado(inventario.estatus) : true;
+  const etiqueta = (inventario?.estatus ?? contenido.tipo) === 'Inhabilitado' ? 'Habilitar' : 'Marcar Disponible';
+
+  return (
+    <div className={`p-5 border-b ${isDark ? 'border-zinc-800/50' : 'border-gray-200'}`}>
+      <h3 className="text-xs font-medium text-amber-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+        <Ban className="h-3.5 w-3.5" />
+        Vigencia de bloqueo cumplida
+      </h3>
+      <div className={`px-3 py-2.5 rounded-lg border space-y-0.5 ${isDark ? 'bg-zinc-800/60 border-zinc-700' : 'bg-gray-50 border-gray-200'}`}>
+        <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+          <span className={isDark ? 'text-zinc-500' : 'text-gray-400'}>ID:</span>{' '}
+          <span className={`font-mono ${isDark ? 'text-white' : 'text-gray-900'}`}>#{inventarioId}</span>
+          {contenido.codigo_unico && <span className="ml-2">· {contenido.codigo_unico}</span>}
+        </p>
+        {contenido.ubicacion && <p className={`text-xs truncate ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{contenido.ubicacion}</p>}
+        {contenido.plaza && <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{contenido.plaza}</p>}
+        <p className={`text-xs ${isDark ? 'text-amber-300/90' : 'text-amber-700'}`}>Vigencia: {describirVigencia(contenido)}</p>
+        <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+          Estatus actual:{' '}
+          <span className={bloqueada ? 'text-red-400 font-medium' : 'text-emerald-400 font-medium'}>
+            {isLoading ? '...' : (inventario?.estatus ?? '—')}
+          </span>
+        </p>
+      </div>
+
+      {bloqueada ? (
+        <button
+          onClick={() => rehabilitar.mutate()}
+          disabled={rehabilitar.isPending || isLoading}
+          className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-sm font-medium hover:from-emerald-500 hover:to-teal-500 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-emerald-500/20 disabled:opacity-50 disabled:hover:scale-100"
+        >
+          {rehabilitar.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}
+          {rehabilitar.isPending ? 'Habilitando...' : `${etiqueta} y finalizar tarea`}
+        </button>
+      ) : (
+        <p className={`mt-3 text-xs flex items-center gap-1.5 ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>
+          <CheckCircle className="h-3.5 w-3.5" />
+          Esta pieza ya está disponible. Solo falta finalizar la tarea.
+        </p>
+      )}
+      {rehabilitar.isError && (
+        <p className="mt-2 text-xs text-red-400">{rehabilitar.error instanceof Error ? rehabilitar.error.message : 'No se pudo habilitar el inventario'}</p>
+      )}
+    </div>
+  );
+}
+
 // Función para verificar si hay navegación disponible
 function hasNavigationRoute(tarea: Notificacion): boolean {
-  // Tareas de Ajuste Inventario Bloqueado no tienen navegación
-  if (tarea.tipo === 'Ajuste Inventario Bloqueado') {
+  // Tareas de Ajuste Inventario Bloqueado y de vigencia de bloqueo no tienen
+  // navegación: se atienden desde el propio panel.
+  if (tarea.tipo === 'Ajuste Inventario Bloqueado' || tarea.tipo === TAREA_TIPO_VIGENCIA_BLOQUEO) {
     return false;
   }
   // Menciones en ticket siempre tienen navegación
@@ -1432,6 +1794,17 @@ function hasNavigationRoute(tarea: Notificacion): boolean {
   }
   // Si tiene referencia_tipo y referencia_id válidos
   if (tarea.referencia_tipo && tarea.referencia_id && tarea.referencia_tipo !== 'sistema') {
+    return true;
+  }
+  // Prueba de color: tiene navegacion si hay propuesta o campaña asociada
+  // (abre modal, no gestor). Chequear antes del gate generico de Gestion de Artes
+  // porque isGestionArtesTarea('Revisión de artes') es true y bloquearia el
+  // caso propuesta-sin-campania.
+  if ((isPruebaColorRevisionTarea(tarea.tipo, tarea.titulo) || isPruebaColorSeguimientoTarea(tarea.tipo)) && (tarea.id_propuesta || tarea.campania_id)) {
+    return true;
+  }
+  // Notificacion de cambio de estatus de prueba de color (incluye rechazo).
+  if (isPruebaColorNotificacionTarea(tarea.tipo) && (tarea.id_propuesta || tarea.campania_id)) {
     return true;
   }
   // Tareas de Gestión de Artes con campania_id
@@ -1450,7 +1823,7 @@ function hasNavigationRoute(tarea: Notificacion): boolean {
 }
 
 // Función para obtener la etiqueta del botón
-function getNavigationLabel(tipo: string, tipoTarea?: string, campaniaId?: number | null, propuestaId?: string | null, idSolicitud?: string | null, titulo?: string): string {
+function getNavigationLabel(tipo: string, tipoTarea?: string, campaniaId?: number | null, propuestaId?: string | null, idSolicitud?: string | null, titulo?: string, contenido?: string | null): string {
   if (tipoTarea === 'Mención en Ticket') {
     return 'Ver Ticket';
   }
@@ -1459,6 +1832,16 @@ function getNavigationLabel(tipo: string, tipoTarea?: string, campaniaId?: numbe
   if (isArtesNotification(titulo)) {
     return 'Ver Gestión de Artes';
   }
+  // Prueba de color (Revisión o Seguimiento o Notificacion de estatus) → abrir modal.
+  if (isPruebaColorRevisionTarea(tipoTarea, titulo) || isPruebaColorSeguimientoTarea(tipoTarea) || isPruebaColorNotificacionTarea(tipoTarea)) {
+    return 'Ver Prueba de Color';
+  }
+  // Impresión/Recepción originadas desde Prueba de Color (contienen pruebaColorId):
+  // abrir el submodal de la prueba, no el gestor de artes. Debe ir antes de
+  // isGestionArtesTarea porque Impresión/Recepción también match ahí.
+  if (isPruebaColorImpresionORecepcionTarea(tipoTarea, contenido)) {
+    return 'Ver Prueba de Color';
+  }
   // Tareas de Gestión de Artes → Ver Gestión de Artes
   if (isGestionArtesTarea(tipoTarea)) {
     return 'Ver Gestión de Artes';
@@ -1466,6 +1849,14 @@ function getNavigationLabel(tipo: string, tipoTarea?: string, campaniaId?: numbe
   // Gestión de Recepción Parcial (informativa ASC) → sub-tab Pend. Recepción
   if (isRecepcionParcialTarea(tipoTarea)) {
     return 'Ver Recepción Parcial';
+  }
+  // Aviso de Eliminación (informativo al asesor): ya es campaña, así que el
+  // botón debe decir Campaña y llevar al detalle, no a la propuesta editable.
+  // Antes caía al fallback de `propuestaId` y decía "Ver Propuesta".
+  if (tipoTarea === 'Aviso Eliminación') {
+    if (tipo === 'campana' || campaniaId) return 'Ver Campaña';
+    if (tipo === 'propuesta' || propuestaId) return 'Ver Propuesta';
+    return 'Ver Solicitud';
   }
   // Tareas de Rechazo: usar referencia_tipo para el label correcto
   if (tipoTarea?.includes('Rechazo')) {
@@ -1553,9 +1944,52 @@ function getRejectionSolicitudId(tarea: Notificacion): number | null {
 }
 
 // Función para obtener la ruta de navegación directa al detalle
-function getDirectNavigationPath(tipo: string, id: number, titulo: string, tipoTarea?: string, campaniaId?: number | null, propuestaId?: number | null, tareaId?: number): string {
+function getDirectNavigationPath(tipo: string, id: number, titulo: string, tipoTarea?: string, campaniaId?: number | null, propuestaId?: number | null, tareaId?: number, contenido?: string | null): string {
   const isComment = isCommentNotification(titulo);
   const isRejection = isRejectionTask(titulo);
+
+  // Prueba de color (Revisión o Seguimiento) → abrir modal de prueba.
+  // Si la prueba todavia vive en propuesta (propuestaId > 0), ir a /propuestas
+  // y abrir modal con pruebaId. Si ya avanzo a campaña, ir a /campanas/:id con
+  // query param que detona el modal. Feedback Jos 2026-10-06.
+  if (isPruebaColorRevisionTarea(tipoTarea, titulo) || isPruebaColorSeguimientoTarea(tipoTarea)) {
+    if (propuestaId) {
+      return `/propuestas?viewId=${propuestaId}&pruebaColorTareaId=${tareaId || id}`;
+    }
+    if (campaniaId) {
+      return `/campanas/${campaniaId}?pruebaColorTareaId=${tareaId || id}`;
+    }
+  }
+
+  // Notificacion de prueba de color (rechazo / cambios de estatus): abre
+  // modal en tab 'nueva' si requiere nueva version, si no en 'pruebas'
+  // con el circuito expandido (via pruebaColorNuevaScId que setea el
+  // acordeon expandido en PruebasColorModal).
+  if (isPruebaColorNotificacionTarea(tipoTarea)) {
+    const parsed = parsePruebaColorNotifContent(contenido);
+    if (propuestaId && parsed.scId && parsed.requiereNuevaVersion) {
+      return `/propuestas?viewId=${propuestaId}&pruebaColorNuevaScId=${parsed.scId}`;
+    }
+    if (propuestaId) {
+      return `/propuestas?viewId=${propuestaId}&pruebaColorTareaId=${tareaId || id}`;
+    }
+    if (campaniaId) {
+      return `/campanas/${campaniaId}?pruebaColorTareaId=${tareaId || id}`;
+    }
+  }
+
+  // Impresión / Recepción de Prueba de Color → modal PC con deep-link al submodal
+  // de la tarea. Debe ir ANTES de isGestionArtesTarea porque 'Impresión'/'Recepción'
+  // también son tipos de Gestión de Artes: sin este guard la tarea se navega al
+  // Gestor y no al modal de PC. Feedback Jos 2026-11-13.
+  if (isPruebaColorImpresionORecepcionTarea(tipoTarea, contenido)) {
+    if (propuestaId) {
+      return `/propuestas?viewId=${propuestaId}&pruebaColorTareaId=${tareaId || id}`;
+    }
+    if (campaniaId) {
+      return `/campanas/${campaniaId}?pruebaColorTareaId=${tareaId || id}`;
+    }
+  }
 
   // Tareas de Gestión de Artes → Gestión de Artes con auto-open del modal (prioridad sobre propuesta)
   if (isGestionArtesTarea(tipoTarea) && campaniaId) {
@@ -1571,6 +2005,15 @@ function getDirectNavigationPath(tipo: string, id: number, titulo: string, tipoT
   // ir directo a Gestión de Artes de la campaña.
   if (isArtesNotification(titulo) && campaniaId) {
     return `/campanas/${campaniaId}/tareas`;
+  }
+
+  // Aviso de Eliminación: el circuito ya era de campaña. Al detalle de campaña
+  // (solo lectura), nunca a la propuesta editable. Se resuelve antes del
+  // fallback por `propuestaId`, que es el que lo mandaba a /propuestas.
+  if (tipoTarea === 'Aviso Eliminación') {
+    if (campaniaId) return `/campanas/detail/${campaniaId}`;
+    if (tipo === 'campana' && id) return `/campanas/detail/${id}`;
+    if (propuestaId) return `/propuestas?viewId=${propuestaId}`;
   }
 
   // Si es tarea de propuesta (ajuste cto, etc.) o tiene id_propuesta, ir al detalle de propuesta
@@ -1732,24 +2175,18 @@ function ApprovalModal({
     },
   });
 
-  // Filtro DG / DCM (paso previo con Gerente Comercial) — no aprueba/rechaza
-  // caras, solo decide "Enviar a Dirección" o "Rechazar como Corrección" a
-  // nivel tarea. Feedback 2026-08-15: espejo del flujo DG para DCM +
-  // comentario opcional al aprobar.
+  // Filtro DG (paso previo con Gerente Comercial) — no aprueba/rechaza
+  // caras, solo decide "Enviar a Dirección General" o "Rechazar como
+  // Corrección" a nivel tarea. Feedback Jos 2026-11-05: el espejo para DCM
+  // con GC se eliminó, solo queda el filtro para DG.
   const isFiltroDgTask = tarea.tipo === 'Filtro Autorización DG';
-  const isFiltroDcmTask = tarea.tipo === 'Filtro Autorización DCM';
-  const isFiltroTask = isFiltroDgTask || isFiltroDcmTask;
-  const filtroDireccion: 'DG' | 'DCM' = isFiltroDcmTask ? 'DCM' : 'DG';
-  const filtroDireccionLabel = filtroDireccion === 'DG' ? 'Dirección General' : 'Dirección Comercial';
+  const isFiltroTask = isFiltroDgTask;
+  const filtroDireccionLabel = 'Dirección General';
   const [comentarioAprobacionFiltro, setComentarioAprobacionFiltro] = useState('');
 
   const aprobarFiltroMutation = useMutation({
-    // Ambas funciones devuelven objetos con propiedades distintas
-    // (tareaDgId vs tareaDcmId). Como onSuccess no usa el retorno, se envuelve
-    // en Promise<void> para que TS reconcilie los tipos del union.
     mutationFn: async (comentario?: string): Promise<void> => {
-      if (filtroDireccion === 'DG') await notificacionesService.aprobarFiltroDg(tarea.id, comentario);
-      else await notificacionesService.aprobarFiltroDcm(tarea.id, comentario);
+      await notificacionesService.aprobarFiltroDg(tarea.id, comentario);
     },
     onSuccess: () => {
       setComentarioAprobacionFiltro('');
@@ -1761,8 +2198,7 @@ function ApprovalModal({
   });
   const rechazarFiltroMutation = useMutation({
     mutationFn: async (motivo: string): Promise<void> => {
-      if (filtroDireccion === 'DG') await notificacionesService.rechazarFiltroDg(tarea.id, motivo);
-      else await notificacionesService.rechazarFiltroDcm(tarea.id, motivo);
+      await notificacionesService.rechazarFiltroDg(tarea.id, motivo);
     },
     onSuccess: () => {
       setShowRechazoInput(false);
@@ -1840,11 +2276,17 @@ function ApprovalModal({
   }, [allCaras]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+    <div className="fixed inset-0 z-[60] flex items-stretch sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className={`relative w-full max-w-4xl max-h-[95vh] sm:max-h-[90vh] mx-2 sm:mx-4 rounded-2xl ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border shadow-2xl flex flex-col overflow-hidden`}>
+      {/* Mobile: modal a pantalla completa (h + w) para que se vea todo el contenido
+          al rotar entre portrait/landscape sin cortar. Feedback usuario 2026-09-21.
+          Jos 2026-11-10: en landscape movil 90vh ~= 315px y el body se recortaba
+          sin scroll. Forzamos h/max-h al 100dvh en landscape pero SOLO en
+          viewports <lg (1024px) para no romper desktop. Tambien movemos de 90vh
+          a 90dvh — mas preciso cuando teclado o barra del navegador aparecen. */}
+      <div className={`relative w-full h-[100dvh] sm:h-auto max-w-4xl sm:max-h-[90dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 mx-0 sm:mx-4 rounded-none sm:rounded-2xl ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border-0 sm:border shadow-2xl flex flex-col overflow-hidden`}>
         {/* Header */}
-        <div className={`p-4 sm:p-6 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+        <div className={`p-4 sm:p-6 border-b flex-shrink-0 ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
           <div className="flex items-center justify-between mb-4 gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <div className="p-2 rounded-xl bg-orange-500/20 border border-orange-500/30 flex-shrink-0">
@@ -1944,8 +2386,11 @@ function ApprovalModal({
           </div>
         )}
 
-        {/* Tabla de caras organizada por catorcenas */}
-        <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4">
+        {/* Tabla de caras organizada por catorcenas.
+            min-h-0 obligatorio para que el flex-1 respete la altura del padre
+            flex-col: sin esto, en landscape movil el header + footer empujan y
+            el body scroll se sale del contenedor (sintoma: "no navega bien"). */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4">
           {Array.from(catorcenaGroups.entries()).map(([catorcena, caras]) => {
             const periodoInfo = caras[0]?.inicio_periodo && caras[0]?.fin_periodo
               ? `${formatDate(caras[0].inicio_periodo)} → ${formatDate(caras[0].fin_periodo)}`
@@ -1975,7 +2420,16 @@ function ApprovalModal({
                 </button>
 
                 {!isCollapsed && (
-                <div className={`mt-2 rounded-xl border ${isDark ? 'border-zinc-700/50' : 'border-gray-200'} overflow-x-auto scrollbar-purple`}>
+                <div className={`mt-2 rounded-xl border ${isDark ? 'border-zinc-700/50' : 'border-gray-200'} overflow-hidden`}>
+                  {/* Hint de scroll horizontal — solo en movil (< sm) porque la
+                      tabla tiene min-w-[820px] y en pantallas chicas el
+                      overflow-x no era obvio; el usuario se quejo de que "se
+                      corta info". Feedback usuario 2026-09-21. */}
+                  <div className={`sm:hidden flex items-center justify-center gap-1.5 px-3 py-1 text-[10px] border-b ${isDark ? 'border-zinc-700/50 bg-zinc-800/50 text-zinc-500' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                    <span>Desliza la tabla</span>
+                    <ChevronRight className="h-3 w-3 animate-pulse" />
+                  </div>
+                  <div className="overflow-x-auto scrollbar-purple">
                   {/* min-w para forzar scroll horizontal en móvil (10 columnas
                       no caben en <640px). Feedback Jos 2026-07-15. */}
                   <table className="w-full min-w-[820px]">
@@ -2041,6 +2495,7 @@ function ApprovalModal({
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
                 )}
               </div>
@@ -2061,7 +2516,7 @@ function ApprovalModal({
                 <Clock className="h-3.5 w-3.5" />
                 Historial de cambios
               </h3>
-              <div className={`rounded-xl border ${isDark ? 'border-zinc-700/50' : 'border-gray-200'} overflow-hidden max-h-60 overflow-y-auto`}>
+              <div className={`rounded-xl border ${isDark ? 'border-zinc-700/50' : 'border-gray-200'} overflow-hidden max-h-60 max-lg:landscape:max-h-32 overflow-y-auto`}>
                 {historialData.map((entry, idx) => {
                   const isAprobacion = entry.tipo.includes('aprobacion');
                   const isRechazo = entry.tipo.includes('rechazo');
@@ -2075,7 +2530,7 @@ function ApprovalModal({
                       <div className="flex-1 min-w-0">
                         <p className={`text-xs font-medium ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{entry.accion}</p>
                         {isRechazo && entry.detalles?.motivo && (
-                          <p className={`text-[11px] ${isDark ? 'text-red-400/70' : 'text-red-600/70'} mt-0.5`}>Motivo: {entry.detalles.motivo}</p>
+                          <p className={`text-[11px] ${isDark ? 'text-red-400/70' : 'text-red-600/70'} mt-0.5`}>Motivo: {limpiarMotivo(entry.detalles.motivo) || 'no especificado'}</p>
                         )}
                         {isSolicitud && entry.detalles?.caras && (
                           <p className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mt-0.5`}>
@@ -2126,7 +2581,7 @@ function ApprovalModal({
 
         {/* Footer con acciones */}
         {isAutorizacionTask && tarea.estatus !== 'Atendido' && tarea.estatus !== 'Cancelado' && (
-          <div className={`p-4 sm:p-6 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+          <div className={`p-4 sm:p-6 max-lg:landscape:py-2 max-lg:landscape:px-3 border-t flex-shrink-0 ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
             {!showRechazoInput ? (
               <>
                 {/* Feedback 2026-08-15: comentario opcional para filtros DG/DCM.
@@ -2192,7 +2647,7 @@ function ApprovalModal({
                 <div className="flex gap-2">
                   <button
                     onClick={() => isFiltroTask ? rechazarFiltroMutation.mutate(rechazoMotivo) : rechazarMutation.mutate(rechazoMotivo)}
-                    disabled={(isFiltroTask ? rechazarFiltroMutation.isPending : rechazarMutation.isPending) || !rechazoMotivo.trim()}
+                    disabled={(isFiltroTask ? rechazarFiltroMutation.isPending : rechazarMutation.isPending) || !motivoRechazoValido(rechazoMotivo)}
                     className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                   >
                     {(isFiltroTask ? rechazarFiltroMutation.isPending : rechazarMutation.isPending) && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -2227,6 +2682,8 @@ function TaskDrawer({
   onAutorizacionAction,
   contentType,
   onOpenApprovalModal,
+  onOpenDesposteoModal,
+  onEditActividad,
 }: {
   tarea: Notificacion & { comentarios?: ComentarioTarea[] };
   onClose: () => void;
@@ -2237,6 +2694,10 @@ function TaskDrawer({
   onAutorizacionAction?: () => void;
   contentType: ContentType;
   onOpenApprovalModal?: () => void;
+  onOpenDesposteoModal?: () => void;
+  // [#266] Callback para abrir el modal de edicion de Actividad Comercial
+  // desde el boton "Editar" del drawer.
+  onEditActividad?: (tarea: Notificacion) => void;
 }) {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
   const [comment, setComment] = useState('');
@@ -2308,8 +2769,19 @@ function TaskDrawer({
     },
   });
 
+  // Tareas del flujo de desposteo. Se evalúan ANTES que isAutorizacionTask
+  // porque 'Autorización Desposteo' también contiene la palabra
+  // "Autorización" y no debe entrar por el camino del ApprovalModal (que
+  // consulta caras/resumen de una propuesta y aquí no aplica).
+  const esDesposteoTask = tarea.tipo === 'Filtro Desposteo' || tarea.tipo === 'Autorización Desposteo';
+  const puedeActuarDesposteo = esDesposteoTask && (
+    tarea.tipo === 'Filtro Desposteo'
+      ? puedeFiltrarDesposteo(user?.rol)
+      : puedeAprobarDesposteoFacturacion(user?.rol)
+  );
+
   // Detectar si es tarea de autorización
-  const isAutorizacionTask = tarea.tipo?.includes('Autorización');
+  const isAutorizacionTask = !esDesposteoTask && tarea.tipo?.includes('Autorización');
   const tipoAutorizacion = tarea.tipo?.includes('DG') ? 'dg' : tarea.tipo?.includes('DCM') ? 'dcm' : null;
 
   const [idPropuestaState, setIdPropuestaState] = useState<string | null>(tarea.id_propuesta || null);
@@ -2407,7 +2879,7 @@ function TaskDrawer({
   };
 
   const handleRechazar = () => {
-    if (!rechazoMotivo.trim()) return;
+    if (!motivoRechazoValido(rechazoMotivo)) return;
     rechazarMutation.mutate(rechazoMotivo);
   };
 
@@ -2428,6 +2900,21 @@ function TaskDrawer({
     if (tarea.tipo === 'Mención en Ticket' && tarea.id_solicitud) {
       onNavigate(`/admin/tickets-historial?ticketId=${tarea.id_solicitud}`);
       return;
+    }
+    // Pruebas de Color (Revisión / Seguimiento / Notificación / Impresión / Recepción):
+    // propuesta o campaña + id de la TAREA para que el modal haga deep-link al submodal
+    // específico. Sin este branch el handler caía sin llamar onNavigate, o pasaba el id
+    // de la propuesta como tareaId (feedback Akary 2026-11-13: "no me abrio el modal de la tarea").
+    if ((isPruebaColorRevisionTarea(tarea.tipo, tarea.titulo) || isPruebaColorSeguimientoTarea(tarea.tipo) || isPruebaColorNotificacionTarea(tarea.tipo) || isPruebaColorImpresionORecepcionTarea(tarea.tipo, tarea.contenido))) {
+      const propId = tarea.id_propuesta ? parseInt(tarea.id_propuesta) : NaN;
+      if (!isNaN(propId)) {
+        onNavigate(getDirectNavigationPath('propuesta', propId, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, propId, tarea.id, tarea.contenido));
+        return;
+      }
+      if (tarea.campania_id) {
+        onNavigate(getDirectNavigationPath('campana', tarea.campania_id, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, null, tarea.id, tarea.contenido));
+        return;
+      }
     }
     // Notif de comentario: el titulo dice donde fue dejado (solicitud / propuesta / campaña).
     // Sin esto el handler caia al ultimo branch (que solo entra si tipo es
@@ -2452,10 +2939,16 @@ function TaskDrawer({
         return;
       }
     }
+    // Aviso de Eliminación → detalle de campaña (no depende de referencia_tipo,
+    // que en filas viejas/cacheadas podía venir como 'solicitud').
+    if (tarea.tipo === 'Aviso Eliminación' && tarea.campania_id) {
+      onNavigate(`/campanas/detail/${tarea.campania_id}`);
+      return;
+    }
     // Si tiene referencia_tipo y referencia_id, usar esos
     if (tarea.referencia_tipo && tarea.referencia_id) {
       const propId = tarea.id_propuesta ? parseInt(tarea.id_propuesta) : null;
-      const path = getDirectNavigationPath(tarea.referencia_tipo, tarea.referencia_id, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, propId, tarea.id);
+      const path = getDirectNavigationPath(tarea.referencia_tipo, tarea.referencia_id, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, propId, tarea.id, tarea.contenido);
       onNavigate(path);
       return;
     }
@@ -2595,18 +3088,18 @@ function TaskDrawer({
           )}
 
           {/* Botón Ir a ver (oculto para directores en tareas de autorización) */}
-          {canNavigate && onNavigate && !(isAutorizacionTask && ['Director General', 'Director Comercial', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '')) && (
+          {canNavigate && onNavigate && !(isAutorizacionTask && ['Director General', 'Director Comercial', 'Director Comercial Aeropuerto', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '')) && (
             <button
               onClick={handleNavigate}
               className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white text-sm font-medium hover:from-purple-500 hover:to-pink-500 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-purple-500/20"
             >
               <ExternalLink className="h-4 w-4" />
-              {getNavigationLabel(tarea.referencia_tipo || '', tarea.tipo || undefined, tarea.campania_id, tarea.id_propuesta, tarea.id_solicitud, tarea.titulo || '')}
+              {getNavigationLabel(tarea.referencia_tipo || '', tarea.tipo || undefined, tarea.campania_id, tarea.id_propuesta, tarea.id_solicitud, tarea.titulo || '', tarea.contenido)}
             </button>
           )}
 
           {/* Botón Revisar y Autorizar para directores (visible incluso en finalizadas) */}
-          {isAutorizacionTask && ['Director General', 'Director Comercial', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '') && tarea.estatus !== 'Cancelado' && onOpenApprovalModal && (
+          {isAutorizacionTask && ['Director General', 'Director Comercial', 'Director Comercial Aeropuerto', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '') && tarea.estatus !== 'Cancelado' && onOpenApprovalModal && (
             <button
               onClick={() => onOpenApprovalModal()}
               className={`mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all hover:scale-[1.02] active:scale-[0.98] ${
@@ -2620,16 +3113,43 @@ function TaskDrawer({
             </button>
           )}
 
+          {/* Desposteo: abre el modal de autorización del desposteo desde la
+              ventana lateral (antes la tarea abría el modal directo y se
+              saltaba este panel). La tarea NO se finaliza a mano: el back la
+              cierra al aprobar o rechazar. Feedback 2026-09-17 (Jos). */}
+          {esDesposteoTask && puedeActuarDesposteo && tarea.estatus === 'Pendiente' && onOpenDesposteoModal && (
+            <button
+              onClick={() => onOpenDesposteoModal()}
+              className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all hover:scale-[1.02] active:scale-[0.98] bg-gradient-to-r from-rose-500 to-red-500 text-white hover:from-rose-400 hover:to-red-400 shadow-lg shadow-rose-500/20"
+            >
+              <Ban className="h-4 w-4" />
+              {tarea.tipo === 'Filtro Desposteo' ? 'Revisar y dar check' : 'Revisar y autorizar desposteo'}
+            </button>
+          )}
+          {esDesposteoTask && onOpenDesposteoModal && tarea.estatus !== 'Pendiente' && (
+            <button
+              onClick={() => onOpenDesposteoModal()}
+              className={`mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${isDark ? 'bg-zinc-700 text-zinc-200 hover:bg-zinc-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+            >
+              <Ban className="h-4 w-4" />
+              Ver desposteo
+            </button>
+          )}
+
           {/* Botón finalizar tarea.
               Oculto para todas las tareas generadas en Gestor de Artes: se
               atienden en la tarea real del modal de Gestor, no en el preview
               lateral. Finalizar aquí solo marcaria estatus=Atendido sin
               disparar los side-effects reales (aprobar arte, subir foto,
               rotar roles, marcar reserva como instalada, etc). Feedback de
-              Jos 2026-07-09 — antes solo se excluia 'Revisión de artes'. */}
+              Jos 2026-07-09 — antes solo se excluia 'Revisión de artes'.
+              Mismo criterio para las tareas de desposteo (2026-09-17): el
+              back las cierra al aprobar/rechazar, y marcarlas Atendido a mano
+              dejaria la solicitud sin resolver. */}
           {contentType === 'tareas'
             && !['Director General', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '')
-            && !isTareaGestorArtes(tarea.tipo) && (
+            && !isTareaGestorArtes(tarea.tipo)
+            && !esDesposteoTask && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -2745,6 +3265,158 @@ function TaskDrawer({
           </div>
         )}
 
+        {/* [#266] Bloque específico para Actividad Comercial — muestra los
+            mismos campos que el modal de creacion/edicion: Tipo (subtipo),
+            Cliente, Marca, Año, Catorcena, Estatus Actividad, Base. Jos
+            pidio que estos campos sean visibles aqui ademas del titulo. */}
+        {tarea.tipo === 'Actividad Comercial' && tarea.contenido && (() => {
+          try {
+            const c = JSON.parse(tarea.contenido) as {
+              cliente?: string | null;
+              marca?: string | null;
+              subtipo?: string | null;
+              ref_id?: number | null;
+              anio?: number | null;
+              catorcena?: number | null;
+              catorcenas?: number[] | null;
+              estatus_actividad?: string | null;
+              base?: string | null;
+            };
+            const campos: Array<{ label: string; value: string }> = [];
+            if (c.subtipo) {
+              campos.push({
+                label: 'Tipo',
+                value: c.ref_id ? `${c.subtipo} #${c.ref_id}` : c.subtipo,
+              });
+            }
+            if (c.cliente) campos.push({ label: 'Cliente', value: c.cliente });
+            if (c.marca) campos.push({ label: 'Marca', value: c.marca });
+            if (c.anio) campos.push({ label: 'Año', value: String(c.anio) });
+            // Catorcenas: array nuevo tiene prioridad; cae al singular legacy.
+            const catorcenasList = Array.isArray(c.catorcenas) && c.catorcenas.length > 0
+              ? c.catorcenas
+              : (c.catorcena ? [c.catorcena] : []);
+            if (catorcenasList.length > 0) {
+              const label = catorcenasList.length === 1 ? 'Catorcena' : 'Catorcenas';
+              campos.push({ label, value: catorcenasList.map(n => `Cat ${n}`).join(', ') });
+            }
+            // 'Cerrado' legacy se muestra como 'Finalizado' para alinear vocabulario.
+            if (c.estatus_actividad) {
+              const estDisplay = c.estatus_actividad === 'Cerrado' ? 'Finalizado' : c.estatus_actividad;
+              campos.push({ label: 'Estatus', value: estDisplay });
+            }
+            if (c.base) campos.push({ label: 'Base', value: c.base });
+
+            if (campos.length === 0) return null;
+
+            return (
+              <div className={`p-5 border-b ${isDark ? 'border-zinc-800/50' : 'border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-medium text-amber-400 uppercase tracking-wider flex items-center gap-2">
+                    <Briefcase className="h-3.5 w-3.5" />
+                    Información de la Actividad
+                  </h3>
+                  {onEditActividad && (
+                    <button
+                      onClick={() => onEditActividad(tarea)}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors ${isDark ? 'border-amber-500/40 text-amber-200 hover:bg-amber-500/10' : 'border-amber-400 text-amber-700 hover:bg-amber-50'}`}
+                      title="Editar actividad"
+                    >
+                      <Pencil className="h-3 w-3" /> Editar
+                    </button>
+                  )}
+                </div>
+                <div className={`space-y-1.5 rounded-xl p-3 border ${isDark ? 'bg-amber-500/5 border-amber-500/20' : 'bg-amber-50/50 border-amber-200'}`}>
+                  {campos.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between">
+                      <span className={`text-xs font-medium ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{f.label}</span>
+                      <span className={`text-sm ${isDark ? 'text-white' : 'text-gray-900'} font-medium text-right`}>{f.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          } catch { return null; }
+        })()}
+
+        {/* Bitacora de ediciones de la Actividad Comercial (feedback Jos
+            2026-11-06). El componente solo pinta algo si la tarea tiene
+            historial registrado; para tareas nuevas sin ediciones no aparece. */}
+        {tarea.tipo === 'Actividad Comercial' && (
+          <BitacoraTareaInline tareaId={tarea.id} isDark={isDark} />
+        )}
+
+        {/* Prueba de color rechazada: mostrar motivo + boton para subir v2.
+            Jos 2026-10-12: tarea tipo 'Prueba de Color' con contenido JSON
+            que incluye requiereNuevaVersion=true. */}
+        {tarea.tipo === 'Prueba de Color' && tarea.contenido && (() => {
+          try {
+            const c = JSON.parse(tarea.contenido) as {
+              pruebaColorId?: number;
+              scId?: number;
+              propuestaId?: number;
+              version?: number;
+              estatus?: string;
+              origen?: string;
+              requiereNuevaVersion?: boolean;
+              motivoRechazo?: string;
+              archivoAdjunto?: string;
+              enlaceAdjunto?: string;
+            };
+            if (!c.requiereNuevaVersion) return null;
+            return (
+              <div className={`p-5 border-b ${isDark ? 'border-zinc-800/50' : 'border-gray-200'}`}>
+                <h3 className="text-xs font-medium text-red-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Prueba de color rechazada
+                </h3>
+                <div className={`rounded-xl p-3 border space-y-2 ${isDark ? 'bg-red-500/5 border-red-500/20' : 'bg-red-50/70 border-red-200'}`}>
+                  {c.motivoRechazo && (
+                    <div>
+                      <div className={`text-[10px] uppercase tracking-wide font-semibold mb-1 ${isDark ? 'text-red-300' : 'text-red-700'}`}>Motivo del rechazo</div>
+                      <div className={`text-sm whitespace-pre-wrap ${isDark ? 'text-zinc-100' : 'text-gray-800'}`}>{c.motivoRechazo}</div>
+                    </div>
+                  )}
+                  {/* Adjuntos opcionales del rechazo. Jos 2026-10-12. */}
+                  {(c.archivoAdjunto || c.enlaceAdjunto) && (
+                    <div className="space-y-1.5 pt-1">
+                      <div className={`text-[10px] uppercase tracking-wide font-semibold ${isDark ? 'text-red-300' : 'text-red-700'}`}>Referencias del rechazo</div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {c.archivoAdjunto && (
+                          <a href={c.archivoAdjunto} target="_blank" rel="noreferrer" className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded border ${isDark ? 'text-fuchsia-200 border-fuchsia-500/40 bg-fuchsia-500/10 hover:bg-fuchsia-500/20' : 'text-fuchsia-800 border-fuchsia-300 bg-fuchsia-50 hover:bg-fuchsia-100'}`}>
+                            <FileText className="h-3 w-3" /> Ver archivo
+                          </a>
+                        )}
+                        {c.enlaceAdjunto && (
+                          <a href={c.enlaceAdjunto} target="_blank" rel="noreferrer" className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded border ${isDark ? 'text-cyan-200 border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20' : 'text-cyan-800 border-cyan-300 bg-cyan-50 hover:bg-cyan-100'}`}>
+                            <ExternalLink className="h-3 w-3" /> Abrir link
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className={`text-[11px] ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
+                    {c.version ? `v${c.version} ` : ''}{c.scId ? `· Circuito #${c.scId} ` : ''}{c.propuestaId ? `· Propuesta #${c.propuestaId}` : ''}
+                  </div>
+                  {c.propuestaId && c.scId && onNavigate && (
+                    <button
+                      onClick={() => onNavigate(`/propuestas?viewId=${c.propuestaId}&pruebaColorNuevaScId=${c.scId}`)}
+                      className={`mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${isDark ? 'border-fuchsia-500/60 text-fuchsia-100 bg-fuchsia-500/20 hover:bg-fuchsia-500/30' : 'border-fuchsia-400 text-fuchsia-800 bg-fuchsia-50 hover:bg-fuchsia-100'}`}
+                    >
+                      <Upload className="h-3.5 w-3.5" /> Subir nueva versión
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          } catch { return null; }
+        })()}
+
+        {/* Vigencia de bloqueo cumplida — pieza + botón para rehabilitar */}
+        {tarea.tipo === TAREA_TIPO_VIGENCIA_BLOQUEO && tarea.contenido && (
+          <VigenciaBloqueoTareaCard tarea={tarea} isDark={isDark} />
+        )}
+
         {/* Campañas afectadas — Ajuste Inventario Bloqueado */}
         {tarea.tipo === 'Ajuste Inventario Bloqueado' && tarea.contenido && (() => {
           try {
@@ -2788,8 +3460,10 @@ function TaskDrawer({
         <div className="p-5 space-y-3">
           <h3 className={`text-xs font-medium ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wider mb-3`}>Detalles</h3>
 
-          {/* Cliente (si es tarea de autorización) */}
-          {(() => {
+          {/* Cliente (si es tarea de autorización). Para Actividad Comercial lo
+              omitimos aqui porque ya aparece en el bloque amarillo "Información
+              de la Actividad" (feedback Jos 2026-10-20 — campos duplicados). */}
+          {tarea.tipo !== 'Actividad Comercial' && (() => {
             const clienteName = (carasData && carasData.length > 0 ? carasData[0].cliente : null) || tarea.cliente;
             if (!clienteName) return null;
             return (
@@ -2909,7 +3583,7 @@ function TaskDrawer({
                   <ChevronDown className={`h-3 w-3 flex-shrink-0 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`} />
                 </button>
                 {asignadoOpen && (
-                  <div className={`absolute right-0 top-full mt-1 z-50 ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-1.5 min-w-[180px] max-h-[220px] overflow-y-auto`}>
+                  <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:bottom-auto lg:mt-1 lg:w-auto lg:min-w-[180px] lg:max-w-[calc(100vw-2rem)] lg:max-h-[220px] z-50 ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-1.5`}>
                     {usuarios.map(u => (
                       <label key={u.id} className={`flex items-center gap-2 px-2 py-1.5 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'} rounded cursor-pointer`}>
                         <input
@@ -3023,7 +3697,7 @@ function TaskDrawer({
 
         {/* Notas Dirección — bitácora acumulable, visible para directores y admins en tareas de autorización */}
         {isAutorizacionTask
-          && ['Director General', 'Director Comercial', 'Administrador', 'DEV'].includes(user?.rol || '')
+          && ['Director General', 'Director Comercial', 'Director Comercial Aeropuerto', 'Administrador', 'DEV'].includes(user?.rol || '')
           && tarea.id_solicitud && (
           <NotasDireccionBitacora
             idSolicitud={parseInt(tarea.id_solicitud)}
@@ -3033,7 +3707,7 @@ function TaskDrawer({
         )}
 
         {/* Comentarios (oculto para directores en tareas de autorización) */}
-        {!(isAutorizacionTask && ['Director General', 'Director Comercial', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '')) && <div className={`p-5 border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-200'}`}>
+        {!(isAutorizacionTask && ['Director General', 'Director Comercial', 'Director Comercial Aeropuerto', 'Gerente Comercial Vía Pública', 'Gerente Comercial Plazas', 'Gerente Comercial'].includes(user?.rol || '')) && <div className={`p-5 border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-200'}`}>
           <div className="flex items-center justify-between mb-4">
             <h3 className={`text-xs font-medium ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wider flex items-center gap-2`}>
               <MessageSquare className="h-3.5 w-3.5" />
@@ -3109,8 +3783,16 @@ export function NotificacionesPage() {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
   const currentUserId = useAuthStore((s) => s.user?.id);
   const currentUserRol = useAuthStore((s) => s.user?.rol);
-  const puedeCrearActividadComercial = !!currentUserRol && ROLES_ACTIVIDAD_COMERCIAL.has(currentUserRol);
+  const puedeCrearActividadComercial = !OCULTAR_ACTIVIDAD_COMERCIAL && !!currentUserRol && ROLES_ACTIVIDAD_COMERCIAL.has(currentUserRol);
   const [showActividadModal, setShowActividadModal] = useState(false);
+  // Tarea en edición para el modal Actividad Comercial. null = modo creación.
+  // Feedback Jos 2026-09-25: plumita reabre el mismo modal precargado.
+  const [editingActividad, setEditingActividad] = useState<{
+    id: number;
+    descripcion?: string | null;
+    fecha_fin?: string | Date | null;
+    contenido?: string | null;
+  } | null>(null);
 
   // Suscribirse a WebSocket para actualizaciones en tiempo real.
   // popups: false — los popups los dispara solo la instancia del Header.
@@ -3129,6 +3811,21 @@ export function NotificacionesPage() {
   const [filterFecha, setFilterFecha] = useState<DateFilterType>('all');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('pendientes');
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Chips por tipo de tarea (pestaña Mis Tareas). Acumulables: vacío = todos.
+  const [tiposSeleccionados, setTiposSeleccionados] = useState<Set<string>>(new Set());
+  useEffect(() => { setTiposSeleccionados(new Set()); }, [contentType]);
+  const toggleTipoSeleccionado = useCallback((tipo: string) => {
+    setTiposSeleccionados(prev => {
+      const next = new Set(prev);
+      if (next.has(tipo)) next.delete(tipo); else next.add(tipo);
+      return next;
+    });
+  }, []);
+  // El Tablero (columnas por tipo) solo aplica a Mis Tareas.
+  useEffect(() => {
+    if (contentType === 'notificaciones' && view === 'tablero') setView('lista');
+  }, [contentType, view]);
 
 
   // Estados para filtros avanzados (estilo Proveedores)
@@ -3164,6 +3861,8 @@ export function NotificacionesPage() {
   const [editSolicitudId, setEditSolicitudId] = useState<number | null>(null);
   const [editPropuesta, setEditPropuesta] = useState<any>(null);
   const [editCampana, setEditCampana] = useState<any>(null);
+  // Modal informativo cuando se intenta abrir el modal sobre propuesta ya pasada a ventas (bug Oral B)
+  const [propuestaBloqueadaStatus, setPropuestaBloqueadaStatus] = useState<string | null>(null);
 
   // Handler para cerrar el drawer con animación
   const handleCloseDrawer = useCallback(() => {
@@ -3267,6 +3966,8 @@ export function NotificacionesPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notificaciones'] });
       queryClient.invalidateQueries({ queryKey: ['notificaciones-stats'] });
+      // En Mis Tareas el cambio de estatus también se refleja en las tareas de campaña.
+      queryClient.invalidateQueries({ queryKey: ['campana-tareas'], exact: false });
       setSelectedTareaIds(new Set());
     },
   });
@@ -3370,10 +4071,34 @@ export function NotificacionesPage() {
       });
     }, [baseTareas, quickFilter, user?.rol]);
 
-  const filteredTareas = tareasConQuickFilter;
+  // Tipos disponibles (con conteo) bajo el filtro rápido actual, para pintar
+  // los chips de tipo. Se calculan ANTES de aplicar el filtro de tipo para que
+  // un chip no desaparezca al seleccionar otro.
+  const tiposDisponibles = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of tareasConQuickFilter) {
+      const tipo = t.tipo || 'Sin tipo';
+      counts.set(tipo, (counts.get(tipo) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([tipo, count]) => ({ tipo, count }))
+      .sort((a, b) => b.count - a.count || a.tipo.localeCompare(b.tipo));
+  }, [tareasConQuickFilter]);
 
-  // Selección masiva: master checkbox que marca/desmarca todas las visibles.
-  const allFilteredIds = useMemo(() => filteredTareas.map(t => t.id), [filteredTareas]);
+  const filteredTareas = useMemo(() => {
+    if (contentType !== 'tareas' || tiposSeleccionados.size === 0) return tareasConQuickFilter;
+    return tareasConQuickFilter.filter(t => tiposSeleccionados.has(t.tipo || 'Sin tipo'));
+  }, [tareasConQuickFilter, tiposSeleccionados, contentType]);
+
+  // Selección masiva: solo las filas que admiten cierre manual (en Mis Tareas
+  // quedan fuera autorizaciones, gestor de artes y desposteo).
+  const puedeSeleccionar = useCallback(
+    (t: Notificacion) => esSeleccionableMasivo(t, contentType, user?.rol),
+    [contentType, user?.rol]
+  );
+  const haySeleccionables = useMemo(() => filteredTareas.some(puedeSeleccionar), [filteredTareas, puedeSeleccionar]);
+  // Master checkbox que marca/desmarca todas las visibles seleccionables.
+  const allFilteredIds = useMemo(() => filteredTareas.filter(puedeSeleccionar).map(t => t.id), [filteredTareas, puedeSeleccionar]);
   const allFilteredSelected = allFilteredIds.length > 0 && allFilteredIds.every(id => selectedTareaIds.has(id));
   const someFilteredSelected = !allFilteredSelected && allFilteredIds.some(id => selectedTareaIds.has(id));
   const toggleAllFilteredSelection = useCallback(() => {
@@ -3496,23 +4221,13 @@ export function NotificacionesPage() {
 
   // Handlers
   const handleSelectTarea = useCallback(async (tarea: Notificacion) => {
-    // Desposteo Fase 2: Filtro Desposteo (GC) y Autorización Desposteo
-    // (Facturación) usan el DesposteoModal en vez del TaskDrawer. El
-    // desposteoId viene en el JSON de `contenido` de la tarea.
-    if (tarea.tipo === 'Filtro Desposteo' || tarea.tipo === 'Autorización Desposteo') {
-      try {
-        const raw = typeof tarea.contenido === 'string' ? tarea.contenido : '';
-        const parsed = raw ? JSON.parse(raw) : {};
-        const desposteoId = Number(parsed?.desposteoId);
-        if (Number.isFinite(desposteoId) && desposteoId > 0) {
-          setDesposteoModal({
-            desposteoId,
-            modo: tarea.tipo === 'Filtro Desposteo' ? 'filtro' : 'facturacion',
-          });
-          return;
-        }
-      } catch { /* fallthrough al TaskDrawer normal */ }
-    }
+    // Desposteo: ANTES estas dos tareas abrían el DesposteoModal directo y se
+    // saltaban el TaskDrawer con un `return`. Consecuencia: no había panel
+    // lateral, ni comentarios, ni botón de finalizar, así que la tarea se
+    // quedaba activa aunque el gerente ya hubiera dado check.
+    // Feedback 2026-09-17 (Jos): abrir la ventana lateral y desde ahí el modal.
+    // Ahora cae al flujo normal de abajo y el drawer pinta el botón "Revisar
+    // desposteo" (ver esDesposteoTask en el TaskDrawer).
     const isDirectorUser = ['Director General', 'Director Comercial'].includes(user?.rol || '');
     const isAuthTask = tarea.tipo?.includes('Autorización');
     if (isDirectorUser && isAuthTask) {
@@ -3524,12 +4239,13 @@ export function NotificacionesPage() {
   }, [user?.rol]);
 
   // Vista de tabs
-  const viewTabs = [
+  // Tablero (columnas por tipo de tarea) solo en Mis Tareas.
+  const viewTabs: { key: ViewType; label: string; icon: typeof List }[] = [
     { key: 'lista', label: 'Lista', icon: List },
-    //{ key: 'tablero', label: 'Tablero', icon: LayoutGrid },
+    ...(contentType === 'tareas' ? [{ key: 'tablero' as ViewType, label: 'Tablero', icon: LayoutGrid }] : []),
     { key: 'calendario', label: 'Calendario', icon: CalendarDays },
     { key: 'notas', label: 'Notas', icon: StickyNote },
-  ] as const;
+  ];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -3608,8 +4324,10 @@ export function NotificacionesPage() {
             ))}
           </div>
 
-          {/* Botones de acción */}
-          <div className="flex items-center gap-2">
+          {/* Botones de acción — max-lg:flex-shrink-0 para que en mobile/tablet
+              el grupo izquierdo (tabs) scrolle y nunca encime con estos.
+              En desktop (lg+) queda igual que antes. */}
+          <div className="flex items-center gap-2 max-lg:flex-shrink-0">
             {contentType === 'tareas' && puedeCrearActividadComercial && (
               <button
                 onClick={() => setShowActividadModal(true)}
@@ -3690,7 +4408,17 @@ export function NotificacionesPage() {
                   )}
                 </button>
                 {showFilterPopup && (
-                  <div className={`absolute right-0 top-full mt-1 z-[60] w-[520px] max-w-[calc(100vw-2rem)] ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-4`}>
+                  // Mobile + tablet (<lg): fixed anclado al viewport con
+                  // margen. Antes se usaba `sm:` como corte pero celulares
+                  // en landscape (~640-900px CSS) activaban `sm:absolute
+                  // sm:right-0 sm:w-[520px]` y el popup se salia por la
+                  // izquierda porque el contenedor .relative del boton es
+                  // angosto. Ahora el corte a dropdown es en lg: (1024px)
+                  // para que solo desktop verdadero lo use.
+                  // Ademas usa dvh en lugar de vh para que la URL bar
+                  // dinamica no le robe altura al max-height del scroll.
+                  // Feedback Jos 2026-09-28.
+                  <div className={`fixed inset-x-2 top-2 bottom-2 mt-0 w-auto max-w-none max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:bottom-auto lg:mt-1 lg:w-[520px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible z-[60] ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-4`}>
                     {/* Filtros rápidos */}
                     <div className="mb-3">
                       <span className="text-[11px] font-medium text-purple-400 uppercase tracking-wide">
@@ -3727,13 +4455,15 @@ export function NotificacionesPage() {
                     </div>
                     <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
                       {filters.map((filter, index) => (
-                        <div key={filter.id} className="flex items-center gap-2">
-                          {index > 0 && <span className="text-[10px] text-purple-400 font-medium w-8">AND</span>}
-                          {index === 0 && <span className="w-8"></span>}
+                        // Movil: campo/operador/valor apilados en columna para que no
+                        // se corten (feedback usuario 2026-09-21). Desktop mantiene fila.
+                        <div key={filter.id} className="flex flex-col sm:flex-row sm:items-center gap-2">
+                          {index > 0 && <span className="text-[10px] text-purple-400 font-medium w-full sm:w-8">AND</span>}
+                          {index === 0 && <span className="hidden sm:inline sm:w-8"></span>}
                           <select
                             value={filter.field}
                             onChange={(e) => updateFilter(filter.id, { field: e.target.value })}
-                            className={`w-[130px] text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5`}
+                            className={`w-full sm:w-[130px] text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5`}
                           >
                             {FILTER_FIELDS.map((f) => (
                               <option key={f.field} value={f.field}>{f.label}</option>
@@ -3742,7 +4472,7 @@ export function NotificacionesPage() {
                           <select
                             value={filter.operator}
                             onChange={(e) => updateFilter(filter.id, { operator: e.target.value as FilterOperator })}
-                            className={`w-[110px] text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5`}
+                            className={`w-full sm:w-[110px] text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5`}
                           >
                             {DATE_FIELDS.includes(filter.field) ? (
                               <>
@@ -3759,7 +4489,7 @@ export function NotificacionesPage() {
                           <select
                             value={filter.value}
                             onChange={(e) => updateFilter(filter.id, { value: e.target.value })}
-                            className={`flex-1 text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5 focus:outline-none focus:border-purple-500`}
+                            className={`w-full sm:flex-1 min-w-0 text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} border rounded px-2 py-1.5 focus:outline-none focus:border-purple-500`}
                           >
                             <option value="">Selecciona...</option>
                             {DATE_PRESET_OPTIONS.map((opt) => (
@@ -3774,7 +4504,7 @@ export function NotificacionesPage() {
                               value={filter.value}
                               onChange={(e) => updateFilter(filter.id, { value: e.target.value })}
                               placeholder="Escribe o selecciona..."
-                              className={`flex-1 text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded px-2 py-1.5 focus:outline-none focus:border-purple-500`}
+                              className={`w-full sm:flex-1 min-w-0 text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder:text-gray-400'} border rounded px-2 py-1.5 focus:outline-none focus:border-purple-500`}
                             />
                             <datalist id={`datalist-${filter.id}`}>
                               {getUniqueValues[filter.field]?.map((val) => (
@@ -3783,7 +4513,7 @@ export function NotificacionesPage() {
                             </datalist>
                           </>
                         )}
-                          <button onClick={() => removeFilter(filter.id)} className="text-red-400 hover:text-red-300 p-0.5">
+                          <button onClick={() => removeFilter(filter.id)} className="text-red-400 hover:text-red-300 p-0.5 self-end sm:self-auto">
                             <Trash2 className="h-3 w-3" />
                           </button>
                         </div>
@@ -3829,7 +4559,7 @@ export function NotificacionesPage() {
                     )}
                   </button>
                   {showGroupPopup && (
-                    <div className={`absolute right-0 top-full mt-1 z-[60] ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-2 min-w-[180px]`}>
+                    <div className={`fixed inset-x-2 top-2 bottom-2 mt-0 w-auto max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:bottom-auto lg:mt-1 lg:w-auto lg:max-h-none lg:overflow-visible lg:min-w-[180px] z-[60] ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-2`}>
                       <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wide px-2 py-1`}>Agrupar por (max 2)</p>
                       {AVAILABLE_GROUPINGS.map(({ field, label }) => (
                         <button
@@ -3873,7 +4603,7 @@ export function NotificacionesPage() {
                   <ArrowUpDown className="h-4 w-4" />
                 </button>
                 {showSortPopup && (
-                  <div className={`absolute right-0 top-full mt-1 z-[60] w-[300px] ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-3`}>
+                  <div className={`fixed inset-x-2 top-2 bottom-2 mt-0 w-auto max-w-none max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:right-0 lg:bottom-auto lg:mt-1 lg:w-[300px] lg:max-h-none lg:overflow-visible z-[60] ${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-gray-200'} border rounded-lg shadow-xl p-3`}>
                     <div className="flex items-center justify-between mb-3">
                       <span className="text-sm font-medium text-purple-300">Ordenar por</span>
                       <button onClick={() => setShowSortPopup(false)} className={isDark ? 'text-zinc-400 hover:text-white' : 'text-gray-400 hover:text-gray-900'}>
@@ -3969,6 +4699,49 @@ export function NotificacionesPage() {
             </div>
           </div>
         )}
+
+        {/* Chips por tipo de tarea — filtros rápidos acumulables (solo Mis Tareas,
+            en Lista y Tablero). Vacío = todos los tipos. */}
+        {contentType === 'tareas' && (view === 'lista' || view === 'tablero') && tiposDisponibles.length > 0 && (
+          <div className={`flex flex-wrap items-center gap-2 px-3 md:px-6 pb-3`}>
+            <button
+              onClick={() => setTiposSeleccionados(new Set())}
+              className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                tiposSeleccionados.size === 0
+                  ? 'bg-purple-600 text-white border-purple-500'
+                  : isDark ? 'bg-zinc-800/60 text-zinc-300 border-zinc-700 hover:bg-zinc-800' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+              }`}
+            >
+              Todas
+            </button>
+            {tiposDisponibles.map(({ tipo, count }) => {
+              const activo = tiposSeleccionados.has(tipo);
+              const cfg = getTipoConfig(tipo);
+              const TipoIcon = cfg.icon;
+              return (
+                <button
+                  key={tipo}
+                  onClick={() => toggleTipoSeleccionado(tipo)}
+                  aria-pressed={activo}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                    activo
+                      ? `${cfg.bg} ${cfg.color} ${cfg.border} ring-1 ring-current/40`
+                      : isDark ? 'bg-zinc-800/60 text-zinc-300 border-zinc-700 hover:bg-zinc-800' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                  }`}
+                >
+                  <TipoIcon className={`h-3 w-3 ${activo ? cfg.color : isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
+                  {tipo}
+                  <span className={`px-1.5 rounded-full text-[10px] ${activo ? 'bg-black/20' : isDark ? 'bg-zinc-700 text-zinc-400' : 'bg-gray-200 text-gray-500'}`}>{count}</span>
+                </button>
+              );
+            })}
+            {tiposSeleccionados.size > 0 && (
+              <span className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                {tiposSeleccionados.size} tipo{tiposSeleccionados.size === 1 ? '' : 's'} · {filteredTareas.length} tarea{filteredTareas.length === 1 ? '' : 's'}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Contenido principal */}
@@ -3983,7 +4756,7 @@ export function NotificacionesPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
-                {filteredTareas.length > 0 && contentType === 'notificaciones' && (
+                {filteredTareas.length > 0 && haySeleccionables && (
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -4003,21 +4776,21 @@ export function NotificacionesPage() {
                   {activeGroupings.length > 0 && <span className={isDark ? 'text-zinc-600' : 'text-gray-400'}> · {activeGroupings.length} agrupación{activeGroupings.length > 1 ? 'es' : ''}</span>}
                 </span>
               </div>
-              {contentType === 'notificaciones' && selectedTareaIds.size > 0 && (
+              {selectedTareaIds.size > 0 && (
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => bulkUpdateEstatusMutation.mutate({ ids: Array.from(selectedTareaIds), estatus: 'Atendido' })}
                     disabled={bulkUpdateEstatusMutation.isPending}
                     className="px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg disabled:opacity-50 transition-colors"
                   >
-                    Marcar como leídas
+                    {contentType === 'notificaciones' ? 'Marcar como leídas' : 'Marcar como finalizadas'}
                   </button>
                   <button
                     onClick={() => bulkUpdateEstatusMutation.mutate({ ids: Array.from(selectedTareaIds), estatus: 'Pendiente' })}
                     disabled={bulkUpdateEstatusMutation.isPending}
                     className="px-3 py-1.5 text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg disabled:opacity-50 transition-colors"
                   >
-                    Marcar como no leídas
+                    {contentType === 'notificaciones' ? 'Marcar como no leídas' : 'Marcar sin finalizar'}
                   </button>
                   <button
                     onClick={() => setSelectedTareaIds(new Set())}
@@ -4031,16 +4804,22 @@ export function NotificacionesPage() {
             </div>
 
             {activeGroupings.length > 0 ? (
-              /* Vista con agrupaciones */
-              <div className="space-y-3">
+              /* Vista con agrupaciones. key por pestaña: remonta los grupos al
+                 cambiar de tab para que aplique su estado inicial (contraído /
+                 extendido) y no herede el de la otra pestaña. */
+              <div className="space-y-3" key={contentType}>
                 {nestedGroups.map((group) => (
                   <NestedSection
                     key={group.key}
                     group={group}
                     groupByList={activeGroupings}
                     onSelectTarea={handleSelectTarea}
-                    selectedIds={contentType === 'notificaciones' ? selectedTareaIds : undefined}
-                    onToggleSelection={contentType === 'notificaciones' ? toggleTareaSelection : undefined}
+                    selectedIds={haySeleccionables ? selectedTareaIds : undefined}
+                    onToggleSelection={haySeleccionables ? toggleTareaSelection : undefined}
+                    canSelect={puedeSeleccionar}
+                    defaultOpen={contentType !== 'tareas' || isDirector}
+                    currentUserId={currentUserId}
+                    onEditActividad={puedeCrearActividadComercial ? (t) => setEditingActividad({ id: t.id, descripcion: t.mensaje || t.titulo, fecha_fin: t.fecha_fin, contenido: t.contenido }) : undefined}
                   />
                 ))}
               </div>
@@ -4062,7 +4841,7 @@ export function NotificacionesPage() {
                     if (isCanceladoInline) return { bg: 'bg-zinc-500/20', border: 'border-zinc-500/30', color: 'text-zinc-400', label: 'Cancelado' };
                     // Filtro DG/DCM devuelto a corrección: 'Rechazado' en BD pero NO es rechazo total
                     // (el Gerente lo devolvió al asesor para corregir). Badge ámbar, no rojo/verde.
-                    if ((tarea.tipo === 'Filtro Autorización DG' || tarea.tipo === 'Filtro Autorización DCM') && isRechazadoInline) return { bg: 'bg-amber-500/20', border: 'border-amber-500/30', color: 'text-amber-400', label: 'Devuelta a corrección' };
+                    if (tarea.tipo === 'Filtro Autorización DG' && isRechazadoInline) return { bg: 'bg-amber-500/20', border: 'border-amber-500/30', color: 'text-amber-400', label: 'Devuelta a corrección' };
                     if (isRechazoInline) return { bg: 'bg-red-500/20', border: 'border-red-500/30', color: 'text-red-400', label: 'Rechazo' };
                     if (isAprobacionInline) return { bg: 'bg-emerald-500/20', border: 'border-emerald-500/30', color: 'text-emerald-400', label: 'Aprobada' };
                     if (isRechazadoInline) return { bg: 'bg-red-500/20', border: 'border-red-500/30', color: 'text-red-400', label: 'Rechazo' };
@@ -4082,15 +4861,19 @@ export function NotificacionesPage() {
                         {/* Checkbox de selección masiva — solo en tab Notificaciones,
                             porque en Mis Tareas 'estatus=Atendido' significa tarea
                             completada, no solo "leída". */}
-                        {contentType === 'notificaciones' && (
+                        {haySeleccionables && (
                           <div className="pt-1.5">
-                            <input
-                              type="checkbox"
-                              checked={selectedTareaIds.has(tarea.id)}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={(e) => { e.stopPropagation(); toggleTareaSelection(tarea.id); }}
-                              className="w-4 h-4 accent-purple-500 cursor-pointer"
-                            />
+                            {puedeSeleccionar(tarea) ? (
+                              <input
+                                type="checkbox"
+                                checked={selectedTareaIds.has(tarea.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => { e.stopPropagation(); toggleTareaSelection(tarea.id); }}
+                                className="w-4 h-4 accent-purple-500 cursor-pointer"
+                              />
+                            ) : (
+                              <span className="block w-4 h-4" aria-hidden="true" />
+                            )}
                           </div>
                         )}
                         {/* Indicador de estado + icono (oculto para auth) */}
@@ -4190,6 +4973,21 @@ export function NotificacionesPage() {
 
                         {/* Acciones */}
                         <div className="flex items-center gap-1 flex-shrink-0 mt-1">
+                          {/* Plumita para editar Actividad Comercial — solo el creador la ve.
+                              Feedback Jos 2026-09-25: reabre el mismo modal precargado. */}
+                          {tarea.tipo === 'Actividad Comercial' && puedeCrearActividadComercial && currentUserId != null && tarea.id_responsable === currentUserId && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingActividad({ id: tarea.id, descripcion: tarea.mensaje || tarea.titulo, fecha_fin: tarea.fecha_fin, contenido: tarea.contenido });
+                              }}
+                              title="Editar actividad comercial"
+                              className={`p-1.5 rounded-lg transition-colors ${isDark ? 'text-amber-300 hover:bg-amber-500/15' : 'text-amber-600 hover:bg-amber-50'}`}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                           {/* Botón Ir a ver - solo si tiene referencia o id_solicitud para tareas de autorización/rechazo */}
                           {hasNavigationRoute(tarea) && (
                             <button
@@ -4198,6 +4996,18 @@ export function NotificacionesPage() {
                                 if (tarea.tipo === 'Mención en Ticket' && tarea.id_solicitud) {
                                   navigate(`/admin/tickets-historial?ticketId=${tarea.id_solicitud}`);
                                   return;
+                                }
+                                // Pruebas de Color: deep-link al submodal de la tarea específica.
+                                if ((isPruebaColorRevisionTarea(tarea.tipo, tarea.titulo) || isPruebaColorSeguimientoTarea(tarea.tipo) || isPruebaColorNotificacionTarea(tarea.tipo) || isPruebaColorImpresionORecepcionTarea(tarea.tipo, tarea.contenido))) {
+                                  const propId = tarea.id_propuesta ? parseInt(tarea.id_propuesta) : NaN;
+                                  if (!isNaN(propId)) {
+                                    navigate(getDirectNavigationPath('propuesta', propId, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, propId, tarea.id, tarea.contenido));
+                                    return;
+                                  }
+                                  if (tarea.campania_id) {
+                                    navigate(getDirectNavigationPath('campana', tarea.campania_id, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, null, tarea.id, tarea.contenido));
+                                    return;
+                                  }
                                 }
                                 // Notif de comentario: navegar segun el titulo (solicitud / propuesta / campana).
                                 const commentEntity = getCommentEntity(tarea.titulo || '');
@@ -4221,7 +5031,14 @@ export function NotificacionesPage() {
                                 }
                                 if (tarea.tipo?.includes('Rechazo')) {
                                   if (tarea.referencia_tipo === 'propuesta' && tarea.id_propuesta) {
-                                    propuestasService.getById(parseInt(tarea.id_propuesta)).then(p => setEditPropuesta(p)).catch(console.error);
+                                    propuestasService.getById(parseInt(tarea.id_propuesta)).then(p => {
+                                      // Guard caso Oral B 30-oct-2026: no abrir modal sobre propuesta ya aprobada
+                                      if (p.status === 'Aprobada' || p.status === 'Pase a ventas') {
+                                        setPropuestaBloqueadaStatus(p.status);
+                                        return;
+                                      }
+                                      setEditPropuesta(p);
+                                    }).catch(console.error);
                                   } else if (tarea.referencia_tipo === 'campana' && tarea.campania_id) {
                                     campanasService.getById(tarea.campania_id).then(c => setEditCampana(c)).catch(console.error);
                                   } else {
@@ -4230,10 +5047,15 @@ export function NotificacionesPage() {
                                   }
                                   return;
                                 }
+                                // Aviso de Eliminación → detalle de campaña (solo lectura).
+                                if (tarea.tipo === 'Aviso Eliminación' && tarea.campania_id) {
+                                  navigate(`/campanas/detail/${tarea.campania_id}`);
+                                  return;
+                                }
                                 // Si tiene referencia_tipo y referencia_id, usar esos
                                 if (tarea.referencia_tipo && tarea.referencia_id) {
                                   const propId = tarea.id_propuesta ? parseInt(tarea.id_propuesta) : null;
-                                  const path = getDirectNavigationPath(tarea.referencia_tipo, tarea.referencia_id, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, propId, tarea.id);
+                                  const path = getDirectNavigationPath(tarea.referencia_tipo, tarea.referencia_id, tarea.titulo || '', tarea.tipo || undefined, tarea.campania_id, propId, tarea.id, tarea.contenido);
                                   navigate(path);
                                   return;
                                 }
@@ -4320,11 +5142,22 @@ export function NotificacionesPage() {
             onClose={handleCloseDrawer}
             onAddComment={(contenido) => addCommentMutation.mutate({ id: selectedTarea.id, contenido })}
             onUpdateFechaFin={(fecha_fin) => updateTareaMutation.mutate({ id: selectedTarea.id, fecha_fin })}
+            onEditActividad={puedeCrearActividadComercial ? (t) => {
+              handleCloseDrawer();
+              setTimeout(() => setEditingActividad({ id: t.id, descripcion: t.mensaje || t.titulo, fecha_fin: t.fecha_fin, contenido: t.contenido }), 250);
+            } : undefined}
             onNavigate={(path) => {
               if (selectedTarea.tipo?.includes('Rechazo')) {
                 handleCloseDrawer();
                 if (selectedTarea.referencia_tipo === 'propuesta' && selectedTarea.id_propuesta) {
-                  propuestasService.getById(parseInt(selectedTarea.id_propuesta)).then(p => setTimeout(() => setEditPropuesta(p), 250)).catch(console.error);
+                  propuestasService.getById(parseInt(selectedTarea.id_propuesta)).then(p => {
+                    // Guard caso Oral B 30-oct-2026: no abrir modal sobre propuesta ya aprobada
+                    if (p.status === 'Aprobada' || p.status === 'Pase a ventas') {
+                      setPropuestaBloqueadaStatus(p.status);
+                      return;
+                    }
+                    setTimeout(() => setEditPropuesta(p), 250);
+                  }).catch(console.error);
                 } else if (selectedTarea.referencia_tipo === 'campana' && selectedTarea.campania_id) {
                   campanasService.getById(selectedTarea.campania_id).then(c => setTimeout(() => setEditCampana(c), 250)).catch(console.error);
                 } else {
@@ -4342,7 +5175,25 @@ export function NotificacionesPage() {
               queryClient.invalidateQueries({ queryKey: ['notificaciones-stats'] });
             }}
             contentType={contentType}
-            onOpenApprovalModal={selectedTarea.tipo?.includes('Autorización') ? () => setApprovalModalTarea(selectedTarea) : undefined}
+            onOpenApprovalModal={
+              selectedTarea.tipo?.includes('Autorización') && selectedTarea.tipo !== 'Autorización Desposteo'
+                ? () => setApprovalModalTarea(selectedTarea)
+                : undefined
+            }
+            onOpenDesposteoModal={
+              (selectedTarea.tipo === 'Filtro Desposteo' || selectedTarea.tipo === 'Autorización Desposteo')
+                ? () => {
+                    // El desposteoId viaja en el JSON de `contenido` de la tarea.
+                    const desposteoId = getDesposteoIdDeTarea(selectedTarea);
+                    if (desposteoId) {
+                      setDesposteoModal({
+                        desposteoId,
+                        modo: selectedTarea.tipo === 'Filtro Desposteo' ? 'filtro' : 'facturacion',
+                      });
+                    }
+                  }
+                : undefined
+            }
           />
         </>
       )}
@@ -4356,6 +5207,14 @@ export function NotificacionesPage() {
           onDone={() => {
             queryClient.invalidateQueries({ queryKey: ['notificaciones'] });
             queryClient.invalidateQueries({ queryKey: ['notificaciones-stats'] });
+            // Refrescar la tarea abierta en el drawer: el back la cierra al
+            // aprobar/rechazar, así que sin esto el panel lateral seguiría
+            // mostrándola como Pendiente. Mismo patrón que el ApprovalModal.
+            if (selectedTarea) {
+              notificacionesService.getById(selectedTarea.id)
+                .then(updated => setSelectedTarea(updated))
+                .catch(console.error);
+            }
           }}
         />
       )}
@@ -4388,9 +5247,15 @@ export function NotificacionesPage() {
           isOpen={!!editPropuesta}
           onClose={() => setEditPropuesta(null)}
           propuesta={editPropuesta}
-          readOnly={false}
+          readOnly={editPropuesta?.status === 'Aprobada' || editPropuesta?.status === 'Pase a ventas'}
         />
       )}
+
+      <PropuestaAprobadaInfoModal
+        isOpen={!!propuestaBloqueadaStatus}
+        onClose={() => setPropuestaBloqueadaStatus(null)}
+        propuestaStatus={propuestaBloqueadaStatus ?? undefined}
+      />
 
       {/* Modal de Asignar Inventario Campaña (para tareas de rechazo de campaña) */}
       {editCampana && (
@@ -4401,11 +5266,13 @@ export function NotificacionesPage() {
         />
       )}
 
-      {/* Nueva Actividad Comercial (tarea manual asesor) */}
+      {/* Nueva Actividad Comercial (tarea manual asesor). Si editingActividad
+          está seteado, entra en modo edición con datos precargados. */}
       {puedeCrearActividadComercial && (
         <NuevaActividadComercialModal
-          isOpen={showActividadModal}
-          onClose={() => setShowActividadModal(false)}
+          isOpen={showActividadModal || !!editingActividad}
+          onClose={() => { setShowActividadModal(false); setEditingActividad(null); }}
+          editing={editingActividad}
         />
       )}
 

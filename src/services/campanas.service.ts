@@ -1,12 +1,12 @@
 import api from '../lib/api';
 import { Campana, CampanaStats, PaginatedResponse, ApiResponse, ComentarioTarea, CampanaWithComments } from '../types';
+import type { ReservaHistorialItem } from './propuestas.service';
 
-import { useEnvironmentStore, getEndpoints, getDeliveryNotesEndpoint, getSeriesForSapDatabase, usaSapPruebas } from '../store/environmentStore';
+import { useEnvironmentStore, getEndpoints, getDeliveryNotesEndpoint, getSeriesForSapDatabase, getSapCompanyDb, SAP_BASE_URL } from '../store/environmentStore';
 import type { SapDatabase } from '../store/environmentStore';
 export type { CampanaWithComments };
 
-// SAP Configuration
-const SAP_BASE_URL = 'https://workflow-namely-changes-nothing.trycloudflare.com';
+// SAP_BASE_URL viene de environmentStore (una sola fuente; lee VITE_SAP_URL).
 
 // Interfaces para SAP Delivery Note
 /** Pieza que el backend NO pudo reservar, con su motivo. Permite decirle al
@@ -197,6 +197,9 @@ export interface InventarioReservado {
   tipo_medio: string | null;
   inicio_periodo: string | null;
   fin_periodo: string | null;
+  // Horario diario del circuito digital (feature Horario inicio/fin). null si no aplica.
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
   tradicional_digital: string | null;
   grupo_completo_id: number | null;
   numero_catorcena?: number | null;
@@ -300,8 +303,13 @@ export interface SolicitudCara {
   autorizacion_dcm?: string | null;
   // true si la cara tiene una tarea de eliminación abierta (Filtro GC o DG).
   pendiente_eliminacion?: boolean;
+  // true si hay una tarea 'Filtro Autorización DG' abierta (gerente comercial
+  // revisando antes de escalar a DG). Pinta embudo ambar junto al "Pend. DG".
+  en_filtro_dg?: boolean;
   grupo_rt_bf?: number | null;
   cortesia?: number | null;
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
 }
 
 export interface CampanaUpdateData {
@@ -399,6 +407,15 @@ export interface ArteExistente {
   nombre_generico?: string | null;     // valor único compartido por el batch (modo Genérico)
   estatus?: string | null;     // estatus del arte (Aprobado / Rechazado / Pendiente / etc.)
   tiene_instalado?: boolean;   // true si alguna reserva que usa este arte ya esta instalada
+  // Jos 2026-10-12: marca ADICIONAL. Si true, el arte proviene de una prueba
+  // de color aprobada; se muestra un badge extra en la biblioteca sin
+  // reemplazar las etiquetas del flujo (Instalado, Pendiente, etc.).
+  origen_prueba_color?: boolean;
+  prueba_color_version?: number | null;
+  prueba_color_enlace_externo?: string | null;
+  // Jos 2026-10-23: 'prueba_color' | 'revision_anticipada'. Define el prefijo
+  // del badge (PC vN vs RA vN) en la biblioteca de artes.
+  prueba_color_tipo?: 'prueba_color' | 'revision_anticipada' | null;
 }
 
 // Órdenes de Montaje
@@ -414,6 +431,9 @@ export interface OrdenMontajeCAT {
   cuic: number | null;
   fecha_inicio_periodo: string | null;
   fecha_fin_periodo: string | null;
+  // Horario diario del circuito digital (feature Horario inicio/fin). null si no aplica.
+  hora_inicio?: string | null;
+  hora_fin?: string | null;
   cliente: string | null;
   marca: string | null;
   unidad_negocio: string | null;
@@ -517,8 +537,16 @@ export function buildDeliveryNote(
 
   const deliveryNotes = uniqueAPS.map(apsValue => {
     const itemsForAPS = inventarioAPS.filter(item => item.aps === apsValue);
-    // Dentro de cada APS, agrupar por artículo para las DocumentLines
-    const uniqueArticulos = [...new Set(itemsForAPS.map(item => item.articulo))];
+    // Dentro de cada APS, agrupar por artículo + TARIFA para las DocumentLines.
+    // Dos circuitos con el MISMO artículo pero DISTINTA tarifa (ej. ES-P1-COB-MX
+    // a $27,400 y a $12,000) deben ir en LÍNEAS SEPARADAS. Antes se agrupaba solo
+    // por artículo y se fusionaban usando la tarifa del PRIMER item → cobraba de
+    // más (bug campaña 81219: 3@$27,400 + 4@$12,000 salían como 7@$27,400 = $191,800
+    // en vez de $130,200). Al meter la tarifa en la llave, cada tarifa va en su línea.
+    const tarifaLinea = (it: typeof itemsForAPS[number]): number =>
+      Number(it.tarifa_bruta_sc) || Number(it.tarifa_publica_sc) || Number(it.tarifa_publica) || 0;
+    const lineaKey = (it: typeof itemsForAPS[number]): string => `${it.articulo || ''}||${tarifaLinea(it)}`;
+    const uniqueLineKeys = [...new Set(itemsForAPS.map(lineaKey))];
 
     // Detectar tipo de período una vez por DN. Ambos (catorcena y mensual)
     // tienen su tabla de IDs SAP — fallback a 1746 si llega un año sin mapeo.
@@ -537,8 +565,8 @@ export function buildDeliveryNote(
       2026: { 1: 2882, 2: 2883, 3: 2884, 4: 2885, 5: 2886, 6: 2887, 7: 2888, 8: 2889, 9: 2890, 10: 2891, 11: 2892, 12: 2893 },
     };
 
-    const documentLines: SAPDocumentLine[] = uniqueArticulos.map((articulo, index) => {
-      const itemsWithArticulo = itemsForAPS.filter(item => item.articulo === articulo);
+    const documentLines: SAPDocumentLine[] = uniqueLineKeys.map((lineKey, index) => {
+      const itemsWithArticulo = itemsForAPS.filter(item => lineaKey(item) === lineKey);
       const firstItem = itemsWithArticulo[0];
       // UnitPrice = tarifa BRUTA (costo/caras). El campo tarifa_publica_sc guarda
       // la tarifa DILUIDA (costo/(renta+bonificacion)) — usarla × solo las caras
@@ -632,10 +660,10 @@ export function buildDeliveryNote(
       NumAtCard: campana.id?.toString() || '',
       Comments: campana.comentario_cambio_status || '',
       DocDueDate: (campana.fecha_fin || new Date().toISOString()).split('T')[0],
-      // TRADE: SAP espera siempre -1 ("directo / sin asesor"), sin importar
-      // el salesperson_code del cliente (regla de negocio IMU). CIMU/TEST sí
+      // TRADE: SAP espera siempre -1 ("directo / sin asesor"), sin importar el
+      // salesperson_code del cliente (regla de negocio IMU). CIMU/TEST/UDC sí
       // usan el real, fallback a -1 si null.
-      SalesPersonCode: sapDatabase === 'TRADE' ? -1 : ((campana as any).salesperson_code || -1),
+      SalesPersonCode: (sapDatabase === 'TRADE') ? -1 : ((campana as any).salesperson_code || -1),
       U_CIC: String(campana.cuic || ''),
       U_CRM_Asesor: campana.T0_U_Asesor || '',
       U_CRM_Producto: campana.T2_U_Producto || '',
@@ -677,12 +705,8 @@ export async function resolveBaseEntry(
   docNum: string,
   sapDatabase: string
 ): Promise<SAPDeliveryNoteMigrated> {
-  const dbMap: Record<string, string> = {
-    'TRADE': 'SBOIMUTRADE',
-    'CIMU': 'SBOCIMU',
-    'TEST': 'PB_SBOCIMU',
-  };
-  const db = usaSapPruebas(sapDatabase as SapDatabase) ? 'PB_SBOCIMU' : (dbMap[sapDatabase] || 'PB_SBOCIMU');
+  // Compañía SAP real (respeta desvío a pruebas: PB_SBOCIMU / PB_SBOUDC).
+  const db = getSapCompanyDb(sapDatabase as SapDatabase);
 
   const response = await fetch(`${SAP_BASE_URL}/order-by-docnum/${db}/${docNum}`);
   if (!response.ok) {
@@ -713,6 +737,9 @@ export async function resolveBaseEntry(
 // Cuando se devuelve `success: false` el caller puede usar `errorType`,
 // `endpoint`, `status`, `rawResponse` para mostrar info útil al usuario.
 export async function postDeliveryNoteToSAP(deliveryNote: SAPDeliveryNote | SAPDeliveryNoteMigrated, sapDatabase?: string | null): Promise<SAPPostResponse> {
+  // UDC ya tiene serie real (91) → sin guard. El POST va al endpoint del proxy
+  // /delivery-notes-udc (compañía según cómo esté configurado el proxy: SBOUDC
+  // o PB_SBOUDC de pruebas).
   const endpoint = sapDatabase
     ? getDeliveryNotesEndpoint(sapDatabase as SapDatabase)
     : `${SAP_BASE_URL}/delivery-notes-test`;
@@ -810,13 +837,6 @@ export async function postDeliveryNoteToSAP(deliveryNote: SAPDeliveryNote | SAPD
   return { success: true, data, endpoint, status: response.status };
 }
 
-// Mapa BD QEB → DB SAP (mismo que en resolveBaseEntry).
-const SAP_DB_NAME_MAP: Record<string, string> = {
-  TRADE: 'SBOIMUTRADE',
-  CIMU: 'SBOCIMU',
-  TEST: 'PB_SBOCIMU',
-};
-
 export interface ExistingDeliveryNote {
   exists: true;
   DocEntry: number;
@@ -829,7 +849,7 @@ export interface ExistingDeliveryNote {
 // con su DocEntry para que el caller decida POST (crear) o PATCH (actualizar).
 // 404 ⇒ null. Cualquier otro error vuela como excepción.
 export async function findExistingDeliveryNote(numAtCard: string | number, sapDatabase?: string | null): Promise<ExistingDeliveryNote | null> {
-  const db = usaSapPruebas((sapDatabase || 'TEST') as SapDatabase) ? 'PB_SBOCIMU' : (SAP_DB_NAME_MAP[sapDatabase || 'TEST'] || 'PB_SBOCIMU');
+  const db = getSapCompanyDb((sapDatabase || 'TEST') as SapDatabase);
   const url = `${SAP_BASE_URL}/delivery-note-by-numatcard/${db}/${numAtCard}`;
   const response = await fetch(url);
   if (response.status === 404) return null;
@@ -841,7 +861,8 @@ export async function findExistingDeliveryNote(numAtCard: string | number, sapDa
 
 // PATCH a un DN existente en SAP. Mismo manejo defensivo de errores que POST.
 export async function patchDeliveryNoteToSAP(docEntry: number, deliveryNote: SAPDeliveryNote | SAPDeliveryNoteMigrated, sapDatabase?: string | null): Promise<SAPPostResponse> {
-  const db = usaSapPruebas((sapDatabase || 'TEST') as SapDatabase) ? 'PB_SBOCIMU' : (SAP_DB_NAME_MAP[sapDatabase || 'TEST'] || 'PB_SBOCIMU');
+  // UDC ya tiene serie real (91) → sin guard (ver postDeliveryNoteToSAP).
+  const db = getSapCompanyDb((sapDatabase || 'TEST') as SapDatabase);
   const endpoint = `${SAP_BASE_URL}/delivery-notes/${db}/${docEntry}`;
 
   let response: Response;
@@ -914,6 +935,11 @@ export interface CampanasParams {
   fechaHasta?: string;
   estatusValor?: string;
   excludeRechazadas?: boolean;
+  // Filtro por autorización de circuitos (claves CSV: pend_dg,rechazado,...)
+  // y fechas de último cambio por fila para el orden "Último cambio".
+  // Ver lib/autorizacionFiltro.
+  autorizacion?: string;
+  includeCambios?: boolean;
 }
 
 export const campanasService = {
@@ -957,8 +983,13 @@ export const campanasService = {
     return response.data.data;
   },
 
-  async getStats(params?: Omit<CampanasParams, 'page' | 'limit'>): Promise<CampanaStats> {
-    const response = await api.get<ApiResponse<CampanaStats>>('/campanas/stats', { params });
+  // `ids`: universo explícito de campañas (cuando la página filtra en
+  // cliente). Va por POST en el body para no reventar el límite de URL.
+  async getStats(params?: Omit<CampanasParams, 'page' | 'limit'> & { ids?: number[] }): Promise<CampanaStats> {
+    const { ids, ...query } = params || {};
+    const response = ids
+      ? await api.post<ApiResponse<CampanaStats>>('/campanas/stats', { ids }, { params: query })
+      : await api.get<ApiResponse<CampanaStats>>('/campanas/stats', { params: query });
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Error al obtener estadisticas');
     }
@@ -1178,7 +1209,7 @@ export const campanasService = {
   async assignArteDigital(
     id: number,
     reservaIds: number[],
-    archivos: { archivo: string; spot: number; nombre: string; tipo: string; nota?: string; nombre_arte?: string | null; estatus_operaciones?: string | null; nombre_generico?: string | null }[],
+    archivos: { archivo: string; spot: number; nombre: string; tipo: string; nota?: string; nombre_arte?: string | null; estatus_operaciones?: string | null; nombre_generico?: string | null; cantidad_inicial?: number | null }[],
     markInstalado: boolean = false,
     instalacionMode?: 'instalado' | 'rotacion',
     operacionesAsignados?: { ids: number[]; nombres: string[] } | null
@@ -1291,7 +1322,7 @@ export const campanasService = {
   async assignArteTradicional(
     id: number,
     reservaIds: number[],
-    archivos: { archivo: string; nota: string; spot: number; nombre_arte?: string | null; estatus_operaciones?: string | null; nombre_generico?: string | null }[],
+    archivos: { archivo: string; nota: string; spot: number; nombre_arte?: string | null; estatus_operaciones?: string | null; nombre_generico?: string | null; cantidad_inicial?: number | null }[],
     markInstalado: boolean = false,
     instalacionMode?: 'instalado' | 'rotacion',
     operacionesAsignados?: { ids: number[]; nombres: string[] } | null
@@ -1549,6 +1580,30 @@ export const campanasService = {
     return response.data.data;
   },
 
+  // Akary 2026-11-13: persistir arte en biblioteca_artes DESDE que se sube
+  // (antes solo entraba al completar assignArte*). Idempotente por
+  // (campania_id, archivo). Si el POST falla el front debe seguir funcionando
+  // con addedArtes (fallback), por eso el caller lo maneja con try/catch.
+  async addToBibliotecaArtes(
+    id: number,
+    payload: {
+      archivo: string;
+      tipo: 'tradicional' | 'digital';
+      nombre_arte?: string | null;
+      nota?: string | null;
+      estatus_operaciones?: string | null;
+      nombre_generico?: string | null;
+    },
+  ): Promise<void> {
+    const response = await api.post<ApiResponse<{ archivo: string; tipo: string }>>(
+      `/campanas/${id}/biblioteca-artes`,
+      payload,
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Error al persistir arte en biblioteca');
+    }
+  },
+
   async verificarArteExistente(id: number, params: { nombre?: string; url?: string }): Promise<{ existe: boolean; nombre: string; usos: number; url: string | null }> {
     const response = await api.post<ApiResponse<{ existe: boolean; nombre: string; usos: number; url: string | null }>>(
       `/campanas/${id}/verificar-arte`,
@@ -1634,6 +1689,14 @@ async getUsuarios(): Promise<{ id: number; nombre: string }[]> {
     const response = await api.get<ApiResponse<ReservaModalItem[]>>(`/campanas/${campanaId}/reservas-modal`);
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Error al obtener reservas');
+    }
+    return response.data.data;
+  },
+
+  async getReservasHistorial(campanaId: number): Promise<ReservaHistorialItem[]> {
+    const response = await api.get<ApiResponse<ReservaHistorialItem[]>>(`/campanas/${campanaId}/reservas-historial`);
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Error al obtener historial');
     }
     return response.data.data;
   },
@@ -1760,4 +1823,7 @@ export interface CaraUpdateData {
   articulo?: string;
   descuento?: number;
   grupo_rt_bf?: number | null;
+  // Horario diario (solo circuitos DIGITALES): franja "HH:MM" para todo el rango.
+  hora_inicio?: string;
+  hora_fin?: string;
 }

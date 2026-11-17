@@ -12,11 +12,25 @@ function extractApiError(err: unknown, fallback: string): Error {
   return new Error(fallback);
 }
 
-// Estatus posibles de una prueba de color.
-// Transiciones: solicitada -> enviada_proveedor -> aprobada | rechazada.
-// aprobada y rechazada son terminales — para una nueva iteracion se crea
-// otra prueba con version incrementada (el back lo maneja automatico).
-export type EstatusPruebaColor = 'solicitada' | 'enviada_proveedor' | 'aprobada' | 'rechazada';
+// Estatus posibles de una prueba de color. Feedback Jos 2026-09-25:
+// nuevo flujo con revisión de arte previa + tarea de seguimiento.
+//   revision_artes → arte_aprobado → enviada_proveedor → aprobada
+//                                                      ↘ rechazada
+//   revision_artes → rechazada
+// 'solicitada' se mantiene como valor de compat para pruebas viejas.
+export type EstatusPruebaColor =
+  | 'solicitada'
+  | 'revision_artes'
+  | 'arte_aprobado'
+  | 'enviada_proveedor'
+  | 'aprobada'
+  | 'rechazada';
+
+// Jos 2026-10-23: expansion a dos flujos coexistentes en la misma tabla.
+//   'prueba_color'       -> flujo original (default).
+//   'revision_anticipada'-> arte revisado antes de pisada; al aprobar vincula
+//                           a biblioteca de artes con etiqueta "RA vN".
+export type TipoPrueba = 'prueba_color' | 'revision_anticipada';
 
 export interface PruebaColor {
   id: number;
@@ -26,9 +40,14 @@ export interface PruebaColor {
   reserva_id: number | null;
   archivo: string;
   archivo_data: string | null;
+  // Jos 2026-10-12: link externo opcional. Puede coexistir con archivo.
+  enlace_externo: string | null;
   nombre_arte: string | null;
   notas: string | null;
   estatus: EstatusPruebaColor;
+  // Jos 2026-10-23: opcional porque los registros creados antes de la
+  // migracion no tienen el campo. Si falta, trata como 'prueba_color'.
+  tipo?: TipoPrueba | null;
   version: number;
   created_by: number;
   created_by_nombre: string;
@@ -42,15 +61,45 @@ export interface CrearPruebaColorInput {
   sc_id: number;
   archivo: string;
   archivo_data?: string | null;
+  enlace_externo?: string | null;
   nombre_arte?: string | null;
   notas?: string | null;
+  tipo?: TipoPrueba;
 }
 
 export interface ListarPruebaColorParams {
   propuesta_id?: number;
   campania_id?: number;
   sc_id?: number;
+  tipo?: TipoPrueba;
 }
+
+// Tarea asociada a una prueba de color. Incluye Revisión de artes,
+// Seguimiento Prueba de color, Impresión y Recepción (Jos 2026-11-12:
+// se añaden Impresión y Recepción al drawer para gestionar el ciclo
+// completo del arte desde la misma vista).
+export interface TareaAsociadaPruebaColor {
+  id: number;
+  tipo: string | null;
+  // Jos 2026-11-12: num_impresiones aparece en tareas tipo 'Impresión' /
+  // 'Recepción' (cantidad que se pidió al proveedor). Null en las demás.
+  num_impresiones: number | null;
+  titulo: string | null;
+  descripcion: string | null;
+  estatus: string | null;
+  asignado: string | null;
+  responsable: string | null;
+  archivo: string | null;
+  contenido: string | null;
+  // JSON string con la resolucion: motivoRechazo | comentarioResolucion,
+  // resueltaPor, resueltaPorId, resueltaAt. Se lee en el modal para
+  // mostrar quien y por que atendio la tarea cuando ya no esta Pendiente.
+  evidencia: string | null;
+  fecha_inicio: string | null;
+  fecha_fin: string | null;
+}
+
+export type AccionResolverTarea = 'aprobar' | 'rechazar' | 'finalizar';
 
 export const pruebasColorService = {
   async listar(params: ListarPruebaColorParams): Promise<PruebaColor[]> {
@@ -59,6 +108,7 @@ export const pruebasColorService = {
       if (params.propuesta_id) query.set('propuesta_id', String(params.propuesta_id));
       if (params.campania_id) query.set('campania_id', String(params.campania_id));
       if (params.sc_id) query.set('sc_id', String(params.sc_id));
+      if (params.tipo) query.set('tipo', params.tipo);
       const { data } = await api.get(`/pruebas-color?${query.toString()}`);
       if (!data.success) throw new Error(data.error || 'Error al listar pruebas de color');
       return data.data as PruebaColor[];
@@ -95,19 +145,72 @@ export const pruebasColorService = {
       throw extractApiError(err, 'Error al eliminar prueba de color');
     }
   },
+
+  // Lista las tareas asociadas a una prueba (Revisión / Seguimiento).
+  // Feedback Jos 2026-10-02: se consumen desde la ventana del modal.
+  async listarTareas(pruebaId: number): Promise<TareaAsociadaPruebaColor[]> {
+    try {
+      const { data } = await api.get(`/pruebas-color/${pruebaId}/tareas`);
+      if (!data.success) throw new Error(data.error || 'Error al listar tareas asociadas');
+      return data.data as TareaAsociadaPruebaColor[];
+    } catch (err) {
+      throw extractApiError(err, 'Error al listar tareas asociadas');
+    }
+  },
+
+  // Resuelve una tarea asociada (aprobar / rechazar / finalizar) desde el modal.
+  async resolverTarea(
+    pruebaId: number,
+    tareaId: number,
+    accion: AccionResolverTarea,
+    comentario?: string,
+    adjuntos?: { archivo_adjunto?: string | null; enlace_adjunto?: string | null },
+  ): Promise<void> {
+    try {
+      const { data } = await api.patch(`/pruebas-color/${pruebaId}/tareas/${tareaId}`, {
+        accion,
+        comentario,
+        archivo_adjunto: adjuntos?.archivo_adjunto || null,
+        enlace_adjunto: adjuntos?.enlace_adjunto || null,
+      });
+      if (!data.success) throw new Error(data.error || 'Error al resolver tarea');
+    } catch (err) {
+      throw extractApiError(err, 'Error al resolver tarea');
+    }
+  },
+
+  // Reenviar una prueba rechazada — edita en sitio sobre la misma prueba
+  // (archivo, nombre_arte, notas) y la vuelve a 'revision_artes'. Jos
+  // 2026-10-12. El back crea nueva tarea de Revisión para los reviewers.
+  async reenviar(pruebaId: number, payload: { archivo: string; archivo_data?: string | null; enlace_externo?: string | null; nombre_arte?: string; notas?: string }): Promise<PruebaColor> {
+    try {
+      const { data } = await api.post(`/pruebas-color/${pruebaId}/reenviar`, payload);
+      if (!data.success) throw new Error(data.error || 'Error al reenviar prueba');
+      return data.data as PruebaColor;
+    } catch (err) {
+      throw extractApiError(err, 'Error al reenviar prueba');
+    }
+  },
 };
 
 // Etiquetas legibles para el UI.
 export const ESTATUS_LABEL: Record<EstatusPruebaColor, string> = {
-  solicitada: 'Solicitada',
+  solicitada: 'Revisión de artes',
+  revision_artes: 'Revisión de artes',
+  arte_aprobado: 'Arte aprobado',
   enviada_proveedor: 'Enviada al proveedor',
   aprobada: 'Aprobada',
   rechazada: 'Rechazada',
 };
 
 // Transiciones validas por estatus actual (mismo criterio que el back).
+// solicitada se conserva como sinonimo de revision_artes (datos viejos).
+// La transicion a 'aprobada' desde arte_aprobado/enviada_proveedor la
+// hace normalmente el analista al finalizar la tarea Seguimiento.
 export const TRANSICIONES: Record<EstatusPruebaColor, EstatusPruebaColor[]> = {
-  solicitada: ['enviada_proveedor', 'aprobada', 'rechazada'],
+  solicitada: ['arte_aprobado', 'enviada_proveedor', 'aprobada', 'rechazada'],
+  revision_artes: ['arte_aprobado', 'rechazada'],
+  arte_aprobado: ['enviada_proveedor', 'aprobada', 'rechazada'],
   enviada_proveedor: ['aprobada', 'rechazada'],
   aprobada: [],
   rechazada: [],
@@ -126,17 +229,41 @@ const ROLES_PRUEBA_COLOR = new Set<string>([
   'Producción',
   'Asesor Comercial',
   'Asesor Comercial Aeropuerto',
+  'Analista de Servicio al Cliente',
   'Administrador',
   'DEV',
 ]);
 
-// Feature flag: mientras Jos no de luz verde para el rollout, todos los
-// botones de "Prueba de color" quedan ocultos. Se cambia a false para
-// re-habilitar sin tocar los puntos de entrada (PropuestasPage, CampanasPage,
-// TareaSeguimientoPage) — los 3 dependen de este helper.
-const PRUEBA_COLOR_OCULTA = true;
+// Feature flag: Jos dio luz verde 2026-09-25 para activar en stage/dev
+// (presentacion en junta). Cambiar a true si hay que ocultar de nuevo.
+const PRUEBA_COLOR_OCULTA = false;
 
 export function puedeGestionarPruebaColor(rol: string | null | undefined): boolean {
   if (PRUEBA_COLOR_OCULTA) return false;
   return !!rol && ROLES_PRUEBA_COLOR.has(rol);
+}
+
+// Jos 2026-10-12: permisos separados.
+// CREAR / SOLICITAR / REENVIAR / FINALIZAR seguimiento: solo analistas y admins.
+const ROLES_CREAR_PRUEBA_COLOR = new Set<string>([
+  'Analista de Servicio al Cliente',
+  'Administrador',
+  'DEV',
+]);
+// APROBAR / RECHAZAR tarea de Revisión: solo area de Diseño.
+const ROLES_REVISAR_PRUEBA_COLOR = new Set<string>([
+  'Coordinador de Diseño',
+  'Coordinador de Diseno',
+  'Diseñador',
+  'Diseñadores',
+  'Administrador',
+  'DEV',
+]);
+export function puedeCrearPruebaColor(rol: string | null | undefined): boolean {
+  if (PRUEBA_COLOR_OCULTA) return false;
+  return !!rol && ROLES_CREAR_PRUEBA_COLOR.has(rol);
+}
+export function puedeRevisarPruebaColor(rol: string | null | undefined): boolean {
+  if (PRUEBA_COLOR_OCULTA) return false;
+  return !!rol && ROLES_REVISAR_PRUEBA_COLOR.has(rol);
 }

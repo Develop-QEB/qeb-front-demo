@@ -2,6 +2,14 @@ import { Circle, Clock, CheckCircle, AlertCircle, FileText, Send, Bell, Briefcas
 
 // ============ CONFIGURACIÓN DE ESTATUS ============
 export const STATUS_CONFIG = {
+  // Actividad Comercial recien creada (tablero CRM en Historial de Acciones:
+  // Abierto -> Activo -> Finalizado). Ver features/historial/actividadComercial.ts.
+  'Abierto': {
+    color: 'text-blue-400',
+    bg: 'bg-blue-500/20',
+    border: 'border-blue-500/30',
+    icon: Circle
+  },
   'Activo': {
     color: 'text-amber-400',
     bg: 'bg-amber-500/20',
@@ -206,6 +214,14 @@ export const TIPO_CONFIG = {
     bg: 'bg-red-500/20',
     border: 'border-red-500/30',
     icon: ShieldX
+  },
+  // Aviso al asesor de que su circuito YA fue eliminado (tras autorizar).
+  // Informativo (no acción): ámbar + campana para distinguirlo de las auth rojas.
+  'Aviso Eliminación': {
+    color: 'text-amber-400',
+    bg: 'bg-amber-500/20',
+    border: 'border-amber-500/30',
+    icon: Bell
   },
 } as const;
 

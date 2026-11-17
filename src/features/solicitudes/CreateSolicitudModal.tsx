@@ -3,14 +3,15 @@ import { useModalTracker } from '../../hooks/useModalTracker';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   X, Search, Plus, Trash2, Upload, ChevronDown, ChevronRight, Check, Users, Building2,
-  Package, Calendar, FileText, MapPin, Layers, Hash, RefreshCw, AlertTriangle, Pencil
+  Package, Calendar, FileText, MapPin, Layers, Hash, RefreshCw, AlertTriangle, Pencil, Funnel
 } from 'lucide-react';
 import { solicitudesService, UserOption } from '../../services/solicitudes.service';
 import { clientesService } from '../../services/clientes.service';
 import { formatCurrency } from '../../lib/utils';
 import { getSapCache, setSapCache, SAP_CACHE_KEYS, clearSapCache } from '../../lib/sapCache';
-import { SAP_BASE_URL } from '../../store/environmentStore';
+import { SAP_BASE_URL, getEndpoints } from '../../store/environmentStore';
 import { filterAllowedArticulos } from '../../config/allowedDigitalArticles';
+import { parseArticuloUDC, esArticuloUDCBasura, esArticuloUDC, UDC_FORMATO, articuloUDCPantallas, udcFichaDe, udcFichaImg } from '../../lib/udc';
 import type { SapDatabase } from '../../store/environmentStore';
 import { useSocketEquipos } from '../../hooks/useSocket';
 import { useAuthStore } from '../../store/authStore';
@@ -26,7 +27,8 @@ import { BULK_DELETE_ENABLED } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
-import { getRequiredPeriodoForArticulo } from '../../lib/periodos';
+import { articuloValidoEnPeriodo, esArticuloGranFormato } from '../../lib/periodos';
+import { TimeInput } from '../../components/ui/TimeInput';
 
 // Tarifas now come from SAP (U_IMU_PublicPrice = tarifa publica, PriceList 11 = tarifa piso)
 
@@ -170,8 +172,18 @@ const isEspecialArticle = (itemCode: string): boolean => {
   const code = itemCode.toUpperCase();
   return code.startsWith('ESP') || code.startsWith('ES-');
 };
+// CF-#### (CF + dígitos, ej. CF-0017 "Mantenimiento Extraordinario"): artículo de
+// SERVICIO cobrado — NO bonificación contraflujo. Se maneja como IM: sin inventario.
+const isServicioCFArticle = (itemCode?: string | null): boolean => {
+  return /^CF-?\d/i.test((itemCode || '').trim());
+};
+// BF/CF de bonificación "real" (excluye los CF-#### de servicio)
+const isBfCfArticle = (itemCode?: string | null): boolean => {
+  const code = (itemCode || '').toUpperCase();
+  return (code.startsWith('BF') || code.startsWith('CF')) && !isServicioCFArticle(code);
+};
 const isNoInventoryArticle = (itemCode: string): boolean => {
-  return itemCode.toUpperCase().startsWith('IM') || isEspecialArticle(itemCode);
+  return itemCode.toUpperCase().startsWith('IM') || isEspecialArticle(itemCode) || isServicioCFArticle(itemCode);
 };
 
 // "Gestion QTO" — artículos para Querétaro/Celaya (sufijo `-QR`).
@@ -184,7 +196,11 @@ const isQuretaroArticle = (itemCode: string): boolean => {
 // getRequiredPeriodoForArticulo se importa de lib/periodos (fuente única de verdad)
 
 // Tipo auto-detection from article name (Tradicional or Digital)
-const getTipoFromName = (itemName: string): 'Tradicional' | 'Digital' => {
+const getTipoFromName = (itemName: string, itemCode?: string): 'Tradicional' | 'Digital' => {
+  // "Digital" se detecta por CÓDIGO (contiene DIG), igual que el gate de
+  // allowedDigitalArticles. El NOMBRE a veces NO lo trae (ej. RT-ES-DIG-EM =
+  // "RENTA DE ESPACIOS UNIPOLARES EDOMEX"), por eso revisamos el código primero.
+  if ((itemCode || '').toUpperCase().includes('DIG')) return 'Digital';
   if (!itemName) return 'Tradicional';
   const name = itemName.toUpperCase();
   if (name.includes('DIGITAL') || name.includes('DIG')) return 'Digital';
@@ -333,6 +349,10 @@ interface CaraEntry {
   catorcenaYear: number;
   periodoInicio: string;
   periodoFin: string;
+  // Horario diario (solo circuitos DIGITALES en periodo mensual): franja "HH:MM"
+  // que aplica a todos los dias del rango. Feature "Horario inicio/fin - Digital".
+  horaInicio?: string;
+  horaFin?: string;
   renta: number;
   bonificacion: number;
   tarifaPublica: number;
@@ -341,6 +361,8 @@ interface CaraEntry {
   precioTotal: number;
   autorizacion_dg?: 'aprobado' | 'pendiente' | 'rechazado' | 'correccion';
   autorizacion_dcm?: 'aprobado' | 'pendiente' | 'rechazado' | 'correccion';
+  // true si hay una tarea 'Filtro Autorización DG' abierta — pinta embudo cyan junto al "Pend. DG".
+  en_filtro_dg?: boolean;
   // Valores originales del backend (antes de contaminación)
   _originalDg?: 'aprobado' | 'pendiente' | 'rechazado' | 'correccion';
   _originalDcm?: 'aprobado' | 'pendiente' | 'rechazado' | 'correccion';
@@ -458,7 +480,7 @@ function SearchableSelect({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={handleClose} />
-          <div className={`absolute top-full left-0 right-0 mt-1 z-50 w-full min-w-[350px] rounded-xl border border-purple-500/20 ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+          <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 z-50 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-0 lg:bottom-auto lg:mt-1 lg:w-full lg:min-w-[350px] lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible rounded-xl border border-purple-500/20 ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
             <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
               <div className="relative">
                 <Search className={`absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
@@ -473,7 +495,7 @@ function SearchableSelect({
                 />
               </div>
             </div>
-            <div className="max-h-72 overflow-auto">
+            <div className="max-h-72 max-lg:landscape:max-h-32 overflow-auto">
               {loading ? (
                 <div className={`px-3 py-4 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>Cargando...</div>
               ) : filteredOptions.length === 0 ? (
@@ -566,7 +588,7 @@ function MultiSelectTags({
         {open && (
           <>
             <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); setSearchTerm(''); }} />
-            <div className={`absolute top-full left-0 mt-1 z-50 w-72 rounded-xl border border-purple-500/20 ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
+            <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 z-50 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-auto lg:bottom-auto lg:mt-1 lg:w-72 lg:max-w-[calc(100vw-2rem)] lg:max-h-none lg:overflow-visible rounded-xl border border-purple-500/20 ${isDark ? 'bg-zinc-900' : 'bg-white'} backdrop-blur-xl shadow-2xl overflow-hidden`}>
               {/* Search at top */}
               <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
                 <input
@@ -579,7 +601,7 @@ function MultiSelectTags({
                 />
               </div>
               {/* Options below */}
-              <div className="max-h-52 overflow-auto">
+              <div className="max-h-52 max-lg:landscape:max-h-32 overflow-auto">
                 {filteredOptions.map((option) => {
                   const isSelected = selected.find(s => s[valueKey] === option[valueKey]);
                   return (
@@ -678,7 +700,7 @@ function MultiSelectDropdown({
         <ChevronDown className={`h-4 w-4 ${isDark ? 'text-zinc-400' : 'text-gray-500'} transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
       {isOpen && (
-        <div className={`absolute z-50 mt-1 w-full ${isDark ? 'bg-zinc-800' : 'bg-white'} border ${isDark ? 'border-zinc-700' : 'border-gray-200'} rounded-lg shadow-xl max-h-48 overflow-y-auto`}>
+        <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 z-50 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto overscroll-contain lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-auto lg:bottom-auto lg:mt-1 lg:w-full lg:max-w-[calc(100vw-2rem)] lg:max-h-48 ${isDark ? 'bg-zinc-800' : 'bg-white'} border ${isDark ? 'border-zinc-700' : 'border-gray-200'} rounded-lg shadow-xl`}>
           {options.map(option => (
             <label
               key={option}
@@ -724,7 +746,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
 
   // Current user for default asignado
   const currentUser = useAuthStore((state) => state.user);
-  const permissions = getPermissions(currentUser?.rol);
+  const permissions = getPermissions(currentUser?.rol, currentUser?.nombre);
   const canEditCliente = permissions.canEditClienteEnFormularios;
 
   // Toast notification state
@@ -805,6 +827,9 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
     // Custom period dates (mensual mode - per cara dates within month)
     periodoInicioCustom: '',
     periodoFinCustom: '',
+    // Horario diario (solo digital en mensual): franja "HH:MM" para todo el rango.
+    horaInicio: '',
+    horaFin: '',
     renta: 0,
     bonificacion: 0,
     tarifaPublica: 0,
@@ -915,10 +940,70 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
     return cuicDataRaw.filter(c => c.sap_database === sapDbFilter);
   }, [cuicDataRaw, sapDbFilter]);
 
+  // UDC = periodos SIEMPRE mensuales (inventario aeropuerto AICM, todo digital,
+  // dispo ilimitada como parabús digital). Al elegir BD/cliente UDC forzamos
+  // 'mensual' y ocultamos la opción Catorcena del toggle.
+  // Detección robusta de cliente UDC: por sap_database='UDC' O por CardCode UDC*
+  // (los códigos SAP de UDC empiezan con "UDC"). Blindaje por si el sap_database
+  // del cliente no quedó bien seteado en la BD.
+  const clienteEsUDC =
+    ((selectedCuic?.sap_database || '') as string).toUpperCase() === 'UDC' ||
+    String((selectedCuic as { card_code?: string | null } | null | undefined)?.card_code || '').trim().toUpperCase().startsWith('UDC');
+  const esUDC = sapDbFilter === 'UDC' || clienteEsUDC;
+  // BD SAP del catálogo de artículos: UDC cuando el contexto es UDC. DEBE ser
+  // CONSISTENTE con esUDC (tab UDC O cliente UDC). Antes miraba solo
+  // selectedCuic.sap_database, así que en el tab UDC con un cliente cuyo
+  // sap_database no quedó en 'UDC' el catálogo caía al regular (/articulos) y se
+  // colaban los Gran Formato mensuales de CIMU/TRADE. Ese era el bug.
+  const sapDbArticulos = esUDC ? ('UDC' as const) : null;
+  // ¿El artículo elegido es GRAN FORMATO (puente/cartelera) dentro de un contexto
+  // UDC? Esos conservan su tipo/periodo reales (no se fuerzan a pantalla digital).
+  const newCaraEsGranFormato = esUDC && !!newCara.articulo
+    && esArticuloGranFormato(newCara.articulo.ItemName, newCara.articulo.ItemCode);
+  // UDC: pantallas físicas que mapea el artículo elegido (null = sin mapeo → el
+  // artículo corre en TODAS las pantallas). El inventario UDC es DIGITAL y de
+  // dispo ilimitada, así que NO hay reserva real: al elegir el artículo con mapeo
+  // se autollenan las "caras" con el # de pantallas y se listan abajo con su
+  // ficha (selección/visual — Mario 2026-10-29). El gran formato dentro de UDC no
+  // aplica aquí (conserva su flujo normal).
+  const udcPantallasNewCara = useMemo(
+    () => (esUDC && newCara.articulo && !newCaraEsGranFormato)
+      ? articuloUDCPantallas(newCara.articulo.ItemCode)
+      : null,
+    [esUDC, newCara.articulo, newCaraEsGranFormato]
+  );
+  const udcRentaLocked = !!(udcPantallasNewCara && udcPantallasNewCara.length > 0);
+  useEffect(() => {
+    if (esUDC && tipoPeriodo !== 'mensual') {
+      setTipoPeriodo('mensual');
+      setCatorcenaInicio(undefined);
+      setCatorcenaFin(undefined);
+    }
+  }, [esUDC, tipoPeriodo]);
+  // UDC: el tipo SIEMPRE es Digital (inventario aeropuerto, sin variante
+  // Tradicional) — salvo gran formato dentro de UDC, que conserva su tipo real.
+  useEffect(() => {
+    if (esUDC && !newCaraEsGranFormato && newCara.tipo !== 'Digital') {
+      setNewCara(prev => ({ ...prev, tipo: 'Digital' }));
+    }
+  }, [esUDC, newCaraEsGranFormato, newCara.tipo]);
   // Fetch ALL articulos from SAP with cache
   const { data: articulosData, isLoading: articulosLoading, refetch: refetchArticulos, isFetching: articulosFetching } = useQuery({
-    queryKey: ['sap-articulos-all', forceRefreshSap],
+    queryKey: ['sap-articulos-all', forceRefreshSap, sapDbArticulos],
     queryFn: async () => {
+      // UDC (aeropuerto AICM): catálogo aparte (/articulos-udc), sin la caché
+      // compartida de CIMU y filtrando las filas basura del catálogo.
+      if (sapDbArticulos === 'UDC') {
+        const response = await fetch(getEndpoints('UDC').articulos);
+        if (!response.ok) throw new Error('Error fetching articulos UDC');
+        const data = await response.json();
+        const raw = (data.value || data) as SAPArticulo[];
+        const list = raw.filter(a => !esArticuloUDCBasura(a.ItemCode));
+        // (Gran formato dentro de UDC DESHABILITADO 2026-10-29: el selector UDC
+        // vuelve a mostrar SOLO pantallas del aeropuerto. El acceso a gran formato
+        // para usuarios UDC será vía CIMU/TRADE como tarea aparte.)
+        return filterAllowedArticulos(list);
+      }
       // Try cache first (unless forcing refresh)
       if (forceRefreshSap === 0) {
         const cached = getSapCache<SAPArticulo[]>(SAP_CACHE_KEYS.ARTICULOS);
@@ -959,10 +1044,16 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
     if (!articulosData) return [];
     return articulosData.filter(a => {
       const code = a.ItemCode.toUpperCase();
-      if (code.startsWith('BF') || code.startsWith('CF')) return false;
-      return getRequiredPeriodoForArticulo(a.ItemName) === tipoPeriodo;
+      // BF/CF de bonif van solo en el selector de bonificación; los CF-####
+      // (servicio/mantenimiento) SÍ aparecen en el dropdown principal.
+      if (isBfCfArticle(code)) return false;
+      // UDC (aeropuerto): todos digitales/mensual; la heurística de periodo solo
+      // reconoce ~18 de 91 y ocultaría el resto. Si es UDC, mostrarlos todos.
+      if (esUDC) return true;
+      // Digital PB/CL también salen en mensual (ver articuloValidoEnPeriodo).
+      return articuloValidoEnPeriodo(a.ItemName, a.ItemCode, tipoPeriodo);
     });
-  }, [articulosData, tipoPeriodo]);
+  }, [articulosData, tipoPeriodo, esUDC]);
 
   // Function to force refresh data
   const handleRefreshSap = () => {
@@ -1108,6 +1199,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         periodoFinCat: '',
         periodoInicioCustom: '',
         periodoFinCustom: '',
+        horaInicio: '',
+        horaFin: '',
         renta: 0,
         bonificacion: 0,
         tarifaPublica: 0,
@@ -1158,9 +1251,10 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
 
   // Cascade-filtered formatos/tipos/NSE from inventario-options API
   const filteredFormatos = useMemo(() => {
-    if (inventarioOptions?.formatos) return inventarioOptions.formatos;
-    return inventarioFilters?.formatos || [];
-  }, [inventarioOptions, inventarioFilters]);
+    const base = inventarioOptions?.formatos ? inventarioOptions.formatos : (inventarioFilters?.formatos || []);
+    // UDC: asegurar 'PANTALLA DIGITAL' (mueble real del inventario AICM) como opción.
+    return esUDC ? Array.from(new Set([UDC_FORMATO, ...base])) : base;
+  }, [inventarioOptions, inventarioFilters, esUDC]);
 
   const filteredTipos = useMemo(() => {
     if (inventarioOptions?.tipos) return inventarioOptions.tipos;
@@ -1356,34 +1450,38 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       showToast('Hay circuito(s) con autorización pendiente de DG/DCM. No puedes agregar nuevos circuitos hasta que dirección los apruebe o rechace.', 'error');
       return;
     }
-    // Circuitos: NSE no es requerido (los inventarios del circuito ya están fijos)
+    // Circuitos: NSE no es requerido (los inventarios del circuito ya están fijos).
+    // UDC (aeropuerto AICM): su inventario NO tiene NSE — se detecta por cliente/tab
+    // (esUDC) O por el propio artículo (CT-BLOQA-AICM-CDMX, etc.), así tampoco se exige.
     const esCircuitoNew = newCara.articulo ? !!parseCircuitoDigital(newCara.articulo.ItemCode) : false;
+    const esArtUDCNew = newCara.articulo ? esArticuloUDC(newCara.articulo.ItemCode, newCara.articulo.ItemName) : false;
     if (!newCara.articulo || !newCara.estado || !newCara.formato || !newCara.tipo) return;
-    if (!esCircuitoNew && newCara.nse.length === 0) return;
+    if (!esCircuitoNew && !esUDC && !esArtUDCNew && newCara.nse.length === 0) return;
 
     // Validar tarifa pública: si es 0, solo CT, BF/CF, IM, IN (intercambio) y
     // ESP/ES- pueden avanzar.
     const artCode = newCara.articulo.ItemCode?.toUpperCase() || '';
     const esCortesia = artCode.startsWith('CT');
-    const esBonificacion = artCode.startsWith('BF') || artCode.startsWith('CF');
+    const esBonificacion = isBfCfArticle(artCode);
     const esImpresion = artCode.startsWith('IM');
     const esIntercambio = artCode.startsWith('IN');
     const esEspecial = isEspecialArticle(artCode);
-    if (newCara.tarifaPublica <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esIntercambio && !esEspecial) {
+    const esServicio = isServicioCFArticle(artCode);
+    if (newCara.tarifaPublica <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esIntercambio && !esEspecial && !esServicio) {
       alert('La tarifa pública no puede ser 0. Por favor ingresa una tarifa válida.');
       return;
     }
 
     // BF validation: if bonificacion > 0 on a regular RT article, require articuloBf
-    const needsBfArticle = newCara.bonificacion > 0 && !esCortesia && !esBonificacion && !esImpresion && !esEspecial;
+    const needsBfArticle = newCara.bonificacion > 0 && !esCortesia && !esBonificacion && !esImpresion && !esEspecial && !esServicio;
     if (needsBfArticle && !newCara.articuloBf) {
       alert('Debes seleccionar el artículo de bonificación (BF) antes de guardar, o quita las caras de bonificación a 0.');
       return;
     }
 
     // No permitir bonificación sin renta (la bonif es ADICIONAL a la renta).
-    // Excepción: artículos puros de bonificación (BF/CF/CT) y especiales que no requieren renta.
-    if (newCara.bonificacion > 0 && newCara.renta <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esEspecial) {
+    // Excepción: artículos puros de bonificación (BF/CF/CT), servicios CF-#### y especiales que no requieren renta.
+    if (newCara.bonificacion > 0 && newCara.renta <= 0 && !esCortesia && !esBonificacion && !esImpresion && !esEspecial && !esServicio) {
       alert('No puedes agregar bonificación sin tener al menos 1 cara de renta. Sube la renta o quita la bonificación.');
       return;
     }
@@ -1463,6 +1561,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
           costo: precioTotal,
           tarifa_publica: newCara.tarifaPublica,
           articulo: newCara.articulo?.ItemCode || null,
+          sap_database: esUDC ? 'UDC' : ((selectedCuic as any)?.sap_database ?? undefined),
         });
         autorizacion_dg = resultado.autorizacion_dg;
         autorizacion_dcm = resultado.autorizacion_dcm;
@@ -1562,6 +1661,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         catorcenaYear: period.catorcenaYear,
         periodoInicio: period.periodoInicio,
         periodoFin: period.periodoFin,
+        horaInicio: newCara.tipo === 'Digital' ? newCara.horaInicio : undefined,
+        horaFin: newCara.tipo === 'Digital' ? newCara.horaFin : undefined,
         renta: rentaRT,
         bonificacion: grupoRtBf ? 0 : newCara.bonificacion, // If BF separate, RT has 0 bonif
         tarifaPublica: newCara.tarifaPublica,
@@ -1600,6 +1701,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
           catorcenaYear: period.catorcenaYear,
           periodoInicio: period.periodoInicio,
           periodoFin: period.periodoFin,
+          horaInicio: newCara.tipo === 'Digital' ? newCara.horaInicio : undefined,
+          horaFin: newCara.tipo === 'Digital' ? newCara.horaFin : undefined,
           renta: newCara.bonificacion, // BF caras go in renta field
           bonificacion: 0,
           tarifaPublica: 0, // BF is free
@@ -1704,6 +1807,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       periodoFinCat: '',
       periodoInicioCustom: '',
       periodoFinCustom: '',
+      horaInicio: '',
+      horaFin: '',
       renta: 0,
       bonificacion: 0,
       tarifaPublica: 0,
@@ -1823,6 +1928,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         costo: cara.precioTotal,
         tarifa_publica: cara.tarifaPublica,
         articulo: cara.articulo?.ItemCode || null,
+        sap_database: esUDC ? 'UDC' : ((selectedCuic as any)?.sap_database ?? undefined),
       });
       const nuevoDg = eraCorreccion ? 'pendiente' : resultado.autorizacion_dg;
       // Solo se actualiza autorizacion_* (badge/local). _original* se mantiene
@@ -1879,6 +1985,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       // <input type="date"> espera 'YYYY-MM-DD'; truncamos por si viene como ISO completo
       periodoInicioCustom: tipoPeriodo === 'mensual' ? String(cara.periodoInicio || '').slice(0, 10) : '',
       periodoFinCustom: tipoPeriodo === 'mensual' ? String(cara.periodoFin || '').slice(0, 10) : '',
+      horaInicio: cara.horaInicio || '',
+      horaFin: cara.horaFin || '',
       renta: cara.renta,
       bonificacion: bfPair ? bfPair.renta : cara.bonificacion,
       tarifaPublica: cara.tarifaPublica,
@@ -1903,6 +2011,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       periodoFinCat: '',
       periodoInicioCustom: '',
       periodoFinCustom: '',
+      horaInicio: '',
+      horaFin: '',
       renta: 0,
       bonificacion: 0,
       tarifaPublica: 0,
@@ -2158,10 +2268,10 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       tipo_archivo: tipoArchivo || undefined,
       IMU: imu,
       caras: caras.map(c => {
-        // Si el artículo principal es BF- o CF-, tratarlo como bonificación pura
-        // (no como renta) aunque no sea par RT/BF formal.
+        // Si el artículo principal es BF- o CF- (bonif real, no CF-#### servicio),
+        // tratarlo como bonificación pura aunque no sea par RT/BF formal.
         const articuloUp = (c.articulo?.ItemCode || '').toUpperCase();
-        const isBonifArt = articuloUp.startsWith('BF') || articuloUp.startsWith('CF');
+        const isBonifArt = isBfCfArticle(articuloUp);
         const treatAsBf = c.esBf || isBonifArt;
         return ({
         // ID real de BD (undefined si la cara es nueva agregada localmente).
@@ -2186,6 +2296,9 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         tarifa_publica: c.tarifaPublica,
         inicio_periodo: c.periodoInicio,
         fin_periodo: c.periodoFin,
+        // Horario diario solo para circuitos digitales (feature Horario inicio/fin).
+        hora_inicio: c.tipo === 'Digital' ? (c.horaInicio || undefined) : undefined,
+        hora_fin: c.tipo === 'Digital' ? (c.horaFin || undefined) : undefined,
         // Para circuito: si la renta es < total del circuito, distribuir flujo/contraflujo
         // proporcionalmente respetando los topes del circuito
         caras_flujo: treatAsBf ? 0 : (() => {
@@ -2459,12 +2572,15 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
             // Truncar a YYYY-MM-DD para que <input type="date"> lo reconozca al editar
             periodoInicio: String(cara.inicio_periodo || '').slice(0, 10),
             periodoFin: String(cara.fin_periodo || '').slice(0, 10),
+            horaInicio: (cara as any).hora_inicio || '',
+            horaFin: (cara as any).hora_fin || '',
             // Convención frontend: BF guarda cantidad en renta. Backend persiste BF con
             // caras=0 y bonificacion=cantidad, así que invertimos al cargar.
-            renta: ((cara.articulo || '').toUpperCase().startsWith('BF') || (cara.articulo || '').toUpperCase().startsWith('CF'))
+            // (CF-#### servicio NO invierte: es renta normal.)
+            renta: isBfCfArticle(cara.articulo)
               ? (Number(cara.bonificacion) || 0)
               : (Number(cara.caras) || 0),
-            bonificacion: ((cara.articulo || '').toUpperCase().startsWith('BF') || (cara.articulo || '').toUpperCase().startsWith('CF'))
+            bonificacion: isBfCfArticle(cara.articulo)
               ? 0
               : (Number(cara.bonificacion) || 0),
             tarifaPublica: (cara.caras || 0) > 0 ? (Number(cara.costo) || 0) / (cara.caras || 1) : Number(cara.tarifa_publica) || 0,
@@ -2473,15 +2589,19 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
             precioTotal: Number(cara.costo) || 0,
             grupo_rt_bf: cara.grupo_rt_bf || undefined,
             grupo_masivo_id: (cara as any).grupo_masivo_id || undefined,
-            esBf: (cara.articulo || '').toUpperCase().startsWith('BF') || (cara.articulo || '').toUpperCase().startsWith('CF'),
+            esBf: isBfCfArticle(cara.articulo),
             autorizacion_dg: cara.autorizacion_dg as CaraEntry['autorizacion_dg'],
             autorizacion_dcm: cara.autorizacion_dcm as CaraEntry['autorizacion_dcm'],
+            // true si hay tarea 'Filtro Autorización DG' abierta — pinta chip
+            // cyan "Filtro GC" junto al badge rojo "Pend. DG". El mapping antes
+            // no copiaba este campo (reporte Jos 2026-11-04).
+            en_filtro_dg: (cara as any).en_filtro_dg === true,
             _originalDg: cara.autorizacion_dg as CaraEntry['autorizacion_dg'],
             _originalDcm: cara.autorizacion_dcm as CaraEntry['autorizacion_dcm'],
             // Costo/caras de BD (para la regla "Direcciones Aprobadas" en el front).
             // caras = renta (RT) o bonificacion (BF), igual que compara el backend.
             _originalCosto: Number(cara.costo) || 0,
-            _originalCaras: ((cara.articulo || '').toUpperCase().startsWith('BF') || (cara.articulo || '').toUpperCase().startsWith('CF'))
+            _originalCaras: isBfCfArticle(cara.articulo)
               ? (Number(cara.bonificacion) || 0)
               : (Number(cara.caras) || 0),
           };
@@ -2582,8 +2702,10 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       } else {
         if (!mesInicio || !mesFin) return false;
       }
-      if (!descripcion.trim()) return false;
-      if (!notas.trim()) return false;
+      // UDC (aeropuerto AICM): Descripción Tráfico y Notas Dirección NO son
+      // obligatorias (no aplica el flujo de tráfico/dirección para el aeropuerto).
+      if (!esUDC && !descripcion.trim()) return false;
+      if (!esUDC && !notas.trim()) return false;
       return true;
     }
     if (s === 3) {
@@ -2608,9 +2730,9 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" />
-      <div className={`relative w-[97vw] max-w-[1800px] max-h-[95vh] h-[95vh] ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} rounded-2xl border shadow-2xl overflow-hidden flex flex-col`}>
+      <div className={`relative w-[97vw] max-w-[1800px] max-h-[95dvh] h-[95dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 max-sm:w-full max-sm:h-[100dvh] max-sm:max-h-[100dvh] max-sm:rounded-none ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'} rounded-2xl border shadow-2xl overflow-hidden flex flex-col`}>
         {/* Header */}
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+        <div className={`flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 max-lg:landscape:py-2 max-lg:landscape:px-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-4">
             <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
               {isEditMode ? 'Editar Solicitud' : 'Nueva Solicitud'}
@@ -2687,7 +2809,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         )}
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto overscroll-contain p-6">
+        <div className="flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6 max-lg:landscape:p-3">
           {/* Step 1: Cliente */}
           {step === 1 && (
             <div className="space-y-6">
@@ -2699,7 +2821,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                 </label>
                 {/* SAP Database filter buttons */}
                 <div className="flex items-center gap-1.5">
-                  {(['ALL', 'CIMU', 'TRADE'] as const).map(db => (
+                  {/* UDC solo visible para roles de Aeropuerto (canVerUDC) */}
+                  {((permissions.canVerUDC ? ['ALL', 'CIMU', 'TRADE', 'UDC'] : ['ALL', 'CIMU', 'TRADE']) as (SapDatabase | 'ALL')[]).map(db => (
                     <button
                       key={db}
                       type="button"
@@ -2708,6 +2831,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         sapDbFilter === db
                           ? db === 'ALL' ? 'bg-purple-600 text-white border-purple-500'
                           : db === 'CIMU' ? 'bg-blue-600 text-white border-blue-500'
+                          : db === 'UDC' ? 'bg-cyan-600 text-white border-cyan-500'
                           : 'bg-emerald-600 text-white border-emerald-500'
                           : isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 hover:text-gray-700'
                       }`}
@@ -2753,6 +2877,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                           item.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
                           item.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
                           item.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                          item.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
                           isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
                         }`}>{item.sap_database}</span>
                       )}
@@ -2769,6 +2894,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                           item.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
                           item.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
                           item.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                          item.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
                           isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
                         }`}>{item.sap_database}</span>
                       )}
@@ -2792,6 +2918,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                           selectedCuic.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
                           selectedCuic.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
                           selectedCuic.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                          selectedCuic.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
                           isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
                         }`}>{selectedCuic.sap_database}</span>
                       )}
@@ -2803,7 +2930,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   </div>
 
                   {/* Grid de información 2 columnas */}
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className={isDark ? 'text-zinc-500' : 'text-gray-400'}>Marca:</span>
                       <span className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium`}>{selectedCuic.T2_U_Marca || '-'}</span>
@@ -2894,8 +3021,9 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                     <Calendar className="h-4 w-4 text-purple-400" />
                     Rango de Fechas
                   </label>
-                  {/* Toggle Catorcena / Mensual */}
+                  {/* Toggle Catorcena / Mensual — UDC (aeropuerto) es SOLO mensual */}
                   <div className={`flex items-center ${isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-gray-100 border-gray-200'} rounded-lg border p-0.5`}>
+                    {!esUDC && (
                     <button
                       type="button"
                       onClick={() => {
@@ -2904,7 +3032,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         setMesFin(undefined);
                         setCaras([]);
                         // Clear articulo/formato if incompatible with new period type
-                        if (newCara.articulo && getRequiredPeriodoForArticulo(newCara.articulo.ItemName) !== 'catorcena') {
+                        if (newCara.articulo && !articuloValidoEnPeriodo(newCara.articulo.ItemName, newCara.articulo.ItemCode, 'catorcena')) {
                           setNewCara(prev => ({ ...prev, articulo: null, formato: '', tipo: '', plaza: '', estado: '', ciudades: [], tarifaPublica: 0 }));
                         } else if (newCara.formato && getRequiredPeriodoForFormato(newCara.formato) !== 'catorcena') {
                           setNewCara(prev => ({ ...prev, formato: '' }));
@@ -2914,6 +3042,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                     >
                       Catorcena
                     </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
@@ -2922,7 +3051,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         setCatorcenaFin(undefined);
                         setCaras([]);
                         // Clear articulo/formato if incompatible with new period type
-                        if (newCara.articulo && getRequiredPeriodoForArticulo(newCara.articulo.ItemName) !== 'mensual') {
+                        if (newCara.articulo && !articuloValidoEnPeriodo(newCara.articulo.ItemName, newCara.articulo.ItemCode, 'mensual')) {
                           setNewCara(prev => ({ ...prev, articulo: null, formato: '', tipo: '', plaza: '', estado: '', ciudades: [], tarifaPublica: 0 }));
                         } else if (newCara.formato && getRequiredPeriodoForFormato(newCara.formato) !== 'mensual') {
                           setNewCara(prev => ({ ...prev, formato: '' }));
@@ -2936,7 +3065,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                 </div>
 
                 {tipoPeriodo === 'catorcena' ? (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* Años */}
                     <div className="flex gap-2">
                       <div className="flex-1">
@@ -3009,7 +3138,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                     </div>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {/* Años */}
                     <div className="flex gap-2">
                       <div className="flex-1">
@@ -3128,7 +3257,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
             <div className="space-y-6">
               {/* KPIs Totales */}
               <div className="p-4 bg-purple-500/10 rounded-xl border border-purple-500/30">
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   <div className="text-center">
                     <div className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{totals.totalRenta}</div>
                     <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Renta</div>
@@ -3224,6 +3353,36 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         }
                       }
 
+                      // UDC (aeropuerto AICM): todo Digital, mensual, plaza AICM.
+                      // Excepción: gran formato (puente/cartelera) dentro de UDC cae
+                      // a la rama normal de abajo (autollenado CIMU: tipo/plaza reales).
+                      if (sapDbArticulos === 'UDC' && !esArticuloGranFormato(item.ItemName, item.ItemCode)) {
+                        const udc = parseArticuloUDC(item.ItemCode, item.ItemName);
+                        const tarifaUdc = getTarifaFromArticulo(item);
+                        const esCT = item.ItemCode.toUpperCase().startsWith('CT');
+                        const esIN = item.ItemCode.toUpperCase().startsWith('IN');
+                        const esIM = item.ItemCode.toUpperCase().startsWith('IM');
+                        const esESP = isEspecialArticle(item.ItemCode);
+                        const esSrvCF = isServicioCFArticle(item.ItemCode);
+                        // Pantallas físicas que mapea el artículo (digital: sin reserva
+                        // real, solo auto-selección/visual). Con mapeo, las "caras" se
+                        // autollenan al # de pantallas; sin mapeo se respeta lo capturado.
+                        const pantallasArt = articuloUDCPantallas(item.ItemCode);
+                        setNewCara({
+                          ...newCara,
+                          articulo: item,
+                          tarifaPublica: esCT ? 0 : tarifaUdc.tarifa_publica,
+                          renta: esCT ? 0 : (pantallasArt && pantallasArt.length > 0 ? pantallasArt.length : newCara.renta),
+                          bonificacion: (esIM || esIN || esESP || esSrvCF) ? 0 : newCara.bonificacion,
+                          plaza: udc?.plazaLabel || 'Ciudad de México / AM',
+                          estado: udc?.plazaLabel || 'Ciudad de México / AM',
+                          ciudades: udc?.ciudad ? [udc.ciudad] : newCara.ciudades,
+                          formato: UDC_FORMATO,
+                          tipo: 'Digital',
+                        });
+                        return;
+                      }
+
                       // Auto-set tarifa publica from ItemCode mapping
                       const tarifa = getTarifaFromArticulo(item);
                       // Auto-set estado and ciudades from ItemName (fallback to ItemCode)
@@ -3255,7 +3414,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                       // Auto-set formato from ItemName (fallback to ItemCode)
                       const formatoBase = getFormatoFromArticulo(item.ItemName, item.ItemCode);
                       // Auto-set tipo from ItemName
-                      const tipo = getTipoFromName(item.ItemName);
+                      const tipo = getTipoFromName(item.ItemName, item.ItemCode);
                       // Para artículos digitales: incluir PARABUS y MUPIS (los muebles físicos
                       // donde corre la pantalla digital rotando ambos formatos).
                       // Si el formato detectado es otro (ej. COLUMNA), agregar MUPIS además.
@@ -3269,6 +3428,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                       const isIntercambio = item.ItemCode.toUpperCase().startsWith('IN');
                       const isImpresion = item.ItemCode.toUpperCase().startsWith('IM');
                       const isEspecial = isEspecialArticle(item.ItemCode);
+                      const isSrvCF = isServicioCFArticle(item.ItemCode);
                       const isTarifaCero = isCortesia;
 
                       setNewCara({
@@ -3276,7 +3436,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         articulo: item,
                         tarifaPublica: isTarifaCero ? 0 : tarifa.tarifa_publica,
                         renta: isCortesia ? 0 : newCara.renta,
-                        bonificacion: (isImpresion || isIntercambio || isEspecial) ? 0 : newCara.bonificacion,
+                        bonificacion: (isImpresion || isIntercambio || isEspecial || isSrvCF) ? 0 : newCara.bonificacion,
                         plaza: plazaAuto || newCara.plaza,
                         estado: ciudadEstado?.estado || newCara.estado,
                         ciudades: ciudadEstado?.ciudades && ciudadEstado.ciudades.length > 0 ? ciudadEstado.ciudades : newCara.ciudades,
@@ -3304,8 +3464,55 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   />
                 </div>
 
+                {/* UDC: pantallas que mapea el artículo (auto-selección visual; es
+                    inventario digital, sin reserva real). Con mapeo se listan con su
+                    ficha; sin mapeo, el artículo corre en todas las pantallas. */}
+                {esUDC && newCara.articulo && !newCaraEsGranFormato && (
+                  <div className={`mb-4 rounded-lg border px-3 py-2.5 ${isDark ? 'border-cyan-500/25 bg-cyan-500/5' : 'border-cyan-200 bg-cyan-50/60'}`}>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <MapPin className={`h-3.5 w-3.5 ${isDark ? 'text-cyan-400' : 'text-cyan-600'}`} />
+                      <span className={`text-xs font-semibold ${isDark ? 'text-cyan-200' : 'text-cyan-800'}`}>
+                        {udcRentaLocked
+                          ? `Pantallas de este artículo (${udcPantallasNewCara!.length})`
+                          : 'Pantallas del aeropuerto'}
+                      </span>
+                    </div>
+                    {udcRentaLocked ? (
+                      <div className="flex flex-wrap gap-2">
+                        {udcPantallasNewCara!.map(num => {
+                          const f = udcFichaDe(num);
+                          const nombre = f?.nombre || `DIGITAL ${num}`;
+                          const img = udcFichaImg(num);
+                          return (
+                            <a
+                              key={num}
+                              href={img || undefined}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={img ? `${nombre} — ver ficha técnica` : nombre}
+                              className={`flex items-center gap-2 rounded-lg border px-2 py-1 transition-colors ${isDark ? 'border-zinc-700 bg-zinc-800/60 hover:border-cyan-500/40' : 'border-gray-200 bg-white hover:border-cyan-400'} ${img ? 'cursor-pointer' : 'cursor-default'}`}
+                            >
+                              {img && (
+                                <img src={img} alt={nombre} className="h-8 w-12 object-cover rounded shrink-0" draggable={false} />
+                              )}
+                              <div className="min-w-0">
+                                <div className={`text-[11px] font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{nombre}</div>
+                                {f?.zona && <div className={`text-[9px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{f.zona}</div>}
+                              </div>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className={`text-[11px] ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        Este artículo corre en todas las pantallas del aeropuerto; las “caras” se capturan a mano.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* Row 2: Plaza, Ciudad (opcional), Formato, Tipo */}
-                <div className="grid grid-cols-4 gap-3 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                   {/* Plaza (UI); internally seleciona estado+ciudades */}
                   <div>
                     <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Plaza</label>
@@ -3400,21 +3607,27 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   <div>
                     <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Tipo</label>
                     <select
-                      value={newCara.tipo}
-                      onChange={(e) => editingCaraId && setNewCara({ ...newCara, tipo: e.target.value as 'Tradicional' | 'Digital' | '' })}
-                      disabled={!editingCaraId}
-                      className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 ${!editingCaraId ? 'opacity-60 cursor-not-allowed' : ''}`}
+                      value={esUDC && !newCaraEsGranFormato ? 'Digital' : newCara.tipo}
+                      onChange={(e) => editingCaraId && !(esUDC && !newCaraEsGranFormato) && setNewCara({ ...newCara, tipo: e.target.value as 'Tradicional' | 'Digital' | '' })}
+                      disabled={!editingCaraId || (esUDC && !newCaraEsGranFormato)}
+                      className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 ${(!editingCaraId || (esUDC && !newCaraEsGranFormato)) ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
-                      <option value="">Seleccionar</option>
-                      {filteredTipos.map(t => (
-                        <option key={t} value={t}>{t}</option>
-                      ))}
+                      {esUDC && !newCaraEsGranFormato ? (
+                        <option value="Digital">Digital</option>
+                      ) : (
+                        <>
+                          <option value="">Seleccionar</option>
+                          {filteredTipos.map(t => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </>
+                      )}
                     </select>
                   </div>
                 </div>
 
                 {/* Row 3: Periodo, Renta, Bonificación, Tarifa Pública */}
-                <div className={`grid ${tipoPeriodo === 'mensual' ? 'grid-cols-6' : 'grid-cols-4'} gap-3 mb-4`}>
+                <div className={`grid grid-cols-1 sm:grid-cols-2 ${tipoPeriodo === 'mensual' ? 'md:grid-cols-3 lg:grid-cols-6' : 'md:grid-cols-4'} gap-3 mb-4`}>
                   {/* Periodo */}
                   {tipoPeriodo === 'mensual' ? (
                     <>
@@ -3449,6 +3662,13 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                           max={newCara.periodoFinCustom || (availablePeriods.length > 0 ? availablePeriods[availablePeriods.length - 1].fecha_fin : undefined)}
                           className={`w-full px-2 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 disabled:opacity-50`}
                         />
+                        {/* Hora inicio (solo digital): agrupada con su fecha (feedback Jos). */}
+                        {newCara.tipo === 'Digital' && (
+                          <div className="mt-1.5">
+                            <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'} block mb-1`}>Hora inicio</label>
+                            <TimeInput value={newCara.horaInicio} onChange={(val) => setNewCara({ ...newCara, horaInicio: val })} disabled={!newCara.periodo} isDark={isDark} ariaLabel="Hora inicio" />
+                          </div>
+                        )}
                       </div>
                       <div>
                         <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Fecha Fin</label>
@@ -3461,6 +3681,13 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                           max={availablePeriods.length > 0 ? availablePeriods[availablePeriods.length - 1].fecha_fin : undefined}
                           className={`w-full px-2 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 disabled:opacity-50`}
                         />
+                        {/* Hora fin (solo digital): agrupada con su fecha (feedback Jos). */}
+                        {newCara.tipo === 'Digital' && (
+                          <div className="mt-1.5">
+                            <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'} block mb-1`}>Hora fin</label>
+                            <TimeInput value={newCara.horaFin} onChange={(val) => setNewCara({ ...newCara, horaFin: val })} disabled={!newCara.periodo} isDark={isDark} ariaLabel="Hora fin" />
+                          </div>
+                        )}
                       </div>
                     </>
                   ) : (
@@ -3513,10 +3740,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   {/* Renta */}
                   <div>
                     <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                      {newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') ? 'Impresiones' : newCara.articulo?.ItemCode?.toUpperCase().startsWith('IN') ? 'Intercambio' : isEspecialArticle(newCara.articulo?.ItemCode || '') ? 'Ejec. Especiales' : 'Caras'}
-                      {newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') && (
-                        <span className="ml-1 text-cyan-400 text-[10px]">(Cortesía)</span>
-                      )}
+                      {newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') ? 'Caras en Cortesía' : newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') ? 'Impresiones' : isServicioCFArticle(newCara.articulo?.ItemCode) ? 'Servicios' : newCara.articulo?.ItemCode?.toUpperCase().startsWith('IN') ? 'Intercambio' : isEspecialArticle(newCara.articulo?.ItemCode || '') ? 'Ejec. Especiales' : 'Caras'}
                     </label>
                     <input
                       type="number"
@@ -3527,15 +3751,17 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         setNewCara({ ...newCara, renta: v });
                       }}
                       placeholder='0'
-                      disabled={newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT')}
+                      disabled={newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') || udcRentaLocked}
+                      title={udcRentaLocked ? 'Fijo: una cara por cada pantalla del artículo' : undefined}
                       className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 disabled:opacity-40 disabled:cursor-not-allowed`}
                     />
                   </div>
 
-                  {/* Bonificacion */}
+                  {/* Bonificacion (oculto para CT: el campo de Caras ya es la cortesía) */}
+                  {!newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') && (
                   <div>
                     <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                      {newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') ? 'Cortesía' : 'Bonificación'}
+                      Bonificación
                     </label>
                     <input
                       type="number"
@@ -3547,10 +3773,11 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                         setNewCara({ ...newCara, bonificacion: v });
                       }}
                       placeholder='0'
-                      disabled={newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') || newCara.articulo?.ItemCode?.toUpperCase().startsWith('IN') || isEspecialArticle(newCara.articulo?.ItemCode || '')}
-                      className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 ${(newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') || newCara.articulo?.ItemCode?.toUpperCase().startsWith('IN') || isEspecialArticle(newCara.articulo?.ItemCode || '')) ? 'opacity-40 cursor-not-allowed' : ''}`}
+                      disabled={newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') || newCara.articulo?.ItemCode?.toUpperCase().startsWith('IN') || isEspecialArticle(newCara.articulo?.ItemCode || '') || isServicioCFArticle(newCara.articulo?.ItemCode)}
+                      className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 ${(newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') || newCara.articulo?.ItemCode?.toUpperCase().startsWith('IN') || isEspecialArticle(newCara.articulo?.ItemCode || '') || isServicioCFArticle(newCara.articulo?.ItemCode)) ? 'opacity-40 cursor-not-allowed' : ''}`}
                     />
                   </div>
+                  )}
 
                   {/* Tarifa Publica - Editable. Display siempre con 2 decimales (6127 → 6127.00).
                       Usa type="text" porque type="number" descarta trailing zeros del valor mostrado. */}
@@ -3645,12 +3872,12 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                 })()}
 
                 {/* Artículo BF - below the grid when bonificacion > 0 */}
-                {newCara.bonificacion > 0 && !newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') && !newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') && !isEspecialArticle(newCara.articulo?.ItemCode || '') && (
+                {newCara.bonificacion > 0 && !newCara.articulo?.ItemCode?.toUpperCase().startsWith('CT') && !newCara.articulo?.ItemCode?.toUpperCase().startsWith('IM') && !isEspecialArticle(newCara.articulo?.ItemCode || '') && !isServicioCFArticle(newCara.articulo?.ItemCode) && (
                   <div className={`mt-3 p-3 ${isDark ? 'bg-emerald-900/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'} rounded-lg border`}>
                     <label className={`text-xs font-medium ${isDark ? 'text-emerald-400' : 'text-emerald-600'} mb-1 block`}>Artículo de Bonificación (BF)</label>
                     <SearchableSelect
                       label=""
-                      options={(articulosData || []).filter(a => a.ItemCode.toUpperCase().startsWith('BF') || a.ItemCode.toUpperCase().startsWith('CF'))}
+                      options={(articulosData || []).filter(a => isBfCfArticle(a.ItemCode))}
                       value={newCara.articuloBf}
                       onChange={(item: SAPArticulo) => setNewCara({ ...newCara, articuloBf: item })}
                       onClear={() => setNewCara({ ...newCara, articuloBf: null })}
@@ -3711,9 +3938,11 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                     onClick={handleAddCara}
                     disabled={(() => {
                       const esCirc = newCara.articulo ? !!parseCircuitoDigital(newCara.articulo.ItemCode) : false;
+                      const esArtUDCBtn = newCara.articulo ? esArticuloUDC(newCara.articulo.ItemCode, newCara.articulo.ItemName) : false;
                       const baseInvalid = !newCara.articulo || !newCara.estado || !newCara.formato || !newCara.tipo || !newCara.periodo || (tipoPeriodo === 'mensual' && (!newCara.periodoInicioCustom || !newCara.periodoFinCustom));
-                      // NSE solo requerido si NO es circuito
-                      const nseInvalid = !esCirc && newCara.nse.length === 0;
+                      // NSE solo requerido si NO es circuito y NO es UDC (por cliente/tab
+                      // o por el propio artículo). El inventario UDC del aeropuerto no tiene NSE.
+                      const nseInvalid = !esCirc && !esUDC && !esArtUDCBtn && newCara.nse.length === 0;
                       // Bloqueo: con autorización de dirección pendiente no se
                       // pueden AGREGAR circuitos nuevos (editar uno existente sí).
                       return baseInvalid || nseInvalid || (authBlocked && !editingCaraId);
@@ -3892,8 +4121,19 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                                             // no requerian autorizacion, pero pueden ser escaladas a DG y
                                             // rechazadas — el back si las valida (commit 79c59e5) y bloquea
                                             // Atender si hay rechazos. Caso reproducido en 80822.
-                                            const dgEfectivo = cara.autorizacion_dg;
-                                            const dcmEfectivo = cara.autorizacion_dcm;
+                                            // "Contaminacion DG": si al menos una cara de la solicitud esta
+                                            // Pend. DG, la regla del back es que todo escala a DG al guardar.
+                                            // Reflejamos esa regla en vivo para que la badge coincida con lo
+                                            // que se guardara (mismo patron que SolicitudModals.tsx).
+                                            const algunaPendDg = caras.some(c => (c.autorizacion_dg || 'aprobado') === 'pendiente');
+                                            const authDgRaw = cara.autorizacion_dg || 'aprobado';
+                                            const authDcmRaw = cara.autorizacion_dcm || 'aprobado';
+                                            const escalaPorContaminacion = algunaPendDg
+                                              && authDgRaw !== 'pendiente'
+                                              && authDgRaw !== 'rechazado'
+                                              && authDcmRaw === 'pendiente';
+                                            const dgEfectivo = escalaPorContaminacion ? 'pendiente' : authDgRaw;
+                                            const dcmEfectivo = escalaPorContaminacion ? 'aprobado' : authDcmRaw;
                                             return (
                                               <div className="flex flex-col gap-0.5">
                                                 {dgEfectivo === 'aprobado' && dcmEfectivo === 'aprobado' && (
@@ -3913,13 +4153,21 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                                                   </span>
                                                 )}
                                                 {dgEfectivo === 'pendiente' && dcmEfectivo !== 'rechazado' && (
-                                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300" title="Requiere autorización DG">
-                                                    Pend. DG
-                                                  </span>
+                                                  <>
+                                                    {/* Etapa visual: en filtro del Gerente Comercial previo a DG. */}
+                                                    {cara.en_filtro_dg && (
+                                                      <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300" title="En filtro del Gerente Comercial (previo a DG)">
+                                                        <Funnel className="w-3 h-3" /> Filtro GC
+                                                      </span>
+                                                    )}
+                                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300" title="Requiere autorización DG">
+                                                      Pend. DG
+                                                    </span>
+                                                  </>
                                                 )}
                                                 {dcmEfectivo === 'pendiente' && dgEfectivo !== 'rechazado' && (
-                                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300" title="Requiere autorización DCM">
-                                                    Pend. DCM
+                                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300" title={`Requiere autorización ${esUDC ? 'DCA' : 'DCM'}`}>
+                                                    Pend. {esUDC ? 'DCA' : 'DCM'}
                                                   </span>
                                                 )}
                                                 {!dgEfectivo && !dcmEfectivo && (
@@ -4016,7 +4264,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                 </div>
               )}
               {/* Summary cards */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className={`p-4 ${isDark ? 'bg-zinc-800/30 border-zinc-700/50' : 'bg-gray-50 border-gray-200'} rounded-xl border`}>
                   <h3 className={`text-sm font-semibold ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-3`}>Cliente</h3>
                   <div className="space-y-2">
@@ -4067,7 +4315,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
 
               {/* Totals */}
               <div className="p-4 bg-purple-500/10 rounded-xl border border-purple-500/30">
-                <div className="grid grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   <div className="text-center">
                     <div className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{totals.totalRenta}</div>
                     <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Renta</div>
@@ -4226,7 +4474,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         </div>
 
         {/* Footer */}
-        <div className={`flex items-center justify-between px-6 py-4 border-t ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-gray-50/50'}`}>
+        <div className={`flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 sm:py-4 max-lg:landscape:py-2 max-lg:landscape:px-3 border-t ${isDark ? 'border-zinc-800 bg-zinc-900/50' : 'border-gray-200 bg-gray-50/50'}`}>
           <button
             type="button"
             onClick={() => step > 1 ? setStep(step - 1) : handleAttemptClose()}

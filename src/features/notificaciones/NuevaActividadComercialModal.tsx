@@ -7,11 +7,27 @@ import {
   notificacionesService,
   ActividadRef,
   ActividadSubtipo,
+  ActividadTipoCliente,
+  ActividadTipoActividad,
+  ACTIVIDAD_TIPOS_ACTIVIDAD_PICKER,
 } from '../../services/notificaciones.service';
+import { clientesService } from '../../services/clientes.service';
+
+// Tarea a editar. Estos son los campos que precargamos. Todos opcionales
+// para tolerar filas viejas con contenido incompleto o parseo fallido.
+export interface ActividadEditable {
+  id: number;
+  descripcion?: string | null;
+  fecha_fin?: string | Date | null;
+  contenido?: string | null; // JSON con cliente/marca/subtipo/ref_id/etc
+}
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  // Si se pasa una tarea, el modal entra en modo edición y precarga
+  // los campos. Al guardar llama al PATCH en lugar del POST.
+  editing?: ActividadEditable | null;
 }
 
 function useDebounced<T>(value: T, ms = 300): T {
@@ -26,7 +42,8 @@ function useDebounced<T>(value: T, ms = 300): T {
 // Modal "Nueva Actividad Comercial". Reemplaza la accion manual que vivia en
 // Historial de Acciones para asesores comerciales — ahora es una tarea real en
 // el modulo de Notificaciones y Tareas con categoria='Actividad Comercial'.
-export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
+export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props) {
+  const isEditMode = !!editing;
   const isDark = useThemeStore(s => s.theme) === 'dark';
   const user = useAuthStore(s => s.user);
   const queryClient = useQueryClient();
@@ -46,33 +63,118 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<number | null>(null);
   // Ajuste feedback 2026-08-15: selectores manuales adicionales.
+  // Catorcena cambio a MULTI-select (feedback 2026-10-19): array de 1-26.
+  // Estatus: 3 opciones Abierto|Activo|Finalizado (feedback 2026-10-19);
+  // 'Cerrado' queda como alias legacy equivalente a 'Finalizado'.
   const [anio, setAnio] = useState<string>('');
-  const [catorcena, setCatorcena] = useState<string>('');
-  const [estatusActividad, setEstatusActividad] = useState<'' | 'Abierto' | 'Cerrado'>('');
-  const [base, setBase] = useState<'' | 'CIMU' | 'TRADE'>('');
+  const [catorcenas, setCatorcenas] = useState<number[]>([]);
+  const [catorcenaDropdownOpen, setCatorcenaDropdownOpen] = useState(false);
+  const [estatusActividad, setEstatusActividad] = useState<'' | 'Abierto' | 'Activo' | 'Finalizado'>('Abierto');
+  const [base, setBase] = useState<'' | 'CIMU' | 'TRADE' | 'UDC'>('');
+  // Feedback Jos 2026-11-04: Tipo Cliente (Lead/Cliente) y Tipo Actividad
+  // (Llamada/Mail/Visita). Cuando tipoCliente === 'Cliente', el input Cliente
+  // se convierte en autocomplete contra la BD, pero sigue permitiendo texto
+  // libre si el cliente aun no esta registrado.
+  const [tipoCliente, setTipoCliente] = useState<'' | ActividadTipoCliente>('');
+  const [tipoActividad, setTipoActividad] = useState<'' | ActividadTipoActividad>('');
 
   const debouncedSearch = useDebounced(search, 300);
 
-  // Reset al abrir/cerrar
+  // Reset al abrir/cerrar. En modo edición precarga desde `editing`.
   useEffect(() => {
-    if (isOpen) {
-      setSubtipo('Campaña');
-      setSearch('');
-      setSelected(null);
-      setCliente('');
-      setMarca('');
-      setDescripcion('');
-      setFechaEntrega('');
-      setActivarRecordatorio(false);
-      setDiasAntes('1');
-      setError(null);
-      setCreatedId(null);
-      setAnio('');
-      setCatorcena('');
-      setEstatusActividad('');
-      setBase('');
+    if (!isOpen) return;
+    // Defaults
+    setSubtipo('Campaña');
+    setSearch('');
+    setSelected(null);
+    setCliente('');
+    setMarca('');
+    setDescripcion('');
+    setFechaEntrega('');
+    setActivarRecordatorio(false);
+    setDiasAntes('1');
+    setError(null);
+    setCreatedId(null);
+    setAnio('');
+    setCatorcenas([]);
+    // Default al crear nueva: 'Abierto' (feedback Jos 2026-10-19). En edicion,
+    // el useEffect de abajo precarga el valor guardado.
+    setEstatusActividad(editing ? '' : 'Abierto');
+    setBase('');
+    setTipoCliente('');
+    setTipoActividad('');
+
+    if (!editing) return;
+    // Precarga desde `editing` (modo edición).
+    setDescripcion(editing.descripcion || '');
+    if (editing.fecha_fin) {
+      const d = new Date(editing.fecha_fin);
+      if (!isNaN(d.getTime())) {
+        setFechaEntrega(d.toISOString().slice(0, 10));
+      }
     }
-  }, [isOpen]);
+    if (editing.contenido) {
+      try {
+        const c = JSON.parse(editing.contenido) as {
+          subtipo?: string; ref_id?: number;
+          cliente?: string; marca?: string;
+          activar_recordatorio?: boolean; recordar_dias_antes?: number;
+          anio?: number; catorcena?: number; catorcenas?: number[];
+          estatus_actividad?: string; base?: string;
+          tipo_cliente?: string; tipo_actividad?: string;
+        };
+        if (c.subtipo === 'Campaña' || c.subtipo === 'Propuesta' || c.subtipo === 'Solicitud' || c.subtipo === 'Lead' || c.subtipo === 'Actividad') {
+          setSubtipo(c.subtipo);
+        }
+        if (c.ref_id && (c.subtipo === 'Campaña' || c.subtipo === 'Propuesta' || c.subtipo === 'Solicitud')) {
+          // Marcamos un placeholder para conservar el ref_id aunque el user
+          // no vuelva a buscar. El objeto se refresca cuando la query traiga
+          // la lista y encontremos el id real (ver useEffect refresh abajo).
+          setSelected({ id: c.ref_id, label: `#${c.ref_id}`, cliente: c.cliente || null, marca: c.marca || null, status: '' });
+          // Disparamos la busqueda por el ID para que el backend devuelva el
+          // registro aunque no esté en el top-N por defecto. El combobox de
+          // resultados no se muestra porque `selected` ya tiene valor.
+          setSearch(String(c.ref_id));
+        }
+        if (c.cliente) setCliente(c.cliente);
+        if (c.marca) setMarca(c.marca);
+        if (c.activar_recordatorio) {
+          setActivarRecordatorio(true);
+          if (c.recordar_dias_antes != null) setDiasAntes(String(c.recordar_dias_antes));
+        }
+        if (c.anio) setAnio(String(c.anio));
+        // Catorcenas: aceptamos array nuevo o fallback al campo legacy singular.
+        if (Array.isArray(c.catorcenas) && c.catorcenas.length > 0) {
+          setCatorcenas(c.catorcenas.filter(n => Number.isFinite(n) && n >= 1 && n <= 26));
+        } else if (c.catorcena) {
+          setCatorcenas([c.catorcena]);
+        }
+        // 'Cerrado' legacy se normaliza a 'Finalizado' al editar.
+        if (c.estatus_actividad === 'Abierto' || c.estatus_actividad === 'Activo' || c.estatus_actividad === 'Finalizado') {
+          setEstatusActividad(c.estatus_actividad);
+        } else if (c.estatus_actividad === 'Cerrado') {
+          setEstatusActividad('Finalizado');
+        }
+        if (c.base === 'CIMU' || c.base === 'TRADE' || c.base === 'UDC') {
+          setBase(c.base);
+        }
+        if (c.tipo_cliente === 'Lead' || c.tipo_cliente === 'Cliente') {
+          setTipoCliente(c.tipo_cliente);
+        }
+        // Acepta los 10 valores nuevos del picker + legacy 'Mail'/'Visita'
+        // para no perder actividades viejas al reabrirlas en edicion.
+        const TIPO_ACT_ACEPTADOS: readonly string[] = [
+          ...ACTIVIDAD_TIPOS_ACTIVIDAD_PICKER,
+          'Mail', 'Visita',
+        ];
+        if (c.tipo_actividad && TIPO_ACT_ACEPTADOS.includes(c.tipo_actividad)) {
+          setTipoActividad(c.tipo_actividad as ActividadTipoActividad);
+        }
+      } catch (e) {
+        console.warn('[ActividadComercial] no se pudo parsear contenido para editar:', e);
+      }
+    }
+  }, [isOpen, editing]);
 
   // Rango de años: actual - 1 hasta actual + 1. Cubre actividades atrasadas
   // y las que se planifican con anticipacion sin desbordar el select.
@@ -80,19 +182,114 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
     const y = new Date().getFullYear();
     return [y - 1, y, y + 1];
   }, []);
-  const catorcenas = useMemo(() => Array.from({ length: 26 }, (_, i) => i + 1), []);
+  const catorcenasOpciones = useMemo(() => Array.from({ length: 26 }, (_, i) => i + 1), []);
+  const toggleCatorcena = (n: number) => {
+    setCatorcenas(prev => prev.includes(n) ? prev.filter(x => x !== n) : [...prev, n].sort((a, b) => a - b));
+  };
+  const catorcenasLabel = catorcenas.length === 0
+    ? 'Selecciona catorcena(s)'
+    : catorcenas.length === 1
+      ? `Cat ${catorcenas[0]}`
+      : catorcenas.length <= 4
+        ? catorcenas.map(c => `Cat ${c}`).join(', ')
+        : `${catorcenas.length} catorcenas`;
 
   const listQuery = useQuery({
     queryKey: ['actividad-comercial-refs', subtipo, debouncedSearch],
-    queryFn: () => subtipo === 'Campaña'
-      ? notificacionesService.getCampanasParaActividad(debouncedSearch || undefined)
-      : notificacionesService.getPropuestasParaActividad(debouncedSearch || undefined),
-    // Lead no tiene busqueda (no hay campaña/propuesta que traer).
-    enabled: isOpen && subtipo !== 'Lead',
+    queryFn: () => {
+      if (subtipo === 'Campaña') return notificacionesService.getCampanasParaActividad(debouncedSearch || undefined);
+      if (subtipo === 'Propuesta') return notificacionesService.getPropuestasParaActividad(debouncedSearch || undefined);
+      if (subtipo === 'Solicitud') return notificacionesService.getSolicitudesParaActividad(debouncedSearch || undefined);
+      return Promise.resolve([] as ActividadRef[]);
+    },
+    // Lead no tiene busqueda (no hay campaña/propuesta/solicitud que traer).
+    enabled: isOpen,
+    retry: false,
   });
+
+  // Autocomplete de clientes reales para el campo Cliente cuando el usuario
+  // eligio "Cliente" en Tipo Cliente (feedback Jos 2026-11-04). Sigue siendo
+  // texto libre — las sugerencias solo ayudan a elegir uno existente. Devuelve
+  // combinaciones (cliente, marca) para que al elegir del dropdown se auto-
+  // rellene tambien el campo Marca (feedback Jos 2026-11-05) y Base por CUIC
+  // (feedback Jos 2026-11-06: "campo cliente que salga y detecte tambien cuic,
+  // segun el cuic ya tiene una Base correspondiente, si se selecciona uno que
+  // se llene la base"). Patron copiado del selector CUIC de CreateSolicitudModal.
+  const [clienteDropdownOpen, setClienteDropdownOpen] = useState(false);
+  const [sapDbFilter, setSapDbFilter] = useState<'ALL' | 'CIMU' | 'TRADE' | 'UDC'>('ALL');
+  type ClienteOption = { cliente: string; marca: string | null; cuic: number | null; razon_social: string | null; sap_database: 'CIMU' | 'TRADE' | 'UDC' | null };
+  const clientesSuggest = useQuery({
+    queryKey: ['clientes-suggest-full'],
+    queryFn: async () => {
+      try {
+        const r = await clientesService.getAllFull();
+        const arr: Array<{ T0_U_Cliente?: string | null; T0_U_RazonSocial?: string | null; T2_U_Marca?: string | null; CUIC?: number | null; sap_database?: string | null }> =
+          (r && Array.isArray((r as unknown as { data?: unknown[] }).data))
+            ? (r as unknown as { data: Array<{ T0_U_Cliente?: string | null; T0_U_RazonSocial?: string | null; T2_U_Marca?: string | null; CUIC?: number | null; sap_database?: string | null }> }).data
+            : [];
+        const seen = new Set<string>();
+        const out: ClienteOption[] = [];
+        for (const c of arr) {
+          const nombre = (c.T0_U_Cliente && c.T0_U_Cliente !== 'Cliente' ? c.T0_U_Cliente : null) || c.T0_U_RazonSocial || null;
+          if (!nombre) continue;
+          const marca = c.T2_U_Marca || null;
+          const cuic = c.CUIC ?? null;
+          const key = `${cuic ?? ''}||${nombre}||${marca || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const sdb = (c.sap_database || '').toUpperCase();
+          const sap_database = (sdb === 'CIMU' || sdb === 'TRADE' || sdb === 'UDC') ? (sdb as 'CIMU' | 'TRADE' | 'UDC') : null;
+          out.push({ cliente: nombre, marca, cuic, razon_social: c.T0_U_RazonSocial || null, sap_database });
+        }
+        return out;
+      } catch {
+        return [] as ClienteOption[];
+      }
+    },
+    enabled: isOpen && tipoCliente === 'Cliente',
+    staleTime: 2 * 60 * 1000,
+    retry: false,
+  });
+
+  // Filtrado client-side: tab de base + busqueda por nombre/cuic. Max 50 visibles.
+  const clientesFiltrados = useMemo(() => {
+    const data = clientesSuggest.data || [];
+    const q = cliente.trim().toLowerCase();
+    const filtroTab = sapDbFilter === 'ALL' ? data : data.filter(c => c.sap_database === sapDbFilter);
+    const filtroTexto = q
+      ? filtroTab.filter(c =>
+          c.cliente.toLowerCase().includes(q)
+          || (c.cuic != null && String(c.cuic).includes(q))
+          || (c.razon_social || '').toLowerCase().includes(q)
+        )
+      : filtroTab;
+    return filtroTexto.slice(0, 50);
+  }, [clientesSuggest.data, cliente, sapDbFilter]);
+
+  // Reemplaza el placeholder `#id` del chip en modo edición con el label real
+  // en cuanto la query devuelve datos (fix al bug donde el chip quedaba como
+  // "#12345" en lugar de "#12345 — Campaña Alfa"). Lo derivamos sin tocar el
+  // state `selected` para no entrar en loops ni perder el id original.
+  const displayedSelected = useMemo(() => {
+    if (!selected) return null;
+    if (!/^#\d+$/.test(selected.label)) return selected;
+    const found = listQuery.data?.find(x => x.id === selected.id);
+    return found || selected;
+  }, [selected, listQuery.data]);
 
   const createMutation = useMutation({
     mutationFn: notificacionesService.crearActividadComercial,
+    onSuccess: (data) => {
+      setCreatedId(data.id);
+      queryClient.invalidateQueries({ queryKey: ['notificaciones'] });
+      queryClient.invalidateQueries({ queryKey: ['tareas'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const editMutation = useMutation({
+    mutationFn: (payload: Parameters<typeof notificacionesService.editarActividadComercial>[1]) =>
+      notificacionesService.editarActividadComercial(editing!.id, payload),
     onSuccess: (data) => {
       setCreatedId(data.id);
       queryClient.invalidateQueries({ queryKey: ['notificaciones'] });
@@ -109,7 +306,10 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
     });
   }, [isOpen]);
 
-  const minDate = new Date().toISOString().slice(0, 10);
+  // Sin min date en modo edición: si la actividad original tenía fecha
+  // pasada, el usuario debe poder dejarla o moverla sin que el input se
+  // queje. En modo crear sí bloqueamos fechas pasadas.
+  const minDate = isEditMode ? undefined : new Date().toISOString().slice(0, 10);
 
   const handleSubmit = () => {
     setError(null);
@@ -118,14 +318,9 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
     const dias = activarRecordatorio && fechaEntrega
       ? Math.max(0, Math.min(365, parseInt(diasAntes || '0', 10) || 0))
       : undefined;
-    // Payload:
-    //   - Lead: manda subtipo='Lead' sin ref_id (siempre, aunque no haya selected).
-    //   - Campaña/Propuesta con seleccion: manda subtipo + ref_id.
-    //   - Campaña/Propuesta sin seleccion: omite ambos (actividad libre).
-    const isLead = subtipo === 'Lead';
-    createMutation.mutate({
-      subtipo: isLead ? 'Lead' : (selected ? subtipo : undefined),
-      ref_id: isLead ? undefined : selected?.id,
+    const payload: import('../../services/notificaciones.service').CrearActividadComercialInput = {
+      subtipo: selected ? subtipo : undefined,
+      ref_id: selected?.id,
       cliente: cliente.trim() || undefined,
       marca: marca.trim() || undefined,
       descripcion: desc,
@@ -133,11 +328,23 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
       activar_recordatorio: activarRecordatorio,
       recordar_dias_antes: dias,
       anio: anio ? Number(anio) : undefined,
-      catorcena: catorcena ? Number(catorcena) : undefined,
+      // Catorcenas: enviamos SIEMPRE array; mantenemos la clave singular como
+      // alias (primera) para que listados legacy sigan mostrando algo.
+      catorcenas: catorcenas.length > 0 ? catorcenas : undefined,
+      catorcena: catorcenas[0] ?? undefined,
       estatus_actividad: estatusActividad || undefined,
       base: base || undefined,
-    });
+      tipo_cliente: tipoCliente || undefined,
+      tipo_actividad: tipoActividad || undefined,
+    };
+    if (isEditMode) {
+      editMutation.mutate(payload);
+    } else {
+      createMutation.mutate(payload);
+    }
   };
+
+  const isSubmitting = createMutation.isPending || editMutation.isPending;
 
   if (!isOpen) return null;
 
@@ -153,7 +360,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className={`w-full max-w-2xl rounded-2xl shadow-2xl border max-h-[92vh] overflow-y-auto ${
+      <div className={`w-full max-w-2xl rounded-2xl shadow-2xl border max-h-[92dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 overflow-y-auto ${
         isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-gray-200'
       }`}>
         {/* Header */}
@@ -168,10 +375,12 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
             </div>
             <div>
               <h3 className={`text-base font-semibold ${isDark ? 'text-zinc-100' : 'text-gray-900'}`}>
-                Nueva Actividad Comercial
+                {isEditMode ? 'Editar Actividad Comercial' : 'Nueva Actividad Comercial'}
               </h3>
               <p className={`mt-0.5 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                Registra una tarea manual sobre una campaña o propuesta.
+                {isEditMode
+                  ? `Editando actividad #${editing?.id}. Los cambios quedan en el historial.`
+                  : 'Registra una tarea manual sobre una campaña, propuesta o solicitud.'}
               </p>
             </div>
           </div>
@@ -190,17 +399,44 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
               <Send className={`h-6 w-6 ${isDark ? 'text-emerald-300' : 'text-emerald-600'}`} />
             </div>
             <div className={`text-sm ${isDark ? 'text-zinc-200' : 'text-gray-800'}`}>
-              Actividad comercial creada.
+              {isEditMode ? 'Actividad comercial actualizada.' : 'Actividad comercial creada.'}
             </div>
             <div className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
               ID_accion: <span className="font-mono">{createdId}</span>
             </div>
-            <button
-              onClick={onClose}
-              className="mt-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-amber-600 hover:bg-amber-700"
-            >
-              Cerrar
-            </button>
+            <div className="flex items-center justify-center gap-2 mt-2">
+              {!isEditMode && (
+                <button
+                  onClick={() => {
+                    // Reset form state para crear otra sin cerrar y reabrir.
+                    setCreatedId(null);
+                    setSubtipo('Campaña');
+                    setSearch('');
+                    setSelected(null);
+                    setCliente('');
+                    setMarca('');
+                    setDescripcion('');
+                    setFechaEntrega('');
+                    setActivarRecordatorio(false);
+                    setDiasAntes('1');
+                    setError(null);
+                    setAnio('');
+                    setCatorcenas([]);
+                    setEstatusActividad('Abierto');
+                    setBase('');
+                  }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border ${isDark ? 'border-amber-500/40 text-amber-200 hover:bg-amber-500/10' : 'border-amber-400 text-amber-700 hover:bg-amber-50'}`}
+                >
+                  Crear otra
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-amber-600 hover:bg-amber-700"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         ) : (
           <div className="px-5 py-4 space-y-4">
@@ -220,10 +456,12 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
               </div>
             </div>
 
-            {/* Tipo + selector de referencia (OPCIONAL) */}
+            {/* Etapa + selector de referencia (OPCIONAL)
+                Feedback Jos 2026-11-04: "Tipo" se renombra a "Etapa".
+                Se quita "Lead" (ahora va en Tipo Cliente). Se agrega "Solicitud". */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className={labelCls}>Tipo</label>
+                <label className={labelCls}>Etapa</label>
                 <select
                   className={inputCls}
                   value={subtipo}
@@ -235,42 +473,91 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
                 >
                   <option value="Campaña">Campaña</option>
                   <option value="Propuesta">Propuesta</option>
-                  <option value="Lead">Lead</option>
+                  <option value="Solicitud">Solicitud</option>
+                  <option value="Actividad">Actividad</option>
                 </select>
               </div>
               <div>
-                {/* Lead no tiene campaña ni propuesta asociada: el buscador se
-                    bloquea (ajuste 2026-08-13). El usuario captura cliente y
-                    marca a mano en los inputs de abajo. */}
-                <label className={labelCls}>
-                  {subtipo === 'Lead'
-                    ? 'Buscar (no aplica para Lead)'
-                    : `Buscar ${subtipo.toLowerCase()} (opcional)`}
-                </label>
-                <div className="relative">
-                  <Search className={`absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
-                  <input
-                    className={`${inputCls} pl-9 ${subtipo === 'Lead' ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    placeholder={subtipo === 'Lead' ? 'Lead — captura cliente/marca abajo' : 'Nombre, ID, cliente o marca...'}
-                    value={subtipo === 'Lead' ? '' : search}
-                    onChange={(e) => { setSearch(e.target.value); setSelected(null); }}
-                    disabled={subtipo === 'Lead'}
-                  />
-                </div>
+                {/* "Actividad" es standalone: no se vincula a ninguna
+                    campania/propuesta/solicitud, asi que el buscador sale
+                    sobra. Feedback Jos 2026-11-10. */}
+                {subtipo === 'Actividad' ? (
+                  <div className={`${inputCls} flex items-center text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                    Actividad sin vincular — llena Cliente y Marca abajo.
+                  </div>
+                ) : (
+                  <>
+                    <label className={labelCls}>
+                      Buscar {subtipo.toLowerCase()} (opcional)
+                    </label>
+                    <div className="relative">
+                      <Search className={`absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
+                      <input
+                        className={`${inputCls} pl-9`}
+                        placeholder="Nombre, ID, cliente o marca..."
+                        value={search}
+                        onChange={(e) => { setSearch(e.target.value); setSelected(null); }}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Tipo Cliente + Tipo Actividad (feedback Jos 2026-11-04) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>Tipo Cliente</label>
+                <select
+                  className={inputCls}
+                  value={tipoCliente}
+                  onChange={(e) => setTipoCliente(e.target.value as '' | ActividadTipoCliente)}
+                >
+                  <option value="">Selecciona...</option>
+                  <option value="Lead">Lead</option>
+                  <option value="Cliente">Cliente</option>
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Tipo Actividad</label>
+                <select
+                  className={inputCls}
+                  value={tipoActividad}
+                  onChange={(e) => setTipoActividad(e.target.value as '' | ActividadTipoActividad)}
+                >
+                  <option value="">Selecciona...</option>
+                  {ACTIVIDAD_TIPOS_ACTIVIDAD_PICKER.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                  {/* Compatibilidad: si la actividad en edicion tenia 'Mail'
+                      o 'Visita' (valores legacy pre 2026-11-10), los
+                      mostramos como opcion disabled para que no se pierda
+                      el label al reabrir el modal. */}
+                  {(tipoActividad === 'Mail' || tipoActividad === 'Visita') && (
+                    <option value={tipoActividad} disabled>{tipoActividad} (legacy)</option>
+                  )}
+                </select>
               </div>
             </div>
 
             {/* Resultados (solo cuando el usuario esta buscando y aun no ha
                 seleccionado). Al elegir uno, se autorellenan Cliente/Marca abajo
                 sin bloquearlos. */}
-            {subtipo !== 'Lead' && !selected && search.trim().length > 0 && (
-              <div className={`rounded-lg border max-h-52 overflow-y-auto ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+            {!selected && search.trim().length > 0 && (
+              <div className={`rounded-lg border max-h-52 max-lg:landscape:max-h-32 overflow-y-auto ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
                 {listQuery.isLoading && (
                   <div className={`px-3 py-3 text-xs flex items-center gap-2 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                     <Loader2 className="h-3 w-3 animate-spin" /> Cargando...
                   </div>
                 )}
-                {!listQuery.isLoading && (listQuery.data?.length ?? 0) === 0 && (
+                {!listQuery.isLoading && listQuery.isError && (
+                  <div className={`px-3 py-3 text-xs text-center ${isDark ? 'text-red-400' : 'text-red-600'}`}>
+                    {/^.*(autorizado|permiso).*$/i.test(listQuery.error?.message || '')
+                      ? 'No tienes permiso para buscar actividades comerciales.'
+                      : (listQuery.error?.message || 'Error al buscar.')}
+                  </div>
+                )}
+                {!listQuery.isLoading && !listQuery.isError && (listQuery.data?.length ?? 0) === 0 && (
                   <div className={`px-3 py-3 text-xs text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                     Sin resultados. Prueba con otro término.
                   </div>
@@ -308,14 +595,14 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
             )}
 
             {/* Chip de la campaña/propuesta seleccionada (no bloquea nada) */}
-            {selected && (
+            {displayedSelected && (
               <div className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 ${isDark ? 'border-amber-500/30 bg-amber-500/5' : 'border-amber-200 bg-amber-50/50'}`}>
                 <div className="min-w-0">
                   <span className={`text-[10px] font-medium uppercase tracking-wide mr-2 ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>
                     {subtipo}
                   </span>
                   <span className={`text-xs font-semibold ${isDark ? 'text-zinc-100' : 'text-gray-900'}`}>
-                    {selected.label}
+                    {displayedSelected.label}
                   </span>
                 </div>
                 <button
@@ -332,14 +619,89 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
                 Al elegir campaña/propuesta se autorellenan como sugerencia
                 pero el usuario puede editarlos o escribirlos a mano. */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
+              <div className="relative">
                 <label className={labelCls}>Cliente</label>
                 <input
                   className={inputCls}
-                  placeholder="Nombre del cliente"
+                  placeholder={tipoCliente === 'Cliente' ? 'Busca o escribe un cliente...' : 'Nombre del cliente'}
                   value={cliente}
-                  onChange={(e) => setCliente(e.target.value)}
+                  onChange={(e) => { setCliente(e.target.value); setClienteDropdownOpen(true); }}
+                  onFocus={() => setClienteDropdownOpen(true)}
+                  onBlur={() => { setTimeout(() => setClienteDropdownOpen(false), 150); }}
+                  autoComplete="off"
                 />
+                {tipoCliente === 'Cliente' && clienteDropdownOpen && cliente.trim().length > 0 && (
+                  <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-hidden rounded-lg border shadow-lg flex flex-col z-20 lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-0 lg:bottom-auto lg:mt-1 lg:w-full lg:max-w-[calc(100vw-2rem)] lg:max-h-72 ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'}`}>
+                    {/* Tabs de base (feedback Jos 2026-11-06: como el selector de solicitudes) */}
+                    <div className={`flex items-center gap-1 px-2 py-1.5 border-b ${isDark ? 'border-zinc-800 bg-zinc-900' : 'border-gray-100 bg-gray-50'}`}>
+                      {(['ALL', 'CIMU', 'TRADE', 'UDC'] as const).map(tab => (
+                        <button
+                          key={tab}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => setSapDbFilter(tab)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                            sapDbFilter === tab
+                              ? (isDark ? 'bg-amber-500 text-black' : 'bg-amber-600 text-white')
+                              : (isDark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-gray-500 hover:bg-gray-200')
+                          }`}
+                        >
+                          {tab === 'ALL' ? 'Todos' : tab}
+                        </button>
+                      ))}
+                      <span className={`ml-auto text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                        {clientesFiltrados.length} de {clientesSuggest.data?.length ?? 0}
+                      </span>
+                    </div>
+                    <div className="flex-1 max-h-56 max-lg:flex-1 max-lg:max-h-none overflow-y-auto">
+                    {clientesSuggest.isLoading && (
+                      <div className={`px-3 py-2 text-xs flex items-center gap-2 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                        <Loader2 className="h-3 w-3 animate-spin" /> Cargando clientes...
+                      </div>
+                    )}
+                    {!clientesSuggest.isLoading && clientesFiltrados.length === 0 && (
+                      <div className={`px-3 py-2 text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                        Sin coincidencias. Puedes dejarlo como texto libre.
+                      </div>
+                    )}
+                    {clientesFiltrados.map((opt, idx) => (
+                      <button
+                        key={`${opt.cuic ?? ''}||${opt.cliente}||${opt.marca || ''}||${idx}`}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setCliente(opt.cliente);
+                          if (opt.marca) setMarca(opt.marca);
+                          if (opt.sap_database) setBase(opt.sap_database);
+                          setClienteDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center justify-between gap-2 ${
+                          isDark ? 'hover:bg-zinc-800 text-zinc-200 border-b border-zinc-800/60'
+                                 : 'hover:bg-amber-50 text-gray-700 border-b border-gray-100'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">{opt.cliente}</div>
+                          <div className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                            {opt.cuic != null ? `CUIC ${opt.cuic}` : 'Sin CUIC'}
+                            {opt.razon_social ? ` · ${opt.razon_social}` : ''}
+                            {opt.marca ? ` · ${opt.marca}` : ''}
+                          </div>
+                        </div>
+                        {opt.sap_database && (
+                          <span className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            opt.sap_database === 'CIMU' ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')
+                            : opt.sap_database === 'TRADE' ? (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700')
+                            : (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700')
+                          }`}>
+                            {opt.sap_database}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
                 <label className={labelCls}>Marca</label>
@@ -365,27 +727,49 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
                   {anios.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
               </div>
-              <div>
+              <div className="relative">
                 <label className={labelCls}>Periodo (catorcena)</label>
-                <select
-                  className={inputCls}
-                  value={catorcena}
-                  onChange={(e) => setCatorcena(e.target.value)}
+                {/* Multi-select con checkboxes (feedback Jos 2026-10-19). */}
+                <button
+                  type="button"
+                  onClick={() => setCatorcenaDropdownOpen(o => !o)}
+                  className={`${inputCls} text-left flex items-center justify-between gap-2`}
                 >
-                  <option value="">—</option>
-                  {catorcenas.map(c => <option key={c} value={c}>Cat {c}</option>)}
-                </select>
+                  <span className={catorcenas.length === 0 ? (isDark ? 'text-zinc-500' : 'text-gray-400') : ''}>
+                    {catorcenasLabel}
+                  </span>
+                  <span className={`text-[10px] shrink-0 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>▾</span>
+                </button>
+                {catorcenaDropdownOpen && (
+                  <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-y-auto rounded-lg border shadow-lg z-20 lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-0 lg:bottom-auto lg:mt-1 lg:w-full lg:max-w-[calc(100vw-2rem)] lg:max-h-56 ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'}`}>
+                    <div className={`sticky top-0 flex items-center justify-between px-2 py-1 border-b text-[10px] ${isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-500' : 'bg-white border-gray-100 text-gray-500'}`}>
+                      <button type="button" onClick={() => setCatorcenas([])} className="hover:underline">Limpiar</button>
+                      <button type="button" onClick={() => setCatorcenaDropdownOpen(false)} className="hover:underline">Cerrar</button>
+                    </div>
+                    {catorcenasOpciones.map(c => (
+                      <label key={c} className={`flex items-center gap-2 px-2 py-1 text-xs cursor-pointer ${isDark ? 'hover:bg-zinc-800 text-zinc-200' : 'hover:bg-amber-50 text-gray-700'}`}>
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 accent-amber-600"
+                          checked={catorcenas.includes(c)}
+                          onChange={() => toggleCatorcena(c)}
+                        />
+                        Cat {c}
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <label className={labelCls}>Estatus</label>
                 <select
                   className={inputCls}
                   value={estatusActividad}
-                  onChange={(e) => setEstatusActividad(e.target.value as '' | 'Abierto' | 'Cerrado')}
+                  onChange={(e) => setEstatusActividad(e.target.value as '' | 'Abierto' | 'Activo' | 'Finalizado')}
                 >
-                  <option value="">—</option>
                   <option value="Abierto">Abierto</option>
-                  <option value="Cerrado">Cerrado</option>
+                  <option value="Activo">Activo</option>
+                  <option value="Finalizado">Finalizado</option>
                 </select>
               </div>
               <div>
@@ -393,11 +777,12 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
                 <select
                   className={inputCls}
                   value={base}
-                  onChange={(e) => setBase(e.target.value as '' | 'CIMU' | 'TRADE')}
+                  onChange={(e) => setBase(e.target.value as '' | 'CIMU' | 'TRADE' | 'UDC')}
                 >
                   <option value="">—</option>
                   <option value="CIMU">CIMU</option>
                   <option value="TRADE">TRADE</option>
+                  <option value="UDC">UDC</option>
                 </select>
               </div>
             </div>
@@ -421,7 +806,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
                 type="date"
                 className={inputCls}
                 value={fechaEntrega}
-                min={minDate}
+                {...(minDate ? { min: minDate } : {})}
                 onChange={(e) => setFechaEntrega(e.target.value)}
               />
               <p className={`text-[10px] mt-1 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
@@ -468,7 +853,10 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
               </div>
             )}
 
-            <div className={`pt-3 border-t flex justify-end gap-2 ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+            {/* Jos 2026-11-10: footer sticky bottom en mobile/tablet para que
+                Cancelar y Crear actividad siempre sean visibles sin hacer scroll
+                hasta el fondo. En desktop queda igual (lg:static). */}
+            <div className={`pt-3 max-lg:landscape:pt-2 border-t flex flex-wrap justify-end gap-2 max-lg:sticky max-lg:bottom-0 max-lg:-mx-5 max-lg:px-5 max-lg:pb-3 max-lg:z-10 ${isDark ? 'border-zinc-800 max-lg:bg-zinc-900' : 'border-gray-200 max-lg:bg-white'}`}>
               <button
                 type="button"
                 onClick={onClose}
@@ -481,11 +869,11 @@ export function NuevaActividadComercialModal({ isOpen, onClose }: Props) {
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={createMutation.isPending}
+                disabled={isSubmitting}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                {createMutation.isPending ? 'Guardando...' : 'Crear actividad'}
+                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {isSubmitting ? 'Guardando...' : (isEditMode ? 'Guardar cambios' : 'Crear actividad')}
               </button>
             </div>
           </div>

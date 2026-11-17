@@ -44,6 +44,12 @@ export type UserRole =
   | 'Gerente Comercial Vía Pública'
   | 'Gerente Comercial Plazas'
   | 'Jefe de BI'
+  // Nuevo rol (2026-10-14): mismos permisos que Director General Adjunto
+  | 'Director Comercial General'
+  // Nuevo rol (2026-10-23, Matriz QEB): Director de Mercadotecnia.
+  // Perfil mixto — visibilidad total + actividades de trafico (asignacion
+  // de inventario, descargas ODM/versionario).
+  | 'Director de Mercadotecnia'
   // Perfil B — TI y Mejora Continua (admin completo)
   | 'Gerente de TI'
   | 'Especialista de TI'
@@ -67,6 +73,11 @@ export type UserRole =
   | 'Jefe de Operaciones León'
   | 'Jefe de Operaciones Tijuana'
   | 'Jefe de Operaciones Mérida'
+  // Nuevos roles (Matriz Roles QEB 2026-10-09) — mismos permisos que
+  // Asesor Comercial / Analista de Servicio al Cliente: visibilidad del
+  // módulo de Campañas con descarga de ODM/versionario e Instalación.
+  | 'Supervisor de Call Center'
+  | 'Tecnico en Programacion Digital y WIFI'
   | 'Administrador'
   | 'DEV';
 
@@ -80,6 +91,10 @@ export interface RolePermissions {
   canSeeCampanas: boolean;
   canSeeInventarios: boolean;
   canSeeAdminUsuarios: boolean;
+  // UDC (aeropuerto AICM): solo roles de Aeropuerto (+ Admin/DEV) ven y usan la
+  // BD UDC — pestaña UDC en Clientes, filtro UDC en Solicitudes, etc. Vía Pública
+  // y Plazas NO la ven. Se calcula por rol en getPermissions (esRolUDC).
+  canVerUDC: boolean;
 
   // Clientes
   canCreateClientes: boolean;
@@ -173,6 +188,7 @@ const defaultPermissions: RolePermissions = {
   canSeeCampanas: true,
   canSeeInventarios: true,
   canSeeAdminUsuarios: true,
+  canVerUDC: false, // se calcula por rol en getPermissions (esRolUDC)
 
   canCreateClientes: true,
   canEditClientes: true,
@@ -242,10 +258,17 @@ const defaultPermissions: RolePermissions = {
 
   canCancelPostSAP: false,
 
-  // Historial de Acciones — feedback 2026-08-13: solo roles de Dirección
-  // y Admin/DEV ven el módulo. El default queda en false y cada rol de
-  // dirección lo habilita explícitamente (junto con canSeeAllHistorial).
-  canSeeHistorialAcciones: false,
+  // Historial de Acciones — ajuste 2026-10-21: el módulo lo abre CUALQUIER
+  // rol, pero quien no está en la lista de visibilidad total solo ve lo que
+  // hizo o aquello en lo que participa (es creador o asignado). Ese recorte
+  // lo aplica el backend, que es la única autoridad: ver
+  // tieneHistorialCompleto() en qeb-Back/src/utils/permissions.ts.
+  //
+  // Antes (feedback 2026-08-13) el default era false y solo ~10 roles de
+  // dirección podían entrar.
+  canSeeHistorialAcciones: true,
+  // Solo informativo para la UI (p. ej. el aviso de "viendo solo lo tuyo").
+  // El filtro real NO depende de esta bandera.
   canSeeAllHistorial: false,
 };
 
@@ -263,7 +286,11 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     canDeleteProveedores: false,
 
     // Puede cambiar estatus pero solo a estos valores
-    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Descartada', 'Rechazada'],
+    // 'Ajuste Comercial' (2026-09-17, Jos): el asesor puede regresarse la
+    // propuesta en CUALQUIER momento, sin importar el estatus actual — antes
+    // dependía de que Tráfico se la devolviera y quedaba atorado en Ajuste
+    // Cto-Cliente sin poder editar. Al ponerlo, Tráfico queda bloqueado.
+    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Descartada', 'Rechazada'],
     canBuscarInventarioEnModal: false,
     canEditClienteEnFormularios: true, // Puede editar campo cliente en solicitudes y propuestas
     canEditArticuloOnEdit: true, // Puede editar artículo SAP al editar circuito (si no hay reservas)
@@ -306,7 +333,11 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     // canChangeEstadoSolicitud: true (default)
 
     // Propuestas: permisos de Asesor
-    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Descartada', 'Rechazada'],
+    // 'Ajuste Comercial' (2026-09-17, Jos): el asesor puede regresarse la
+    // propuesta en CUALQUIER momento, sin importar el estatus actual — antes
+    // dependía de que Tráfico se la devolviera y quedaba atorado en Ajuste
+    // Cto-Cliente sin poder editar. Al ponerlo, Tráfico queda bloqueado.
+    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Descartada', 'Rechazada'],
     canCompartirPropuesta: true,
     canBuscarInventarioEnModal: false,
     canEditClienteEnFormularios: true, // Asesor: puede editar campo cliente
@@ -390,6 +421,82 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     canApproveArteSinRevisar: true,
 
     // Inventarios: Oculto (ya se oculta con canSeeInventarios: false)
+    canCreateInventarios: false,
+    canEditInventarios: false,
+    canDeleteInventarios: false,
+  },
+  // [#265] Supervisor de Call Center — mismo perfil que Analista de Servicio
+  // al Cliente / Asesor Comercial segun Matriz 2026-10-09. Visibilidad del
+  // modulo Campañas, descarga de ODM/versionario, instalación de artes.
+  'Supervisor de Call Center': {
+    canSeeDashboard: false,
+    canSeeInventarios: false,
+    canSeeAdminUsuarios: false,
+    canCreateClientes: false,
+    canEditClientes: false,
+    canDeleteClientes: false,
+    canCreateProveedores: false,
+    canEditProveedores: false,
+    canDeleteProveedores: false,
+    canCreateSolicitudes: false,
+    canEditSolicitudes: false,
+    canDeleteSolicitudes: false,
+    canAtenderSolicitudes: false,
+    canChangeEstadoSolicitud: false,
+    canEditPropuestaStatus: false,
+    allowedPropuestaStatuses: [],
+    canAprobarPropuesta: false,
+    canAsignarInventario: true,
+    canCompartirPropuesta: true,
+    canBuscarInventarioEnModal: false,
+    canEditCircuitoExistente: false,
+    canEditCampanas: false,
+    canEditDetalleCampana: true,
+    canDeleteDetalleCampana: false,
+    canPostToSAP: true,
+    canResolveProduccionTasks: false,
+    canResolveCorreccionTasks: true,
+    canOnlyOpenCorreccionTasks: true,
+    canOpenTasks: true,
+    canCreateTareasGestionArtes: true,
+    canApproveArteSinRevisar: true,
+    canCreateInventarios: false,
+    canEditInventarios: false,
+    canDeleteInventarios: false,
+  },
+  // [#265] Técnico en Programación Digital y WIFI — mismo perfil que arriba.
+  'Tecnico en Programacion Digital y WIFI': {
+    canSeeDashboard: false,
+    canSeeInventarios: false,
+    canSeeAdminUsuarios: false,
+    canCreateClientes: false,
+    canEditClientes: false,
+    canDeleteClientes: false,
+    canCreateProveedores: false,
+    canEditProveedores: false,
+    canDeleteProveedores: false,
+    canCreateSolicitudes: false,
+    canEditSolicitudes: false,
+    canDeleteSolicitudes: false,
+    canAtenderSolicitudes: false,
+    canChangeEstadoSolicitud: false,
+    canEditPropuestaStatus: false,
+    allowedPropuestaStatuses: [],
+    canAprobarPropuesta: false,
+    canAsignarInventario: true,
+    canCompartirPropuesta: true,
+    canBuscarInventarioEnModal: false,
+    canEditCircuitoExistente: false,
+    canEditCampanas: false,
+    canEditDetalleCampana: true,
+    canDeleteDetalleCampana: false,
+    canPostToSAP: true,
+    canResolveProduccionTasks: false,
+    canResolveCorreccionTasks: true,
+    canOnlyOpenCorreccionTasks: true,
+    canOpenTasks: true,
+    canCreateTareasGestionArtes: true,
+    canApproveArteSinRevisar: true,
     canCreateInventarios: false,
     canEditInventarios: false,
     canDeleteInventarios: false,
@@ -776,7 +883,11 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     canDeleteProveedores: false,
 
     // Puede cambiar estatus pero solo a estos valores
-    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Descartada', 'Rechazada'],
+    // 'Ajuste Comercial' (2026-09-17, Jos): el asesor puede regresarse la
+    // propuesta en CUALQUIER momento, sin importar el estatus actual — antes
+    // dependía de que Tráfico se la devolviera y quedaba atorado en Ajuste
+    // Cto-Cliente sin poder editar. Al ponerlo, Tráfico queda bloqueado.
+    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Descartada', 'Rechazada'],
     canBuscarInventarioEnModal: false,
 
     canEditCampanas: true,
@@ -819,7 +930,11 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     canAtenderSolicitudes: true,
     canChangeEstadoSolicitud: true,
 
-    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Descartada', 'Rechazada'],
+    // 'Ajuste Comercial' (2026-09-17, Jos): el asesor puede regresarse la
+    // propuesta en CUALQUIER momento, sin importar el estatus actual — antes
+    // dependía de que Tráfico se la devolviera y quedaba atorado en Ajuste
+    // Cto-Cliente sin poder editar. Al ponerlo, Tráfico queda bloqueado.
+    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Descartada', 'Rechazada'],
     canBuscarInventarioEnModal: false,
 
     canEditCampanas: true,
@@ -862,7 +977,11 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     canChangeEstadoSolicitud: true,
 
     // Propuestas: mismos permisos que Asesor Comercial
-    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Descartada', 'Rechazada'],
+    // 'Ajuste Comercial' (2026-09-17, Jos): el asesor puede regresarse la
+    // propuesta en CUALQUIER momento, sin importar el estatus actual — antes
+    // dependía de que Tráfico se la devolviera y quedaba atorado en Ajuste
+    // Cto-Cliente sin poder editar. Al ponerlo, Tráfico queda bloqueado.
+    allowedPropuestaStatuses: ['Pase a ventas', 'Ajuste Cto-Cliente', 'Ajuste Comercial', 'Descartada', 'Rechazada'],
     canBuscarInventarioEnModal: false,
     canEditClienteEnFormularios: true, // Puede editar campo cliente en solicitudes y propuestas
     canEditArticuloOnEdit: true, // Puede editar artículo SAP al editar circuito (si no hay reservas)
@@ -2338,6 +2457,59 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
     // Historial de Acciones — feedback 2026-08-13: Dirección ve todo.
     canSeeHistorialAcciones: true, canSeeAllHistorial: true,
   },
+  'Director Comercial General': {
+    canSeeAdminUsuarios: false,
+    canCreateClientes: false, canEditClientes: false, canDeleteClientes: false,
+    canCreateProveedores: false, canEditProveedores: false, canDeleteProveedores: false,
+    canCreateSolicitudes: false, canEditSolicitudes: false, canDeleteSolicitudes: false,
+    canAtenderSolicitudes: false, canChangeEstadoSolicitud: false,
+    canEditPropuestaStatus: false, allowedPropuestaStatuses: [],
+    canAprobarPropuesta: false, canAsignarInventario: false, canEditResumenPropuesta: false,
+    canCompartirPropuesta: true, canBuscarInventarioEnModal: false,
+    canEditCampanas: false, canEditCampanaStatus: false,
+    canEditDetalleCampana: false, canDeleteDetalleCampana: false,
+    canSeeGestionArtes: true, canEditGestionArtes: false,
+    canResolveProduccionTasks: false, canSeeOrdenesMontajeButton: true,
+    canCreateTareasGestionArtes: false, canResolveRevisionArtesTasks: false,
+    canCreateInventarios: false, canEditInventarios: false, canDeleteInventarios: false,
+    canExportOrdenesMontaje: true,
+    canSeeHistorialAcciones: true, canSeeAllHistorial: true,
+  },
+  // Director de Mercadotecnia (Matriz QEB 2026-10-23): perfil mixto.
+  // Visualizacion total como director + actividades de trafico (asignar
+  // inventario desde solicitudes/propuestas, buscar inventario en modal,
+  // descargas de ODM y versionario). No aprueba autorizaciones DG/DCM.
+  'Director de Mercadotecnia': {
+    canSeeDashboard: true,
+    canSeeClientes: true,
+    canSeeProveedores: true,
+    canSeeSolicitudes: true,
+    canSeePropuestas: true,
+    canSeeCampanas: true,
+    canSeeInventarios: true,
+    canSeeAdminUsuarios: false,
+    canCreateClientes: false, canEditClientes: false, canDeleteClientes: false,
+    canCreateProveedores: false, canEditProveedores: false, canDeleteProveedores: false,
+    canCreateSolicitudes: false, canEditSolicitudes: false, canDeleteSolicitudes: false,
+    canAtenderSolicitudes: false, canChangeEstadoSolicitud: false,
+    canEditPropuestaStatus: false, allowedPropuestaStatuses: [],
+    canAprobarPropuesta: false,
+    // Actividades tipo trafico — puede asignar/buscar inventario en el modal
+    canAsignarInventario: true,
+    canBuscarInventarioEnModal: true,
+    canEditResumenPropuesta: false,
+    canCompartirPropuesta: true,
+    canEditCampanas: false, canEditCampanaStatus: false,
+    canEditDetalleCampana: false, canDeleteDetalleCampana: false,
+    canSeeGestionArtes: true, canEditGestionArtes: false,
+    canResolveProduccionTasks: false,
+    // Descargas: ODM y versionario desde dashboard/propuestas/campanas
+    canSeeOrdenesMontajeButton: true,
+    canExportOrdenesMontaje: true,
+    canCreateTareasGestionArtes: false, canResolveRevisionArtesTasks: false,
+    canCreateInventarios: false, canEditInventarios: false, canDeleteInventarios: false,
+    canSeeHistorialAcciones: true, canSeeAllHistorial: true,
+  },
   'Director Desarrollo de Nuevos Negocios': {
     canSeeAdminUsuarios: false,
     canCreateClientes: false, canEditClientes: false, canDeleteClientes: false,
@@ -2777,7 +2949,7 @@ const rolePermissions: Partial<Record<UserRole, Partial<RolePermissions>>> = {
   },
 };
 
-export function getPermissions(role: string | undefined | null): RolePermissions {
+export function getPermissions(role: string | undefined | null, nombreUsuario?: string | null): RolePermissions {
   if (!role) {
     // Sin rol, permisos mínimos
     return {
@@ -2817,12 +2989,12 @@ export function getPermissions(role: string | undefined | null): RolePermissions
   // Tráfico (cualquier rol de tráfico) NO puede editar tarifa ni cantidad de caras
   // de circuitos, ni en propuestas ni en campañas.
   const esTrafico = /trafico/i.test(role);
-  return { ...merged, canEditTarifaCaras: merged.canEditTarifaCaras && !esTrafico };
+  return { ...merged, canEditTarifaCaras: merged.canEditTarifaCaras && !esTrafico, canVerUDC: esRolUDC(role) || esUsuarioUDCExtra(nombreUsuario) };
 }
 
 // Hook para usar en componentes
-export function usePermissions(role: string | undefined | null): RolePermissions {
-  return getPermissions(role);
+export function usePermissions(role: string | undefined | null, nombreUsuario?: string | null): RolePermissions {
+  return getPermissions(role, nombreUsuario);
 }
 
 /**
@@ -2840,4 +3012,47 @@ export const ROLES_ASESOR_COMERCIAL: string[] = [
 
 export function esAsesorComercial(rol?: string | null): boolean {
   return !!rol && ROLES_ASESOR_COMERCIAL.includes(rol);
+}
+
+/**
+ * Roles que pueden ver y usar la BD UDC (aeropuerto AICM): los roles de
+ * Aeropuerto + Admin/DEV. Vía Pública, Plazas y el resto NO ven UDC.
+ * Se usa para `canVerUDC` (pestaña UDC en Clientes, filtro UDC en Solicitudes, etc.).
+ */
+export const ROLES_UDC: string[] = [
+  'Director Comercial Aeropuerto',
+  'Gerente Comercial Aeropuerto',
+  'Asesor Comercial Aeropuerto',
+  'Analista de Aeropuerto',
+  'Administrador',
+  'DEV',
+];
+
+export function esRolUDC(rol?: string | null): boolean {
+  return !!rol && ROLES_UDC.includes(rol);
+}
+
+/**
+ * Roles de tráfico (Gerente, Coordinador, Especialista, Auxiliar, Bi).
+ * Se detecta por el token "trafico" en el nombre del rol para ser tolerante
+ * a variantes futuras. Se usa en reglas de negocio dedicadas a tráfico, p. ej.
+ * el bloqueo de edición de circuitos cuando la campaña/propuesta está en
+ * "Ajuste Comercial" (el balón está del lado del asesor y sólo tráfico debe
+ * quedar detenido — no admins, gerentes ni directores).
+ */
+export function esTrafico(rol?: string | null): boolean {
+  return !!rol && /trafico/i.test(rol);
+}
+
+// Usuarios con acceso UDC por EXCEPCIÓN (además de los ROLES_UDC), por nombre.
+// Para dar UDC a alguien puntual sin cambiarle el rol. Comparación tolerante a
+// acentos / mayúsculas / espacios dobles.
+export const USUARIOS_UDC_EXTRA: string[] = [
+  'Mayra Angelica Duran Perez',
+];
+const normNombreUDC = (s?: string | null): string =>
+  (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
+export function esUsuarioUDCExtra(nombre?: string | null): boolean {
+  const n = normNombreUDC(nombre);
+  return !!n && USUARIOS_UDC_EXTRA.some(u => normNombreUDC(u) === n);
 }

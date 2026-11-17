@@ -13,11 +13,16 @@ import { notificacionesService, ResumenAutorizacion } from '../../services/notif
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { Solicitud, Catorcena } from '../../types';
 import { formatCurrency, formatDate } from '../../lib/utils';
+import { horarioLabel } from '../../lib/periodos';
 import { formatHistorialDetalles } from '../../lib/historial';
+import { HistorialFiltrado } from '../historial/HistorialFiltrado';
 import { UserAvatar } from '../../components/ui/user-avatar';
 import { useThemeStore } from '../../store/themeStore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { articuloUDCPantallas, udcFichaDe, udcFichaImg, UDC_MAPA_COORDS, UDC_MAPA_COORDS_PB } from '../../lib/udc';
+import udcMapaPA from '../propuestas/assets/udc-mapa-aicm-t1.jpg';
+import udcMapaPB from '../propuestas/assets/udc-mapa-aicm-t1-pb.jpg';
 
 // Logo Grupo IMU
 const LOGO_IMU_URL = '/logo-grupo-imu.png';
@@ -656,6 +661,185 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
     doc.setTextColor(100, 100, 100);
     doc.text('*Precios más IVA', marginX, yPos);
 
+    // === UDC: FICHAS TÉCNICAS + UBICACIÓN EN EL AEROPUERTO ===
+    // El inventario UDC (aeropuerto AICM) es DIGITAL y de dispo ilimitada, así que
+    // la solicitud NO reserva pantallas: las pantallas de cada artículo se derivan
+    // del propio código (articuloUDCPantallas) y se presentan como ficha técnica +
+    // pin en el mapa. Solo UDC — CIMU/TRADE no se tocan.
+    const esUDCpdf = String((data.solicitud as any)?.sap_database || '').toUpperCase() === 'UDC'
+      || (data.caras || []).some(c => !!articuloUDCPantallas(c.articulo));
+    if (esUDCpdf && (data.caras?.length ?? 0) > 0) {
+      // Artículos UDC con mapeo de pantallas, en orden y sin repetir.
+      const artSeen = new Set<string>();
+      const artItems: { articulo: string; nums: string[] }[] = [];
+      for (const c of (data.caras || [])) {
+        const art = c.articulo || '';
+        if (!art || artSeen.has(art)) continue;
+        const nums = articuloUDCPantallas(art);
+        if (nums && nums.length > 0) { artSeen.add(art); artItems.push({ articulo: art, nums }); }
+      }
+      if (artItems.length > 0) {
+        // Precargar las fichas (JPG en /udc-fichas/) para incrustarlas en el PDF.
+        const fichaImgCache = new Map<string, HTMLImageElement>();
+        const fichaUrls = new Set<string>();
+        artItems.forEach(a => a.nums.forEach(n => { const u = udcFichaImg(n); if (u) fichaUrls.add(u); }));
+        await Promise.all(Array.from(fichaUrls).map(u => new Promise<void>(resolve => {
+          const img = new Image();
+          img.onload = () => { fichaImgCache.set(u, img); resolve(); };
+          img.onerror = () => resolve();
+          img.src = u;
+        })));
+
+        doc.addPage();
+        yPos = 20;
+        doc.setFillColor(...imuDarkBlue);
+        doc.rect(marginX, yPos, contentWidth, 8, 'F');
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(...white);
+        doc.text('FICHAS TÉCNICAS DE LAS PANTALLAS', marginX + 5, yPos + 5.5);
+        yPos += 12;
+
+        for (const a of artItems) {
+          // Mantener el sub-header del artículo pegado a su primera ficha.
+          const u0 = a.nums[0] ? udcFichaImg(a.nums[0]) : null;
+          const img0 = u0 ? fichaImgCache.get(u0) : undefined;
+          const colW0 = (contentWidth - 6) / 2;
+          const ratio0 = img0 && img0.naturalWidth > 0 ? img0.naturalWidth / img0.naturalHeight : 1.647;
+          const need = 8 + colW0 / ratio0 + 11;
+          if (yPos + need > pageHeight - 16) { doc.addPage(); yPos = 20; }
+
+          doc.setFillColor(...imuGreen);
+          doc.roundedRect(marginX, yPos, contentWidth, 6, 1, 1, 'F');
+          doc.setFontSize(8);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(...white);
+          doc.text(a.articulo, marginX + 5, yPos + 4);
+          doc.setFont('helvetica', 'normal');
+          doc.text(`${a.nums.length} pantalla${a.nums.length !== 1 ? 's' : ''}`, pageWidth - marginX - 5, yPos + 4, { align: 'right' });
+          yPos += 8;
+
+          const gap = 6;
+          const colW = (contentWidth - gap) / 2;
+          let col = 0;
+          let rowTop = yPos;
+          let rowMaxH = 0;
+          for (const num of a.nums) {
+            const f = udcFichaDe(num);
+            const nombre = f?.nombre || `DIGITAL ${num}`;
+            const url = udcFichaImg(num);
+            const img = url ? fichaImgCache.get(url) : undefined;
+            const ratio = img && img.naturalWidth > 0 ? img.naturalWidth / img.naturalHeight : 1.647;
+            const imgH = colW / ratio;
+            const cellH = imgH + 11;
+            if (rowTop + cellH > pageHeight - 16) { doc.addPage(); rowTop = 20; col = 0; rowMaxH = 0; }
+            const x = marginX + col * (colW + gap);
+            if (img) {
+              doc.addImage(img, 'JPEG', x, rowTop, colW, imgH);
+              doc.setDrawColor(210);
+              doc.rect(x, rowTop, colW, imgH);
+            } else {
+              doc.setFillColor(245, 245, 245);
+              doc.rect(x, rowTop, colW, imgH, 'F');
+              doc.setFontSize(8);
+              doc.setTextColor(150, 150, 150);
+              doc.text('Ficha técnica no disponible', x + colW / 2, rowTop + imgH / 2, { align: 'center' });
+            }
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(...textDark);
+            doc.text(`${nombre}${f?.zona ? `   ·   ${f.zona}` : ''}`, x + 1, rowTop + imgH + 5);
+            doc.setFontSize(7.5);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(90, 90, 90);
+            doc.text([f ? f.medida : '', f ? `${f.duracion} seg` : ''].filter(Boolean).join('   ·   '), x + 1, rowTop + imgH + 9);
+            rowMaxH = Math.max(rowMaxH, cellH);
+            col++;
+            if (col === 2) { col = 0; rowTop += rowMaxH + gap; rowMaxH = 0; }
+          }
+          if (col === 1) rowTop += rowMaxH + gap; // cerrar fila incompleta
+          yPos = rowTop + 2;
+        }
+
+        // Mapa del aeropuerto con pines en las pantallas de la solicitud.
+        const reservNums = new Set<string>();
+        artItems.forEach(a => a.nums.forEach(n => reservNums.add(n)));
+        const MAPAS_PDF: { titulo: string; url: string; coords: Record<string, { x: number; y: number }> }[] = [
+          { titulo: 'Terminal 1 · Planta Alta', url: udcMapaPA, coords: UDC_MAPA_COORDS },
+          { titulo: 'Terminal 1 · Planta Baja', url: udcMapaPB, coords: UDC_MAPA_COORDS_PB },
+        ];
+        const planos = MAPAS_PDF
+          .map(m => ({ ...m, nums: Object.keys(m.coords).filter(n => reservNums.has(n)) }))
+          .filter(m => m.nums.length > 0);
+        if (planos.length > 0) {
+          const mapaCache = new Map<string, HTMLImageElement>();
+          await Promise.all(planos.map(p => new Promise<void>(resolve => {
+            const img = new Image();
+            img.onload = () => { mapaCache.set(p.url, img); resolve(); };
+            img.onerror = () => resolve();
+            img.src = p.url;
+          })));
+          doc.addPage();
+          yPos = 20;
+          doc.setFillColor(...imuBlue);
+          doc.rect(marginX, yPos, contentWidth, 7, 'F');
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(...white);
+          doc.text('UBICACIÓN EN EL AEROPUERTO (AICM)', marginX + 5, yPos + 5);
+          yPos += 12;
+          const maxW = contentWidth;
+          for (const plano of planos) {
+            const img = mapaCache.get(plano.url);
+            const ratio = img && img.naturalWidth > 0 ? img.naturalWidth / img.naturalHeight : 2;
+            let imgW = maxW;
+            let imgH = imgW / ratio;
+            const maxH = pageHeight - 46;
+            if (imgH > maxH) { imgH = maxH; imgW = imgH * ratio; }
+            if (yPos + 8 + imgH > pageHeight - 16) { doc.addPage(); yPos = 20; }
+            doc.setFillColor(...imuGreen);
+            doc.roundedRect(marginX, yPos, maxW, 6, 1, 1, 'F');
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(...white);
+            doc.text(`${plano.titulo}  ·  ${plano.nums.length} pantalla${plano.nums.length !== 1 ? 's' : ''}`, marginX + 4, yPos + 4);
+            yPos += 8;
+            const imgX = marginX + (maxW - imgW) / 2;
+            if (img) {
+              doc.addImage(img, 'JPEG', imgX, yPos, imgW, imgH);
+              doc.setDrawColor(210);
+              doc.rect(imgX, yPos, imgW, imgH);
+            } else {
+              doc.setFillColor(245, 245, 245);
+              doc.rect(imgX, yPos, imgW, imgH, 'F');
+            }
+            for (const num of plano.nums) {
+              const pos = plano.coords[num];
+              if (!pos) continue;
+              const px = imgX + (pos.x / 100) * imgW;
+              const py = yPos + (pos.y / 100) * imgH;
+              doc.setFillColor(16, 185, 129);
+              doc.setDrawColor(255, 255, 255);
+              doc.setLineWidth(0.4);
+              doc.circle(px, py, 1.6, 'FD');
+            }
+            doc.setLineWidth(0.2);
+            yPos += imgH + 6;
+          }
+          const fuera = Array.from(reservNums).filter(n => n && !MAPAS_PDF.some(m => m.coords[n]));
+          if (fuera.length > 0) {
+            const nombres = fuera.map(n => udcFichaDe(n)?.nombre || `DIGITAL ${n}`).sort();
+            if (yPos > pageHeight - 24) { doc.addPage(); yPos = 20; }
+            doc.setFontSize(7.5);
+            doc.setFont('helvetica', 'italic');
+            doc.setTextColor(...textMuted);
+            doc.text(`Pantallas sin plano disponible aún: ${nombres.join(', ')}.`, marginX, yPos + 4);
+            yPos += 8;
+          }
+        }
+      }
+    }
+
     // === FOOTER ===
     const totalPages = doc.internal.pages.length - 1;
     for (let i = 1; i <= totalPages; i++) {
@@ -691,7 +875,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4 isolate">
-      <div className={`${isDark ? 'bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-950 border-zinc-800/50' : 'bg-white border-gray-200'} border rounded-3xl w-[97vw] max-w-[1800px] max-h-[92vh] overflow-hidden flex flex-col shadow-2xl relative z-50`}>
+      <div className={`${isDark ? 'bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-950 border-zinc-800/50' : 'bg-white border-gray-200'} border rounded-3xl w-[97vw] max-w-[1800px] max-h-[92vh] sm:max-h-[92dvh] max-lg:landscape:h-[100dvh] max-lg:landscape:max-h-[100dvh] max-lg:landscape:rounded-none max-lg:landscape:mx-0 overflow-hidden flex flex-col shadow-2xl relative z-50`}>
         {/* Header - Estilo violeta consistente */}
         <div className="relative px-6 py-5 border-b border-violet-500/20 bg-gradient-to-r from-violet-600/20 via-purple-600/15 to-fuchsia-600/10">
           <div className="flex items-center justify-between">
@@ -711,7 +895,9 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            {/* Jos 2026-11-10: en movil (<1024px) los 5 botones no caben en
+                una sola fila — permitimos wrap. Desktop queda igual. */}
+            <div className="flex items-center gap-2 max-lg:flex-wrap max-lg:justify-end">
               {onEdit && (
                 <button
                   onClick={() => { onClose(); onEdit(); }}
@@ -772,7 +958,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
             <div className="space-y-5">
               {/* Stats Row - Centrado y limpio */}
               <div className={`rounded-2xl p-5 border ${isDark ? 'bg-gradient-to-r from-violet-600/10 via-purple-600/10 to-fuchsia-600/10 border-violet-500/20' : 'bg-violet-50 border-violet-200'}`}>
-                <div className="grid grid-cols-4 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
                   <div className="text-center">
                     <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{totalCaras}</p>
                     <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-1`}>Total {allPuentePeatonal ? 'Puentes' : 'Caras'}</p>
@@ -934,9 +1120,9 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                         {/* Catorcena Header (Parent Level) */}
                         <button
                           onClick={() => toggleGroup(catorcenaGroup.catorcena)}
-                          className={`w-full px-5 py-3 flex items-center justify-between transition-colors ${isDark ? 'hover:bg-violet-600/10 bg-violet-600/5' : 'hover:bg-violet-50 bg-white'}`}
+                          className={`w-full px-5 py-3 flex flex-wrap items-center justify-between gap-y-2 transition-colors ${isDark ? 'hover:bg-violet-600/10 bg-violet-600/5' : 'hover:bg-violet-50 bg-white'}`}
                         >
-                          <div className="flex items-center gap-3">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                             {expandedGroups.has(catorcenaGroup.catorcena) ? (
                               <ChevronDown className="h-4 w-4 text-violet-400" />
                             ) : (
@@ -954,7 +1140,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                               ({catorcenaGroup.articulos.length} artículo{catorcenaGroup.articulos.length > 1 ? 's' : ''})
                             </span>
                           </div>
-                          <div className="flex items-center gap-4">
+                          <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
                             <div className="flex items-center gap-1.5">
                               <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-xs`}>Renta:</span>
                               <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-semibold`}>{catorcenaGroup.totalCaras}</span>
@@ -1007,8 +1193,8 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
 
                                   {expandedGroups.has(articuloKey) && (
                                     <div className="px-4 pb-3">
-                                      <div className={`overflow-x-auto rounded-xl border ${isDark ? 'border-violet-500/20 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
-                                        <table className="w-full text-sm">
+                                      <div className={`overflow-x-auto scrollbar-purple rounded-xl border ${isDark ? 'border-violet-500/20 bg-zinc-900/50' : 'border-gray-200 bg-white'}`}>
+                                        <table className="w-full min-w-[900px] text-sm">
                                           <thead>
                                             <tr className={isDark ? 'bg-violet-600/20' : 'bg-violet-50'}>
                                               <th className={`px-3 py-2 text-left text-xs font-semibold ${isDark ? 'text-violet-200' : 'text-violet-700'}`}>Plaza</th>
@@ -1077,6 +1263,15 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                                                   });
                                                 }
                                                 if (authDg === 'pendiente') {
+                                                  // Etapa visual del filtro GC previo a DG. Si la solicitud tiene
+                                                  // tarea 'Filtro Autorización DG' abierta, aparece como chip extra
+                                                  // junto al "Pend. DG" para distinguir "esperando GC" de "esperando DG".
+                                                  if (cara.en_filtro_dg) {
+                                                    authBadges.push({
+                                                      label: 'Filtro GC',
+                                                      color: { bg: isDark ? 'bg-cyan-500/20' : 'bg-cyan-50', text: isDark ? 'text-cyan-300' : 'text-cyan-700', border: isDark ? 'border-cyan-500/30' : 'border-cyan-200' }
+                                                    });
+                                                  }
                                                   authBadges.push({
                                                     label: 'Pend. DG',
                                                     color: { bg: isDark ? 'bg-red-500/20' : 'bg-red-50', text: isDark ? 'text-red-300' : 'text-red-700', border: isDark ? 'border-red-500/30' : 'border-red-200' }
@@ -1096,7 +1291,12 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                                                   <td className={`px-3 py-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{cara.formato || '-'}</td>
                                                   <td className={`px-3 py-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{cara.tipo || '-'}</td>
                                                   <td className={`px-3 py-2 ${isDark ? 'text-zinc-400' : 'text-gray-500'} text-xs`}>{cara.inicio_periodo ? formatDate(cara.inicio_periodo) : '-'}</td>
-                                                  <td className={`px-3 py-2 ${isDark ? 'text-zinc-400' : 'text-gray-500'} text-xs`}>{cara.fin_periodo ? formatDate(cara.fin_periodo) : '-'}</td>
+                                                  <td className={`px-3 py-2 ${isDark ? 'text-zinc-400' : 'text-gray-500'} text-xs`}>
+                                                    {cara.fin_periodo ? formatDate(cara.fin_periodo) : '-'}
+                                                    {cara.tipo === 'Digital' && (cara.hora_inicio || cara.hora_fin) && (
+                                                      <span className="block text-[10px] text-purple-400 font-medium" title="Horario diario (digital)">⏱ {horarioLabel(cara.hora_inicio, cara.hora_fin)}</span>
+                                                    )}
+                                                  </td>
                                                   <td className={`px-3 py-2 text-center ${isDark ? 'text-white' : 'text-gray-900'} font-medium`}>{Number(cara.caras) || 0}</td>
                                                   <td className={`px-3 py-2 text-center ${isDark ? 'text-white' : 'text-gray-900'} font-medium`}>{Number(cara.bonificacion) || 0}</td>
                                                   <td className={`px-3 py-2 text-center ${isDark ? 'text-white' : 'text-gray-900'} font-bold`}>{(Number(cara.caras) || 0) + (Number(cara.bonificacion) || 0)}</td>
@@ -1180,19 +1380,17 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                     <Clock className="h-4 w-4" />
                     Historial
                   </h3>
-                  <div className="space-y-3">
-                    {data.historial.slice(0, 5).map((h, idx) => {
+                  <HistorialFiltrado items={data.historial} isDark={isDark} renderItem={(h, idx) => {
                       const detalles = formatHistorialDetalles(h.detalles);
                       return (
                         <div key={idx} className="flex items-center gap-3 text-sm">
-                          <div className="w-2 h-2 rounded-full bg-violet-500" />
-                          <span className={isDark ? 'text-zinc-400' : 'text-gray-500'}>{formatDate(h.fecha_hora)}</span>
-                          <span className="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 text-xs">{h.accion}</span>
+                          <div className="w-2 h-2 rounded-full bg-violet-500 shrink-0" />
+                          <span className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} shrink-0`}>{formatDate(h.fecha_hora)}</span>
+                          <span className="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 text-xs shrink-0">{h.accion}</span>
                           <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} truncate flex-1`} title={detalles}>{detalles}</span>
                         </div>
                       );
-                    })}
-                  </div>
+                    }} />
                 </div>
               )}
             </div>
@@ -1289,10 +1487,10 @@ export function StatusModal({ isOpen, onClose, solicitud, onStatusChange, status
   // Verificar si hay caras pendientes de autorización
   const tienePendientes = autorizacionResumen && (autorizacionResumen.pendientesDg > 0 || autorizacionResumen.pendientesDcm > 0);
 
-  // Ajuste feedback 2026-08-18: contar tambien 'correccion' y 'rechazado'
-  // para bloquear cualquier avance / rechazo mientras haya autorizacion
-  // abierta. El resumen actual no trae correccion — se cuenta directo desde
-  // solicitudDetails.caras (mismo pattern que PropuestasPage).
+  // Ajuste feedback 2026-08-18: contar 'correccion' y 'rechazado' para
+  // bloquear avance. Feedback Jos 2026-09-11: para el CIERRE
+  // (Rechazada/Cancelada) solo bloquea 'pendiente' — rechazado, correccion
+  // y aprobado en cualquier mezcla si permiten cerrar.
   const bloqueoAutorizacion = (() => {
     const cs = solicitudDetails?.caras || [];
     const pendDg = cs.filter(c => (c as any).autorizacion_dg === 'pendiente').length;
@@ -1307,7 +1505,10 @@ export function StatusModal({ isOpen, onClose, solicitud, onStatusChange, status
     return {
       pendDg, pendDcm, corrDg, corrDcm, rechDg, rechDcm,
       totalPend, totalCorr, totalRech,
+      // Avance (Aprobada / Atendida): bloquea cualquier cosa abierta.
       hasAny: totalPend > 0 || totalCorr > 0 || totalRech > 0,
+      // Cierre (Rechazada / Cancelada): solo bloquea 'pendiente'.
+      bloqueaCierre: totalPend > 0,
     };
   })();
 
@@ -1403,13 +1604,17 @@ export function StatusModal({ isOpen, onClose, solicitud, onStatusChange, status
             if (bloqueoAutorizacion.totalPend > 0) partes.push(`${bloqueoAutorizacion.totalPend} pendiente(s)`);
             if (bloqueoAutorizacion.totalCorr > 0) partes.push(`${bloqueoAutorizacion.totalCorr} en corrección`);
             if (bloqueoAutorizacion.totalRech > 0) partes.push(`${bloqueoAutorizacion.totalRech} rechazada(s)`);
+            // Solo mostrar alerta si realmente bloquea algo: 'pendiente' bloquea
+            // todos los cambios; correccion/rechazado bloquean solo el avance.
             return (
               <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
                 <AlertTriangle className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
                 <div>
                   <p className={`text-sm ${isDark ? 'text-amber-200' : 'text-amber-800'} font-medium`}>Autorización abierta</p>
                   <p className={`text-xs ${isDark ? 'text-amber-300/70' : 'text-amber-700'} mt-1`}>
-                    Esta solicitud tiene circuitos que impiden avanzar: {partes.join(', ')}. No se puede cambiar a "Aprobada", "Rechazada" ni "Cancelada" hasta que dirección resuelva.
+                    {bloqueoAutorizacion.bloqueaCierre
+                      ? `Esta solicitud tiene circuitos que impiden avanzar y cerrar: ${partes.join(', ')}. Espera a que dirección resuelva los pendientes.`
+                      : `Esta solicitud tiene circuitos abiertos: ${partes.join(', ')}. No se puede cambiar a "Aprobada" hasta que todos estén aprobados, pero sí se puede rechazar o cancelar.`}
                   </p>
                 </div>
               </div>
@@ -1432,10 +1637,11 @@ export function StatusModal({ isOpen, onClose, solicitud, onStatusChange, status
                   className={`flex-1 px-4 py-2 rounded-lg ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-100 border-gray-200 text-gray-900'} border text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`}
                 >
                   {statusOptions.map(s => {
-                    // Ajuste feedback 2026-08-18: bloquear tambien 'Rechazada'
-                    // cuando hay autorizacion abierta (pendiente/correccion/
-                    // rechazado). El back ya rechaza estos casos.
-                    const bloqueaEsteStatus = bloqueoAutorizacion.hasAny && (s === 'Aprobada' || s === 'Rechazada');
+                    // Feedback Jos 2026-09-11: 'Aprobada' se bloquea con cualquier
+                    // cosa abierta (pend/corr/rech). 'Rechazada' solo con pendiente.
+                    const bloqueaEsteStatus =
+                      (s === 'Aprobada' && bloqueoAutorizacion.hasAny) ||
+                      (s === 'Rechazada' && bloqueoAutorizacion.bloqueaCierre);
                     return (
                       <option
                         key={s}
@@ -1449,7 +1655,12 @@ export function StatusModal({ isOpen, onClose, solicitud, onStatusChange, status
                 </select>
                 <button
                   onClick={handleChangeStatus}
-                  disabled={selectedStatus === solicitud.status || updateStatusMutation.isPending || (bloqueoAutorizacion.hasAny && (selectedStatus === 'Aprobada' || selectedStatus === 'Rechazada'))}
+                  disabled={
+                    selectedStatus === solicitud.status ||
+                    updateStatusMutation.isPending ||
+                    (selectedStatus === 'Aprobada' && bloqueoAutorizacion.hasAny) ||
+                    (selectedStatus === 'Rechazada' && bloqueoAutorizacion.bloqueaCierre)
+                  }
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed min-w-[120px] justify-center"
                 >
                   {updateStatusMutation.isPending ? (
