@@ -2,6 +2,8 @@ import { useCallback, useMemo } from 'react';
 import { Building2, Calendar, Clock, DollarSign, History, User } from 'lucide-react';
 import { Propuesta } from '../../types';
 import { formatCurrency, formatDate, formatDateCompact } from '../../lib/utils';
+import { dateRangeShort, dayMonthShort } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { TableroBoard, TableroCard, type TableroColumna } from '../../components/tablero/TableroBoard';
 import { buildMapaColumnas, fechaUltimoCambio, normalizaEstatus } from '../../lib/tableroVistas';
 import { getStatusColor, esPropuestaIncompleta, IncompletaBadge, etiquetaEstatusPropuesta } from './propuestaEstatus';
@@ -73,6 +75,19 @@ const MAPA_COLUMNAS = buildMapaColumnas(PROPUESTAS_COLUMNAS);
 /** Columna a la que pertenece la propuesta, o null si su estatus no tiene columna. */
 export function columnaDePropuesta(status: string | null | undefined): string | null {
   return MAPA_COLUMNAS.get(normalizaEstatus(status)) ?? null;
+}
+
+// Periodo por fechas para la tarjeta: "1 Abr – 30 Abr 2026" (o "15 Abr 2026"
+// si es un solo dia). Se usa con fechas libres (demo sin catorcenas,
+// PERIODOS_LIBRES) y con periodos mensuales.
+function periodoFechasLabel(ini?: string | null, fin?: string | null): string | null {
+  if (!ini) return null;
+  const hasta = fin || ini;
+  const mismoDia = String(ini).slice(0, 10) === String(hasta).slice(0, 10);
+  const rango = mismoDia ? dayMonthShort(ini) : dateRangeShort(ini, hasta);
+  if (!rango) return null;
+  const anio = String(hasta).slice(0, 4);
+  return /^\d{4}$/.test(anio) ? `${rango} ${anio}` : rango;
 }
 
 interface PropuestasTableroViewProps {
@@ -159,13 +174,15 @@ function TarjetaPropuesta({
   const titulo = propuesta.marca_nombre || propuesta.nombre_comercial || propuesta.articulo || 'Sin marca';
   const campana = propuesta.campana_nombre || propuesta.nombre_campania || propuesta.descripcion;
 
-  const catorcena = propuesta.catorcena_inicio
-    ? `Cat ${String(propuesta.catorcena_inicio).padStart(2, '0')}${
-        propuesta.catorcena_fin && propuesta.catorcena_fin !== propuesta.catorcena_inicio
-          ? `-${String(propuesta.catorcena_fin).padStart(2, '0')}`
-          : ''
-      }${propuesta.anio_inicio ? ` / ${propuesta.anio_inicio}` : ''}`
-    : null;
+  const periodo = (PERIODOS_LIBRES || propuesta.tipo_periodo === 'mensual')
+    ? periodoFechasLabel(propuesta.fecha_inicio, propuesta.fecha_fin)
+    : propuesta.catorcena_inicio
+      ? `Cat ${String(propuesta.catorcena_inicio).padStart(2, '0')}${
+          propuesta.catorcena_fin && propuesta.catorcena_fin !== propuesta.catorcena_inicio
+            ? `-${String(propuesta.catorcena_fin).padStart(2, '0')}`
+            : ''
+        }${propuesta.anio_inicio ? ` / ${propuesta.anio_inicio}` : ''}`
+      : null;
 
   return (
     <TableroCard
@@ -206,10 +223,10 @@ function TarjetaPropuesta({
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 mt-2">
-        {catorcena && (
+        {periodo && (
           <span className={`inline-flex items-center gap-1 text-[10px] ${sub}`}>
             <Calendar className="h-3 w-3" />
-            {catorcena}
+            {periodo}
           </span>
         )}
         {propuesta.inversion != null && Number(propuesta.inversion) > 0 && (

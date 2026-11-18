@@ -25,6 +25,10 @@ import {
 // que el script se inyecte una sola vez. Ver src/config/googleMaps.ts.
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
 import { MARCA } from '../../config/marca';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
+
+// Etiqueta de la columna/campo de periodo (sin catorcenas con PERIODOS_LIBRES).
+const ETIQUETA_PERIODO = PERIODOS_LIBRES ? 'Periodo' : 'Catorcena';
 // Capas de POI / poligonos con las que Trafico armo cada circuito. Al cliente
 // solo le llegan las marcadas visibles (vienen dentro del payload publico).
 import { CapaMapa, boundsDeCapas, crearFiltroCapas } from './capasMapa';
@@ -249,7 +253,9 @@ export function ClientePropuestaMapPage() {
     enabled: propuestaId > 0,
   });
 
-  const tipoPeriodo = data?.cotizacion?.tipo_periodo || 'catorcena';
+  // PERIODOS_LIBRES: todo es 'mensual' (claves YYYY-MM, etiquetas por mes). Debe
+  // coincidir con CompartirPropuestaPage para reconstruir el alcance de ?sel/?periodos.
+  const tipoPeriodo = PERIODOS_LIBRES ? 'mensual' : (data?.cotizacion?.tipo_periodo || 'catorcena');
 
   // Filas base: alcance por ?ids= y normalizacion (NO se deduplica para mantener
   // separadas las reservas por catorcena). _rk = clave estable por fila.
@@ -442,7 +448,7 @@ export function ClientePropuestaMapPage() {
     // Columnas acordadas con el cliente: fuera Circuito, Tipo Cara, Articulo y
     // Tarifa (nomenclatura interna y dato comercial); "Codigo" se llama
     // "Clave única", que es como le dice el cliente.
-    const headers = ['Catorcena', 'Clave única', 'Plaza', 'Ubicacion', 'Formato', 'Tipo Inventario', 'Caras', 'Latitud', 'Longitud', ...(mostrarOrigen ? ['Origen'] : [])];
+    const headers = [ETIQUETA_PERIODO, 'Clave única', 'Plaza', 'Ubicacion', 'Formato', 'Tipo Inventario', 'Caras', 'Latitud', 'Longitud', ...(mostrarOrigen ? ['Origen'] : [])];
     const filas = downloadRows.map(i => ({
       noVigente: esNoVigente(i),
       // Tinte azul/verde por origen (solo campañas); el gris de no vigente gana.
@@ -493,7 +499,7 @@ export function ClientePropuestaMapPage() {
       <Placemark>
         <name>${kmlEscape(i.codigo_unico)}${mostrarOrigen && origenDe(i) === 'campana' ? ' [Nuevo en campaña]' : ''}</name>
         <styleUrl>#${esNoVigente(i) ? 'no_vigente' : mostrarOrigen && origenDe(i) ? `origen_${origenDe(i)}` : styleId}</styleUrl>
-        <description><![CDATA[Catorcena: ${kmlEscape(label)}<br/>Plaza: ${i.plaza || 'N/A'}<br/>Circuito: ${i.articulo || 'N/A'}<br/>Tipo: ${i.tipo_de_cara || 'N/A'}<br/>Formato: ${i.mueble || 'N/A'}<br/>Ubicacion: ${i.ubicacion || 'N/A'}<br/>Caras: ${i.caras_totales}<br/>Tarifa: ${formatCurrency(tarifaBruta(i))}]]></description>
+        <description><![CDATA[${ETIQUETA_PERIODO}: ${kmlEscape(label)}<br/>Plaza: ${i.plaza || 'N/A'}<br/>Circuito: ${i.articulo || 'N/A'}<br/>Tipo: ${i.tipo_de_cara || 'N/A'}<br/>Formato: ${i.mueble || 'N/A'}<br/>Ubicacion: ${i.ubicacion || 'N/A'}<br/>Caras: ${i.caras_totales}<br/>Tarifa: ${formatCurrency(tarifaBruta(i))}]]></description>
         <Point><coordinates>${i.longitud},${i.latitud},0</coordinates></Point>
       </Placemark>`).join('');
       return `<Folder><name>${kmlEscape(label)} (${byCat.get(k)!.length})</name>${placemarks}</Folder>`;
@@ -650,7 +656,7 @@ export function ClientePropuestaMapPage() {
             <button
               onClick={handleDownloadKML}
               className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-marca-primario hover:bg-marca-oscuro text-white rounded-lg text-xs sm:text-sm font-medium shadow-sm transition-colors"
-              title="Descargar KML (agrupado por catorcena) de lo seleccionado o lo visible"
+              title={`Descargar KML (agrupado por ${ETIQUETA_PERIODO.toLowerCase()}) de lo seleccionado o lo visible`}
             >
               <Download className="h-4 w-4" /> <span className="hidden sm:inline">KML</span>
             </button>
@@ -924,7 +930,7 @@ export function ClientePropuestaMapPage() {
                       Circuito (nomenclatura interna), Tipo de cara y Tarifa
                       (dato comercial). El resto sí le sirve para ubicar la pieza. */}
                   <div className="text-xs space-y-1">
-                    <p><strong>Catorcena:</strong> {selectedMarker._catLabel}</p>
+                    <p><strong>{ETIQUETA_PERIODO}:</strong> {selectedMarker._catLabel}</p>
                     <p><strong>Plaza:</strong> {selectedMarker.plaza || 'N/A'}</p>
                     <p><strong>Formato:</strong> {selectedMarker.mueble || 'N/A'}</p>
                     <p><strong>Ubicacion:</strong> {selectedMarker.ubicacion || 'N/A'}</p>

@@ -14,6 +14,7 @@ import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora
 import { Solicitud, Catorcena } from '../../types';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { horarioLabel } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { formatHistorialDetalles } from '../../lib/historial';
 import { HistorialFiltrado } from '../historial/HistorialFiltrado';
 import { UserAvatar } from '../../components/ui/user-avatar';
@@ -203,6 +204,9 @@ function groupCarasByCatorcenaAndArticulo(caras: SolicitudCara[], catorcenas: Ca
     });
   });
 
+  // PERIODOS_LIBRES: las etiquetas son meses ("Abril 2026"), que por texto no
+  // quedan en orden cronológico → se ordena por la fecha de inicio del grupo.
+  if (PERIODOS_LIBRES) return result.sort((a, b) => String(a.fechaInicio || '').localeCompare(String(b.fechaInicio || '')));
   return result.sort((a, b) => a.catorcena.localeCompare(b.catorcena));
 }
 
@@ -247,11 +251,12 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
   const { data: catorcenasData } = useQuery({
     queryKey: ['catorcenas-all'],
     queryFn: () => solicitudesService.getCatorcenas(),
-    enabled: isOpen,
+    enabled: isOpen && !PERIODOS_LIBRES,
   });
 
   const catorcenas = catorcenasData?.data || [];
-  const tipoPeriodo = (data?.cotizacion as any)?.tipo_periodo || 'catorcena';
+  // PERIODOS_LIBRES: todo es 'mensual' (fechas libres) → meses/fechas, nunca "Cat N".
+  const tipoPeriodo = PERIODOS_LIBRES ? 'mensual' : ((data?.cotizacion as any)?.tipo_periodo || 'catorcena');
 
   // Para mensual: las fechas reales de las caras (min inicio_periodo / max fin_periodo).
   // Se usan SOLO en el detalle de "Periodo Inicio" / "Periodo Fin" (el rango exacto del

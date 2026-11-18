@@ -15,8 +15,19 @@ import { ActividadComercialKpis } from './ActividadComercialKpis';
 import {
   COLUMNAS_AC, COLUMNA_LABEL, COLUMNA_DESCRIPCION, COLUMNA_COLOR, QK_ACTIVIDAD_COMERCIAL, type ColumnaAC,
   columnaDeEstatus, esCancelada, parseContenidoAC, tituloCorto, estaVencida, textoBusqueda, clienteDe, coincideId,
-  type FiltroRapidoAC, FILTRO_RAPIDO_LABEL, COLUMNAS_POR_FILTRO,
+  type FiltroRapidoAC, FILTRO_RAPIDO_LABEL, COLUMNAS_POR_FILTRO, type ContenidoAC,
 } from './actividadComercial';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
+
+// Con PERIODOS_LIBRES el "Periodo" de la actividad son MESES (1-12) guardados en
+// `catorcenas`/`catorcena` del contenido (ver NuevaActividadComercialModal).
+// Devuelve p. ej. "Nov 2026" o "Ene, Feb 2026"; null si no hay nada que mostrar.
+const MESES_CORTOS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+function periodoMesesAC(c: ContenidoAC & { catorcenas?: unknown }): string | null {
+  const lista = Array.isArray(c.catorcenas) && c.catorcenas.length > 0 ? c.catorcenas : (c.catorcena != null ? [c.catorcena] : []);
+  const meses = lista.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12).map(n => MESES_CORTOS[n - 1]);
+  return [meses.join(', '), c.anio].filter(Boolean).join(' ') || null;
+}
 
 // Tablero CRM de Actividad Comercial: columnas por estatus de la tarea,
 // drag & drop entre columnas (HTML5 nativo, sin dependencias) y botones
@@ -447,7 +458,10 @@ function TarjetaActividad({
   if (cliente) chips.push({ icon: Building2, text: c.marca ? `${cliente} · ${c.marca}` : cliente });
   else if (c.marca) chips.push({ icon: Building2, text: c.marca });
   if (c.subtipo) chips.push({ icon: Tag, text: c.ref_id != null ? `${c.subtipo} #${c.ref_id}` : c.subtipo });
-  if (c.catorcena || c.anio) chips.push({ icon: Layers, text: [c.catorcena ? `Cat ${c.catorcena}` : null, c.anio].filter(Boolean).join(' / ') });
+  if (PERIODOS_LIBRES) {
+    const periodo = periodoMesesAC(c);
+    if (periodo) chips.push({ icon: Layers, text: periodo });
+  } else if (c.catorcena || c.anio) chips.push({ icon: Layers, text: [c.catorcena ? `Cat ${c.catorcena}` : null, c.anio].filter(Boolean).join(' / ') });
   if (tarea.cuic) chips.push({ icon: Hash, text: `ID Cliente ${tarea.cuic}` });
 
   const sub = isDark ? 'text-zinc-500' : 'text-gray-400';

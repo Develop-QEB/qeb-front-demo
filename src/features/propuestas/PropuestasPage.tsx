@@ -33,7 +33,8 @@ import { useSocketEquipos, useSocketPropuestas } from '../../hooks/useSocket';
 import { HistorialFilterPopover, type HistorialFilterValues } from '../../components/HistorialFilterPopover';
 import { ConfirmModal } from '../../components/ui/confirm-modal';
 import { PropuestaAprobadaInfoModal } from '../../components/PropuestaAprobadaInfoModal';
-import { monthLabelShort } from '../../lib/periodos';
+import { monthLabelShort, dayMonthYear, dateRangeShort } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import {
   getStatusColor, STATUS_OPTIONS, COMPLETITUD_STATUS, esPropuestaIncompleta, IncompletaBadge, etiquetaEstatusPropuesta,
   esPropuestaBloqueada, puedeAbrirPropuesta,
@@ -66,6 +67,18 @@ const VISTAS_PROPUESTAS_KEYS = VISTAS_PROPUESTAS.map(v => v.key);
 
 function getMonthShort(dateStr: string): string {
   return monthLabelShort(dateStr) || '-';
+}
+
+// Inicio/Fin de la fila y del CSV. Demo sin catorcenas (PERIODOS_LIBRES):
+// fecha exacta ("15 Abr 2026"), igual que el detalle; si no, el mes.
+function getPeriodoShort(dateStr: string): string {
+  if (PERIODOS_LIBRES) return dayMonthYear(dateStr) || '-';
+  return getMonthShort(dateStr);
+}
+
+// Fecha 'YYYY-MM-DD' para las exportaciones (corta el ISO: sin desfase de zona).
+function fechaISO(v: unknown): string {
+  return v ? String(v).slice(0, 10) : '';
 }
 
 
@@ -1349,10 +1362,11 @@ const PropuestaRow = React.memo(function PropuestaRow({
         <span className={`font-medium ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>{formatCurrency(item.inversion)}</span>
       </td>
       <td className="px-4 py-3">
-        {item.tipo_periodo === 'mensual' && ((item as any).min_inicio_periodo || item.fecha_inicio) ? (
+        {/* PERIODOS_LIBRES: todo es por fechas (nunca "Cat N / AAAA"). */}
+        {(PERIODOS_LIBRES || item.tipo_periodo === 'mensual') && ((item as any).min_inicio_periodo || item.fecha_inicio) ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
             <Calendar className="h-3 w-3" />
-            {getMonthShort((item as any).min_inicio_periodo || item.fecha_inicio)}
+            {getPeriodoShort((item as any).min_inicio_periodo || item.fecha_inicio)}
           </span>
         ) : item.catorcena_inicio ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-cyan-50 text-cyan-700 border-cyan-200'}`}>
@@ -1364,10 +1378,10 @@ const PropuestaRow = React.memo(function PropuestaRow({
         )}
       </td>
       <td className="px-4 py-3">
-        {item.tipo_periodo === 'mensual' && (item.max_inicio_periodo || item.fecha_fin) ? (
+        {(PERIODOS_LIBRES || item.tipo_periodo === 'mensual') && (item.max_inicio_periodo || item.fecha_fin) ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
             <Calendar className="h-3 w-3" />
-            {getMonthShort((item as any).max_inicio_periodo || item.fecha_fin)}
+            {getPeriodoShort((item as any).max_inicio_periodo || item.fecha_fin)}
           </span>
         ) : item.catorcena_fin ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs border ${isDark ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
@@ -1604,6 +1618,8 @@ export function PropuestasPage() {
     queryFn: () => solicitudesService.getCatorcenas(),
     staleTime: 1000 * 60 * 30, // 30 min
     gcTime: 1000 * 60 * 60,    // 1 h
+    // Demo sin catorcenas: el filtro de periodo por catorcena está oculto.
+    enabled: !PERIODOS_LIBRES,
   });
 
   // Combine debounced tags + debounced input into all active search terms
@@ -1841,11 +1857,13 @@ export function PropuestasPage() {
   }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, groupBy, advancedFilters, searchTags]);
   const aplicarFiltrosGuardados = React.useCallback((d: FiltrosDatos) => {
     setStatusSel(leerStrings(d.statusSel));
-    setTipoPeriodo(leerString(d.tipoPeriodo));
-    setYearInicio(leerNumeroOpcional(d.yearInicio));
-    setYearFin(leerNumeroOpcional(d.yearFin));
-    setCatorcenaInicio(leerNumeroOpcional(d.catorcenaInicio));
-    setCatorcenaFin(leerNumeroOpcional(d.catorcenaFin));
+    // PERIODOS_LIBRES: los filtros de periodo por catorcena y tipo de periodo
+    // están ocultos; una vista guardada no los reactiva (no viajan al back).
+    setTipoPeriodo(PERIODOS_LIBRES ? '' : leerString(d.tipoPeriodo));
+    setYearInicio(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.yearInicio));
+    setYearFin(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.yearFin));
+    setCatorcenaInicio(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.catorcenaInicio));
+    setCatorcenaFin(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.catorcenaFin));
     setHistorialFilter(leerObjetoStrings(d.historialFilter) as HistorialFilterValues);
     setCambiosSeleccion(Array.isArray(d.cambiosSeleccion) ? leerStrings(d.cambiosSeleccion) : null);
     setGroupBy(leerString(d.groupBy));
@@ -1892,7 +1910,7 @@ export function PropuestasPage() {
 
   // Get current catorcena
   const currentCatorcena = useMemo((): Catorcena | null => {
-    if (!catorcenasData?.data) return null;
+    if (PERIODOS_LIBRES || !catorcenasData?.data) return null;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -1973,7 +1991,7 @@ export function PropuestasPage() {
         'Descripción (Opcional)', 'Inicio o Periodo', 'Fin o Segmento', 'Arte',
         'Código de arte (Opcional)', 'Arte Url (Opcional)', 'Origen del arte (Opcional)',
         'Unidad', 'Cara', 'Ciudad', 'Tipo de Distribución', 'Reproducciones', 'Notas',
-        'Estatus', 'Catorcena',
+        'Estatus', PERIODOS_LIBRES ? 'Periodo' : 'Catorcena',
       ];
       const rows: string[][] = [];
       const invExported = new Set<number>();
@@ -1987,35 +2005,44 @@ export function PropuestasPage() {
         if (showInv) invExported.add(cara.propuesta_id);
         const invStr = showInv && info.inversion ? `$${Number(info.inversion).toLocaleString('es-MX')}` : '0';
         const periodo = `Catorcena #${String(cara.numero_catorcena).padStart(2, '0')}`;
+        // Columnas de periodo: [Inicio o Periodo, Fin o Segmento, Catorcena].
+        // PERIODOS_LIBRES (sin catorcenas): fechas YYYY-MM-DD del circuito (o
+        // de la campaña si no hay inventario) y el rango de fechas al final.
+        const periodoCols = (ini: unknown, fin: unknown): [string, string, string] => (PERIODOS_LIBRES
+          ? [fechaISO(ini), fechaISO(fin), dateRangeShort(ini, fin)]
+          : ['Catorcenas ' + (cara.anio_catorcena || ''), periodo,
+            cara.numero_catorcena ? `Cat ${String(cara.numero_catorcena).padStart(2, '0')} / ${cara.anio_catorcena || ''}` : '']);
 
         if (items.length > 0) {
           let firstRow = true;
           for (const inv of items) {
             const operacion = inv.cortesia ? 'CORTESIA' : (inv.estatus_reserva === 'Bonificado' || inv.estatus_reserva === 'Vendido bonificado') ? 'BONIFICACION' : 'RENTA';
             const precio = inv.tarifa_publica_sc || inv.tarifa_publica || 0;
+            const [pIni, pFin, pLabel] = periodoCols(inv.inicio_periodo || info.fecha_inicio, inv.fin_periodo || info.fecha_fin);
             rows.push([
               info.campana_nombre || info.descripcion || '', info.anunciante || '',
               firstRow ? invStr : '0', operacion, '0',
               precio ? `$${Number(precio).toLocaleString('es-MX')}` : '0',
               String(info.propuesta_id), String(info.cuic || ''),
               inv.articulo || '', info.vendedor || '', info.descripcion || '',
-              'Catorcenas ' + (cara.anio_catorcena || ''), periodo,
+              pIni, pFin,
               '', '', '', '',
               inv.codigo_unico || '', inv.tipo_de_cara || '', inv.plaza || inv.estado || '',
               inv.tradicional_digital || inv.tipo_medio || '', '0', '',
-              info.status || '', cara.numero_catorcena ? `Cat ${String(cara.numero_catorcena).padStart(2, '0')} / ${cara.anio_catorcena || ''}` : '',
+              info.status || '', pLabel,
             ]);
             firstRow = false;
           }
         } else {
+          const [pIni, pFin, pLabel] = periodoCols(info.fecha_inicio, info.fecha_fin);
           rows.push([
             info.campana_nombre || info.descripcion || '', info.anunciante || '',
             invStr, '', '0', '0',
             String(info.propuesta_id), String(info.cuic || ''),
             cara.articulo || '', info.vendedor || '', info.descripcion || '',
-            'Catorcenas ' + (cara.anio_catorcena || ''), periodo,
+            pIni, pFin,
             '', '', '', '', '', '', cara.ciudad || '', '', '0', '',
-            info.status || '', cara.numero_catorcena ? `Cat ${String(cara.numero_catorcena).padStart(2, '0')} / ${cara.anio_catorcena || ''}` : '',
+            info.status || '', pLabel,
           ]);
         }
       }
@@ -2093,8 +2120,9 @@ export function PropuestasPage() {
           String(info.propuesta_id),
           inv.aps_especifico ? String(inv.aps_especifico) : '',
           String(info.cuic || ''),
-          fmtPeriodo(info.catorcena_inicio_num, info.catorcena_inicio_anio),
-          fmtPeriodo(info.catorcena_fin_num, info.catorcena_fin_anio),
+          // PERIODOS_LIBRES (sin catorcenas): fechas YYYY-MM-DD del circuito.
+          PERIODOS_LIBRES ? fechaISO(inv.inicio_periodo || info.fecha_inicio) : fmtPeriodo(info.catorcena_inicio_num, info.catorcena_inicio_anio),
+          PERIODOS_LIBRES ? fechaISO(inv.fin_periodo || info.fecha_fin) : fmtPeriodo(info.catorcena_fin_num, info.catorcena_fin_anio),
           info.anunciante || '',
           info.campana_nombre || info.nombre_campania || info.descripcion || '',
           inv.articulo || '',
@@ -2133,11 +2161,13 @@ export function PropuestasPage() {
 
     const headers = ['ID', 'Fecha Creación', 'Marca', 'Creador', 'Campaña', 'Asignados', 'Inversión', 'Inicio', 'Fin', 'Estatus'];
     const rows = dataToExport.map((p: any) => {
-      const inicio = p.tipo_periodo === 'mensual' && (p.min_inicio_periodo || p.fecha_inicio)
-        ? getMonthShort(p.min_inicio_periodo || p.fecha_inicio)
+      // Mismo criterio que la tabla (PERIODOS_LIBRES: fecha exacta, sin catorcena).
+      const porFechas = PERIODOS_LIBRES || p.tipo_periodo === 'mensual';
+      const inicio = porFechas && (p.min_inicio_periodo || p.fecha_inicio)
+        ? getPeriodoShort(p.min_inicio_periodo || p.fecha_inicio)
         : p.catorcena_inicio ? `Cat ${p.catorcena_inicio} / ${p.anio_inicio}` : '-';
-      const fin = p.tipo_periodo === 'mensual' && (p.max_inicio_periodo || p.fecha_fin)
-        ? getMonthShort(p.max_inicio_periodo || p.fecha_fin)
+      const fin = porFechas && (p.max_inicio_periodo || p.fecha_fin)
+        ? getPeriodoShort(p.max_inicio_periodo || p.fecha_fin)
         : p.catorcena_fin ? `Cat ${p.catorcena_fin} / ${p.anio_fin}` : '-';
       return [
         p.id,
@@ -2222,7 +2252,7 @@ export function PropuestasPage() {
             </div>
             <div className="mt-4 flex items-center gap-2">
               <span className={`text-xs px-2 py-1 rounded-full ${isDark ? 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50' : 'bg-gray-100 text-gray-700 border-gray-200'} border`}>
-                {(statusSel.length > 0 || allSearchTerms.length > 0 || advancedFilters.length > 0 || hasPeriodFilter || tipoPeriodo) ? 'Filtrado' : 'Todas las catorcenas'}
+                {(statusSel.length > 0 || allSearchTerms.length > 0 || advancedFilters.length > 0 || hasPeriodFilter || tipoPeriodo) ? 'Filtrado' : (PERIODOS_LIBRES ? 'Todas' : 'Todas las catorcenas')}
               </span>
             </div>
           </div>
@@ -2599,52 +2629,59 @@ export function PropuestasPage() {
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
-                {/* Tipo Periodo Filter */}
-                <FilterChip
-                  label="Tipo Periodo"
-                  options={['catorcena', 'mensual']}
-                  value={tipoPeriodo}
-                  onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
-                  onClear={() => { setTipoPeriodo(''); setPage(1); }}
-                  isDark={isDark}
-                />
-
-                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
-
-                {/* Current Catorcena Indicator */}
-                {currentCatorcena && (
+                {/* Demo sin catorcenas (PERIODOS_LIBRES): se ocultan el chip
+                    Tipo Periodo, el de catorcena actual y el filtro de periodo
+                    por año/catorcena (su popover exige catorcenas). */}
+                {!PERIODOS_LIBRES && (
                   <>
-                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                      <Clock className="h-3 w-3" />
-                      <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
-                    </div>
+                    {/* Tipo Periodo Filter */}
+                    <FilterChip
+                      label="Tipo Periodo"
+                      options={['catorcena', 'mensual']}
+                      value={tipoPeriodo}
+                      onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
+                      onClear={() => { setTipoPeriodo(''); setPage(1); }}
+                      isDark={isDark}
+                    />
+
                     <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+
+                    {/* Current Catorcena Indicator */}
+                    {currentCatorcena && (
+                      <>
+                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                          <Clock className="h-3 w-3" />
+                          <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
+                        </div>
+                        <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+                      </>
+                    )}
+
+                    {/* Period Filter */}
+                    <PeriodFilterPopover
+                      catorcenasData={catorcenasData}
+                      yearInicio={yearInicio}
+                      yearFin={yearFin}
+                      catorcenaInicio={catorcenaInicio}
+                      catorcenaFin={catorcenaFin}
+                      isDark={isDark}
+                      onApply={(yi, yf, ci, cf) => {
+                        setYearInicio(yi);
+                        setYearFin(yf);
+                        setCatorcenaInicio(ci);
+                        setCatorcenaFin(cf);
+                        setPage(1);
+                      }}
+                      onClear={() => {
+                        setYearInicio(undefined);
+                        setYearFin(undefined);
+                        setCatorcenaInicio(undefined);
+                        setCatorcenaFin(undefined);
+                        setPage(1);
+                      }}
+                    />
                   </>
                 )}
-
-                {/* Period Filter */}
-                <PeriodFilterPopover
-                  catorcenasData={catorcenasData}
-                  yearInicio={yearInicio}
-                  yearFin={yearFin}
-                  catorcenaInicio={catorcenaInicio}
-                  catorcenaFin={catorcenaFin}
-                  isDark={isDark}
-                  onApply={(yi, yf, ci, cf) => {
-                    setYearInicio(yi);
-                    setYearFin(yf);
-                    setCatorcenaInicio(ci);
-                    setCatorcenaFin(cf);
-                    setPage(1);
-                  }}
-                  onClear={() => {
-                    setYearInicio(undefined);
-                    setYearFin(undefined);
-                    setCatorcenaInicio(undefined);
-                    setCatorcenaFin(undefined);
-                    setPage(1);
-                  }}
-                />
 
                 {/* Historial Filter (cambios de estatus / creacion por fecha) */}
                 <HistorialFilterPopover

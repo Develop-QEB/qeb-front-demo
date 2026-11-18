@@ -2,6 +2,8 @@ import { useCallback, useMemo } from 'react';
 import { Building2, Calendar, Clock, DollarSign, History, LayoutList, User } from 'lucide-react';
 import { Solicitud } from '../../types';
 import { formatCurrency, formatDate, formatDateCompact } from '../../lib/utils';
+import { dateRangeShort, dayMonthShort } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { TableroBoard, TableroCard, type TableroColumna } from '../../components/tablero/TableroBoard';
 import { buildMapaColumnas, fechaUltimoCambio, normalizaEstatus } from '../../lib/tableroVistas';
 import { SolicitudAcciones, puedeCambiarStatusSolicitud, type SolicitudAccionesProps } from './SolicitudAcciones';
@@ -64,6 +66,19 @@ export function columnaDeSolicitud(status: string | null | undefined): string | 
  */
 export function esSolicitudIncompleta(s: Pick<Solicitud, 'formatos'>): boolean {
   return !s.formatos || !s.formatos.trim();
+}
+
+// Periodo por fechas para la tarjeta: "1 Abr – 30 Abr 2026" (o "15 Abr 2026"
+// si es un solo dia). Se usa con fechas libres (demo sin catorcenas,
+// PERIODOS_LIBRES) y con periodos mensuales.
+function periodoFechasLabel(ini?: string | null, fin?: string | null): string | null {
+  if (!ini) return null;
+  const hasta = fin || ini;
+  const mismoDia = String(ini).slice(0, 10) === String(hasta).slice(0, 10);
+  const rango = mismoDia ? dayMonthShort(ini) : dateRangeShort(ini, hasta);
+  if (!rango) return null;
+  const anio = String(hasta).slice(0, 4);
+  return /^\d{4}$/.test(anio) ? `${rango} ${anio}` : rango;
 }
 
 interface SolicitudesTableroViewProps {
@@ -138,13 +153,17 @@ function TarjetaSolicitud({
   const titulo = solicitud.razon_social || solicitud.marca_nombre || 'Sin cliente';
   const subtitulo = solicitud.nombre_campania || solicitud.marca_nombre || solicitud.descripcion;
 
-  const catorcena = solicitud.catorcena_inicio
-    ? `Cat ${String(solicitud.catorcena_inicio).padStart(2, '0')}${
-        solicitud.catorcena_fin && solicitud.catorcena_fin !== solicitud.catorcena_inicio
-          ? `-${String(solicitud.catorcena_fin).padStart(2, '0')}`
-          : ''
-      }${solicitud.anio_inicio ? ` / ${solicitud.anio_inicio}` : ''}`
-    : null;
+  // Fechas del periodo (cotizacion): las manda el listado, no estan en el tipo.
+  const fechas = solicitud as Solicitud & { periodo_fecha_inicio?: string | null; periodo_fecha_fin?: string | null };
+  const periodo = (PERIODOS_LIBRES || solicitud.tipo_periodo === 'mensual')
+    ? periodoFechasLabel(fechas.periodo_fecha_inicio, fechas.periodo_fecha_fin)
+    : solicitud.catorcena_inicio
+      ? `Cat ${String(solicitud.catorcena_inicio).padStart(2, '0')}${
+          solicitud.catorcena_fin && solicitud.catorcena_fin !== solicitud.catorcena_inicio
+            ? `-${String(solicitud.catorcena_fin).padStart(2, '0')}`
+            : ''
+        }${solicitud.anio_inicio ? ` / ${solicitud.anio_inicio}` : ''}`
+      : null;
 
   const incompleta = esSolicitudIncompleta(solicitud);
 
@@ -187,10 +206,10 @@ function TarjetaSolicitud({
           <Calendar className="h-3 w-3" />
           {formatDate(solicitud.fecha)}
         </span>
-        {catorcena && (
+        {periodo && (
           <span className={`inline-flex items-center gap-1 text-[10px] ${sub}`}>
             <Calendar className="h-3 w-3" />
-            {catorcena}
+            {periodo}
           </span>
         )}
         {Number(solicitud.presupuesto) > 0 && (

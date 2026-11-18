@@ -41,9 +41,11 @@ import { Skeleton } from '../../components/ui/skeleton';
 import { formatMoneyMXN } from '../../lib/utils';
 import { useThemeStore } from '../../store/themeStore';
 import { Button } from '../../components/ui/button';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import {
   dashboardService,
   resolveCatorcenaActual,
+  filtroInicialDashboard,
   DashboardFilters,
   ChartData,
   PlazaMapData,
@@ -1980,11 +1982,14 @@ function CatorcenaIndicator({
   filteredCatorcena,
   fechaInicio,
   fechaFin,
+  esPeriodoActual = false,
 }: {
   catorcena: any;
   filteredCatorcena: any;
   fechaInicio?: string;
   fechaFin?: string;
+  /** El rango de fechas es el default (mes en curso con PERIODOS_LIBRES). */
+  esPeriodoActual?: boolean;
 }) {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
 
@@ -1994,11 +1999,16 @@ function CatorcenaIndicator({
   if (fechaInicio || fechaFin) {
     const start = fechaInicio ? new Date(fechaInicio).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', timeZone: 'UTC' }) : '...';
     const end = fechaFin ? new Date(fechaFin).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', timeZone: 'UTC' }) : '...';
+    // El periodo default se pinta como "Periodo Actual" (verde), igual que la
+    // catorcena vigente; un rango elegido a mano, como "Periodo Filtrado".
+    const tono = esPeriodoActual
+      ? { caja: isDark ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200', texto: isDark ? 'text-emerald-300' : 'text-emerald-400' }
+      : { caja: 'bg-purple-500/10 border-purple-500/30', texto: isDark ? 'text-purple-400' : 'text-purple-500' };
     return (
-      <div className="flex items-center gap-3 px-4 py-2 rounded-xl border backdrop-blur-sm bg-purple-500/10 border-purple-500/30">
-        <Calendar className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-500'}`} />
+      <div className={`flex items-center gap-3 px-4 py-2 rounded-xl border backdrop-blur-sm ${tono.caja}`}>
+        <Calendar className={`h-4 w-4 ${tono.texto}`} />
         <div>
-          <span className={`text-[10px] font-medium uppercase tracking-wider ${isDark ? 'text-purple-400' : 'text-purple-500'}`}>Periodo Filtrado</span>
+          <span className={`text-[10px] font-medium uppercase tracking-wider ${tono.texto}`}>{esPeriodoActual ? 'Periodo Actual' : 'Periodo Filtrado'}</span>
           <span className={`${isDark ? 'text-white' : 'text-gray-800'} text-sm font-semibold ml-2`}>{start} – {end}</span>
         </div>
       </div>
@@ -2035,10 +2045,12 @@ function CatorcenaIndicator({
 // Main Dashboard Component
 export function DashboardPage() {
   const isDark = useThemeStore((s) => s.theme) === 'dark';
-  const [filters, setFilters] = useState<DashboardFilters>({});
+  // Con PERIODOS_LIBRES arranca ya filtrado al mes en curso (modo "Periodo");
+  // con catorcenas el default se aplica al llegar filter-options (ver abajo).
+  const [filters, setFilters] = useState<DashboardFilters>(() => (PERIODOS_LIBRES ? filtroInicialDashboard() : {}));
   const [activeEstatus, setActiveEstatus] = useState<EstatusType>('total');
   const [showFilters, setShowFilters] = useState(false);
-  const [dateMode, setDateMode] = useState<'catorcenal' | 'periodo'>('catorcenal');
+  const [dateMode, setDateMode] = useState<'catorcenal' | 'periodo'>(PERIODOS_LIBRES ? 'periodo' : 'catorcenal');
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [selectedCatNum, setSelectedCatNum] = useState<number | null>(null);
   const [showPins, setShowPins] = useState(false);
@@ -2066,9 +2078,12 @@ export function DashboardPage() {
   // Las queries de datos esperan a `periodoListo` para no disparar primero la
   // version sin periodo (todo el historico — las queries mas caras del back)
   // y refetchear un instante despues con la catorcena.
-  const [periodoListo, setPeriodoListo] = useState(false);
+  // Con PERIODOS_LIBRES el periodo inicial (mes en curso) ya viene en el
+  // estado: las queries no esperan a filter-options.
+  const [periodoListo, setPeriodoListo] = useState(PERIODOS_LIBRES);
   const defaultCatorcenaAplicada = useRef(false);
   useEffect(() => {
+    if (PERIODOS_LIBRES) return;
     if (defaultCatorcenaAplicada.current) return;
     // Aun cargando opciones: esperar (si fallo, seguimos sin default).
     if (!filterOptions && !filterOptionsError) return;
@@ -2120,18 +2135,24 @@ export function DashboardPage() {
   // Base para los % de los KPIs: el total de inventarios con los filtros activos.
   const kpiTotal = stats?.kpis.total || 0;
 
-  // "Limpiar" regresa al estado por defecto: catorcena actual seleccionada.
+  // "Limpiar" regresa al estado por defecto: catorcena actual seleccionada
+  // (con PERIODOS_LIBRES, el mes en curso por fechas).
   const handleClearFilters = () => {
     const actual = catorcenaDefault;
-    setFilters(actual ? { catorcena_id: actual.id } : {});
+    setFilters(PERIODOS_LIBRES ? filtroInicialDashboard() : (actual ? { catorcena_id: actual.id } : {}));
     setActiveEstatus('total');
     setInventoryPage(1);
     setSelectedYear(actual?.ano ?? null);
     setSelectedCatNum(actual?.numero ?? null);
-    setDateMode('catorcenal');
+    setDateMode(PERIODOS_LIBRES ? 'periodo' : 'catorcenal');
   };
   // La catorcena actual es el default, no cuenta como filtro activo.
   const esCatorcenaDefault = !!filters.catorcena_id && filters.catorcena_id === catorcenaDefault?.id;
+  // Igual con PERIODOS_LIBRES: el mes en curso (default) no cuenta como filtro.
+  const periodoDefault = PERIODOS_LIBRES ? filtroInicialDashboard() : null;
+  const esPeriodoDefault = !!periodoDefault
+    && filters.fecha_inicio === periodoDefault.fecha_inicio
+    && filters.fecha_fin === periodoDefault.fecha_fin;
   const activeFilterCount =
     (filters.estado?.length || 0) +
     (filters.ciudad?.length || 0) +
@@ -2140,8 +2161,8 @@ export function DashboardPage() {
     (filters.tipo?.length || 0) +
     (filters.micromacro ? 1 : 0) +
     (filters.catorcena_id && !esCatorcenaDefault ? 1 : 0) +
-    (filters.fecha_inicio ? 1 : 0) +
-    (filters.fecha_fin ? 1 : 0);
+    (filters.fecha_inicio && !esPeriodoDefault ? 1 : 0) +
+    (filters.fecha_fin && !esPeriodoDefault ? 1 : 0);
   const hasActiveFilters = activeFilterCount > 0;
 
   const handleEstatusChange = (estatus: EstatusType) => { setActiveEstatus(estatus); setInventoryPage(1); };
@@ -2184,6 +2205,7 @@ export function DashboardPage() {
                 filteredCatorcena={filteredCatorcena}
                 fechaInicio={filters.fecha_inicio}
                 fechaFin={filters.fecha_fin}
+                esPeriodoActual={esPeriodoDefault}
               />
               {activeEstatus !== 'total' && (
                 <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${isDark ? 'border-pink-500/30' : 'border-pink-200'}`} style={{ background: isDark ? 'linear-gradient(to right, rgba(236,72,153,0.1), rgba(168,85,247,0.1))' : 'linear-gradient(to right, #fdf2f8, #faf5ff)' }}>
@@ -2298,6 +2320,13 @@ export function DashboardPage() {
                 />
               </div>
               <div className={`px-4 pb-4 pt-0`}>
+                {/* Sin catorcenas (PERIODOS_LIBRES) solo existe el modo "Periodo":
+                    no se ofrece el toggle ni el selector catorcenal. */}
+                {PERIODOS_LIBRES ? (
+                  <div className="mb-3">
+                    <label className={`text-[10px] ${isDark ? 'text-purple-400' : 'text-purple-500'} uppercase tracking-wider font-medium`}>Periodo</label>
+                  </div>
+                ) : (
                 <div className="flex items-center gap-2 mb-3">
                   <label className={`text-[10px] ${isDark ? 'text-purple-400' : 'text-purple-500'} uppercase tracking-wider font-medium`}>Tipo de fecha</label>
                   <div className={`inline-flex rounded-lg border ${isDark ? 'border-purple-500/20' : 'border-purple-200'} overflow-hidden`}>
@@ -2329,7 +2358,8 @@ export function DashboardPage() {
                     </button>
                   </div>
                 </div>
-                {dateMode === 'catorcenal' ? (
+                )}
+                {dateMode === 'catorcenal' && !PERIODOS_LIBRES ? (
                   <div className="grid grid-cols-2 gap-4 max-w-md">
                     <div>
                       <label className={`text-[10px] ${isDark ? 'text-purple-400' : 'text-purple-500'} uppercase tracking-wider mb-1 block font-medium`}>Año</label>

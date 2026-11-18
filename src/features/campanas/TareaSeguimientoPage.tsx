@@ -66,10 +66,14 @@ import { Proveedor, Catorcena } from '../../types';
 import { solicitudesService } from '../../services/solicitudes.service';
 import { usuariosService } from '../../services/usuarios.service';
 import { notificacionesService } from '../../services/notificaciones.service';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
+import { monthLabelLong, monthLabelShort, dayMonthYear } from '../../lib/periodos';
 
 const MESES_LABEL = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const MESES_FULL = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 function getPeriodoLabel(item: { catorcena: number; anio: number; inicio_periodo?: string }, tipoPeriodo?: string): string {
+  // PERIODOS_LIBRES: siempre por mes (no hay catorcenas); sin fecha → 'Sin periodo'.
+  if (PERIODOS_LIBRES) return monthLabelLong(item.inicio_periodo) || 'Sin periodo';
   if (tipoPeriodo === 'mensual' && item.inicio_periodo) {
     const parts = item.inicio_periodo.split('-');
     return parts.length >= 2 ? `${MESES_FULL[parseInt(parts[1]) - 1]} ${parts[0]}` : `Cat ${item.catorcena} / ${item.anio}`;
@@ -77,11 +81,21 @@ function getPeriodoLabel(item: { catorcena: number; anio: number; inicio_periodo
   return `Cat ${item.catorcena} / ${item.anio}`;
 }
 function getPeriodoShort(item: { catorcena: number; anio: number; inicio_periodo?: string }, tipoPeriodo?: string): string {
+  if (PERIODOS_LIBRES) return monthLabelShort(item.inicio_periodo) || '-';
   if (tipoPeriodo === 'mensual' && item.inicio_periodo) {
     const parts = item.inicio_periodo.split('-');
     return parts.length >= 2 ? `${MESES_LABEL[parseInt(parts[1]) - 1]} ${parts[0]}` : `Cat ${item.catorcena} / ${item.anio}`;
   }
   return `${item.catorcena}/${item.anio}`;
+}
+// Orden por "Periodo": con PERIODOS_LIBRES no hay número de catorcena (llega 0),
+// así que se ordena por fecha de inicio (YYYY-MM-DD compara bien como texto).
+function comparePeriodo(
+  a: { catorcena: number; inicio_periodo?: string },
+  b: { catorcena: number; inicio_periodo?: string },
+): number {
+  if (PERIODOS_LIBRES) return (a.inicio_periodo || '').localeCompare(b.inicio_periodo || '');
+  return (a.catorcena || 0) - (b.catorcena || 0);
 }
 import { Badge } from '../../components/ui/badge';
 import { ConfirmModal } from '../../components/ui/confirm-modal';
@@ -1865,7 +1879,7 @@ function UploadArtModal({
         case 'aps':
           return (a.aps || 0) - (b.aps || 0);
         case 'catorcena':
-          return a.catorcena - b.catorcena;
+          return comparePeriodo(a, b);
         default:
           return a.codigo_unico.localeCompare(b.codigo_unico);
       }
@@ -1886,7 +1900,9 @@ function UploadArtModal({
           key = `APS ${item.aps}`;
           break;
         case 'catorcena':
-          key = tipoPeriodo === 'mensual' && item.inicio_periodo
+          key = PERIODOS_LIBRES
+            ? getPeriodoLabel(item, tipoPeriodo)
+            : tipoPeriodo === 'mensual' && item.inicio_periodo
             ? (() => { const parts = item.inicio_periodo.split('-'); return parts.length >= 2 ? `${MESES_FULL[parseInt(parts[1]) - 1]} ${parts[0]}` : `Cat ${item.catorcena}`; })()
             : `Cat ${item.catorcena}`;
           break;
@@ -5191,7 +5207,7 @@ function TaskDetailModal({
   const { data: catorcenasData } = useQuery({
     queryKey: ['catorcenas-detail'],
     queryFn: () => solicitudesService.getCatorcenas(),
-    enabled: isOpen && (task?.tipo === 'Impresión' || task?.tipo === 'Recepción' || task?.tipo === 'Instalación'),
+    enabled: !PERIODOS_LIBRES && isOpen && (task?.tipo === 'Impresión' || task?.tipo === 'Recepción' || task?.tipo === 'Instalación'),
   });
 
   // Query para usuarios (para asignar tarea de recepción) - TODOS los de área Operaciones
@@ -5212,6 +5228,8 @@ function TaskDetailModal({
   // Función para obtener texto de catorcena/periodo desde fecha_fin
   const getCatorcenaFromFechaFin = useMemo(() => {
     if (!task?.fecha_fin) return null;
+    // PERIODOS_LIBRES: mes de la fecha (parseo por texto, sin corrimiento de zona horaria).
+    if (PERIODOS_LIBRES) return monthLabelLong(task.fecha_fin) || null;
     if (tipoPeriodo === 'mensual') {
       const d = new Date(task.fecha_fin);
       return !isNaN(d.getTime()) ? `${MESES_FULL[d.getMonth()]} ${d.getFullYear()}` : null;
@@ -6873,7 +6891,10 @@ function TaskDetailModal({
         doc.rect(startX, posY, availableWidth, rowHeight, 'F');
 
         // Formatear catorcena
-        const catorcenaText = tipoPeriodo === 'mensual' && item.inicio_periodo
+        // PERIODOS_LIBRES: mes por texto (new Date('YYYY-MM-01') en México caía al mes anterior).
+        const catorcenaText = PERIODOS_LIBRES
+          ? (monthLabelShort(item.inicio_periodo) || '-')
+          : tipoPeriodo === 'mensual' && item.inicio_periodo
           ? (() => { const d = new Date(item.inicio_periodo); return !isNaN(d.getTime()) ? `${MESES_LABEL[d.getMonth()]} ${d.getFullYear()}` : '-'; })()
           : item.catorcena && item.anio
             ? `Cat: ${item.catorcena}, ${item.anio}`
@@ -7369,7 +7390,10 @@ function TaskDetailModal({
                       <div>
                         <span className="text-zinc-500">Periodo:</span>
                         <p className="text-white font-medium">
-                          {tipoPeriodo === 'mensual' && campana.fecha_inicio && campana.fecha_fin ? (() => {
+                          {PERIODOS_LIBRES ? (
+                            // Fechas libres: rango exacto de la campaña ("15 Nov 2026 – 20 Dic 2026").
+                            [dayMonthYear(campana.fecha_inicio), dayMonthYear(campana.fecha_fin)].filter(Boolean).join(' – ') || '-'
+                          ) : tipoPeriodo === 'mensual' && campana.fecha_inicio && campana.fecha_fin ? (() => {
                             const pi = String(campana.fecha_inicio).split(/[-T]/);
                             const pf = String(campana.fecha_fin).split(/[-T]/);
                             const mi = parseInt(pi[1]) - 1, yi = pi[0];
@@ -9784,7 +9808,7 @@ function TaskDetailModal({
                             item.plaza,
                             item.mueble,
                             item.ciudad,
-                            item.catorcena,
+                            PERIODOS_LIBRES ? getPeriodoShort(item, tipoPeriodo) : item.catorcena,
                             item.estado_arte,
                           ]);
                           const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${(c || '').toString().replace(/"/g, '""')}"`).join(','))].join('\n');
@@ -9829,7 +9853,7 @@ function TaskDetailModal({
                             <td className="px-3 py-2 text-white">{item.plaza}</td>
                             <td className="px-3 py-2 text-white">{item.mueble}</td>
                             <td className="px-3 py-2 text-white">{item.ciudad}</td>
-                            <td className="px-3 py-2 text-white">{item.catorcena}</td>
+                            <td className="px-3 py-2 text-white">{PERIODOS_LIBRES ? getPeriodoShort(item, tipoPeriodo) : item.catorcena}</td>
                             <td className="px-3 py-2">
                               <span className={`px-1.5 py-0.5 rounded text-[10px] ${getStatusColors(true)[item.estado_arte || ''] || 'bg-zinc-500/20 text-zinc-400'}`}>
                                 {item.estado_arte || '-'}
@@ -10178,7 +10202,7 @@ function TaskDetailModal({
                             item.mueble,
                             item.ciudad,
                             item.nse,
-                            item.catorcena,
+                            PERIODOS_LIBRES ? getPeriodoShort(item, tipoPeriodo) : item.catorcena,
                             item.estado_arte,
                           ]);
                           const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${(c || '').toString().replace(/"/g, '""')}"`).join(','))].join('\n');
@@ -10226,7 +10250,7 @@ function TaskDetailModal({
                             <td className="p-2 text-zinc-300">{item.mueble}</td>
                             <td className="p-2 text-zinc-300">{item.ciudad}</td>
                             <td className="p-2 text-zinc-300">{item.nse}</td>
-                            <td className="p-2 text-zinc-300">{item.catorcena}</td>
+                            <td className="p-2 text-zinc-300">{PERIODOS_LIBRES ? getPeriodoShort(item, tipoPeriodo) : item.catorcena}</td>
                             <td className="p-2">
                               <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                                 item.estado_arte === 'aprobado' ? 'bg-green-900/30 text-green-400' :
@@ -15851,7 +15875,8 @@ export function TareaSeguimientoPage() {
     enabled: campanaId > 0,
   });
 
-  const tipoPeriodo = (campana as any)?.tipo_periodo || 'catorcena';
+  // PERIODOS_LIBRES: todo se maneja como 'mensual' (fechas libres), nunca catorcena.
+  const tipoPeriodo = PERIODOS_LIBRES ? 'mensual' : ((campana as any)?.tipo_periodo || 'catorcena');
 
   // Inventario SIN arte (para tab "Subir Artes")
   const { data: inventarioSinArteAPI = [], isLoading: isLoadingInventarioSinArte } = useQuery({
@@ -17686,8 +17711,9 @@ export function TareaSeguimientoPage() {
           bVal = b.codigo_unico || '';
           break;
         case 'catorcena':
-          aVal = a.catorcena || 0;
-          bVal = b.catorcena || 0;
+          // PERIODOS_LIBRES: sin número de catorcena → por fecha de inicio.
+          aVal = PERIODOS_LIBRES ? (a.inicio_periodo || '') : (a.catorcena || 0);
+          bVal = PERIODOS_LIBRES ? (b.inicio_periodo || '') : (b.catorcena || 0);
           break;
         case 'ciudad':
           aVal = a.ciudad || '';

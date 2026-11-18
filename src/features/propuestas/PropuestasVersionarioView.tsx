@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Calendar, Loader2, Download, Package, ClipboardList, MapPin, DollarSign, User, Briefcase, Hash, BadgeCheck, Clock, CalendarDays, Layers, Gift } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { propuestasService } from '../../services/propuestas.service';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 
 interface AdvancedFilter {
   field: string;
@@ -112,7 +113,7 @@ export interface GroupConfig {
   label: string;
 }
 
-export const AVAILABLE_GROUPINGS: GroupConfig[] = [
+const ALL_GROUPINGS: GroupConfig[] = [
   { field: 'catorcena', label: 'Catorcena' },
   { field: 'asesor', label: 'Asesor' },
   { field: 'propuesta', label: 'Propuesta' },
@@ -124,7 +125,18 @@ export const AVAILABLE_GROUPINGS: GroupConfig[] = [
   { field: 'anio', label: 'Año' },
 ];
 
-export const DEFAULT_GROUPINGS: GroupByField[] = ['catorcena', 'asesor', 'propuesta', 'circuito'];
+// PERIODOS_LIBRES: sin catorcenas el back manda numero/anio de catorcena en null
+// (y las caras no traen fechas), así que Catorcena/Año quedarían en "Cat 0 / 0" /
+// "Año 0" con inversión $0, y Tipo de Periodo siempre sería 'mensual'. Se ocultan.
+const GROUPINGS_OCULTOS_PERIODOS_LIBRES: GroupByField[] = ['catorcena', 'anio', 'tipo_periodo'];
+
+export const AVAILABLE_GROUPINGS: GroupConfig[] = PERIODOS_LIBRES
+  ? ALL_GROUPINGS.filter(g => !GROUPINGS_OCULTOS_PERIODOS_LIBRES.includes(g.field))
+  : ALL_GROUPINGS;
+
+export const DEFAULT_GROUPINGS: GroupByField[] = PERIODOS_LIBRES
+  ? ['asesor', 'propuesta', 'circuito']
+  : ['catorcena', 'asesor', 'propuesta', 'circuito'];
 export const MAX_GROUPINGS = 4;
 export const GROUPINGS_STORAGE_KEY = 'propuestas-versionario-groupings-v1';
 
@@ -334,7 +346,13 @@ export default function PropuestasVersionarioView({ isDark, filters, advancedFil
   };
 
   // Use default grouping if parent didn't provide any (defensive)
-  const effectiveGroupings = activeGroupings.length > 0 ? activeGroupings : DEFAULT_GROUPINGS;
+  // PERIODOS_LIBRES: descarta agrupadores ocultos que vengan de localStorage/vistas guardadas.
+  const effectiveGroupings = useMemo<GroupByField[]>(() => {
+    const base = activeGroupings.length > 0 ? activeGroupings : DEFAULT_GROUPINGS;
+    if (!PERIODOS_LIBRES) return base;
+    const visibles = base.filter(f => !GROUPINGS_OCULTOS_PERIODOS_LIBRES.includes(f));
+    return visibles.length > 0 ? visibles : DEFAULT_GROUPINGS;
+  }, [activeGroupings]);
 
   // Cuando hay filtro de catorcena, el back devuelve inv/caras filtrados a ese
   // rango (mucho menos data → manejable). Sin filtro: lite=true para no
@@ -388,7 +406,13 @@ export default function PropuestasVersionarioView({ isDark, filters, advancedFil
     for (const r of resumenArr) {
       const num = Number(r.numero_catorcena) || 0;
       const anio = Number(r.anio_catorcena) || 0;
-      if (!num || !anio) continue;
+      if (!num || !anio) {
+        // PERIODOS_LIBRES: sin catorcenas el back agrupa todo en (null, null) =
+        // total de la propuesta. Se indexa como "pid-0-0" para los badges del
+        // nivel propuesta (ver fallback en buildTree).
+        if (PERIODOS_LIBRES) resumenMap.set(`${r.propuesta_id}-0-0`, r);
+        continue;
+      }
       resumenMap.set(`${r.propuesta_id}-${num}-${anio}`, r);
     }
 
@@ -612,9 +636,12 @@ export default function PropuestasVersionarioView({ isDark, filters, advancedFil
         // lite): usar el resumen específico de la catorcena del path. Sin
         // catContext (usuario quitó catorcena del grouping) no rellenamos para
         // evitar mostrar totales engañosos.
-        if (head === 'propuesta' && scIds.size === 0 && bucketCatContext && propuestaIds.size === 1) {
+        // PERIODOS_LIBRES: no hay agrupador de catorcena; el resumen "pid-0-0"
+        // ya es el total de la propuesta, así que sí se rellena.
+        const resumenCtx = bucketCatContext ?? (PERIODOS_LIBRES ? { num: 0, anio: 0 } : null);
+        if (head === 'propuesta' && scIds.size === 0 && resumenCtx && propuestaIds.size === 1) {
           const pid = bucketRows[0].propuesta.propuesta_id;
-          const res = resumenMap.get(`${pid}-${bucketCatContext.num}-${bucketCatContext.anio}`);
+          const res = resumenMap.get(`${pid}-${resumenCtx.num}-${resumenCtx.anio}`);
           if (res) {
             circuitosCount = Number(res.circuitos_count) || 0;
             totalCarasEsperadas = Number(res.caras_total) || 0;
@@ -1028,7 +1055,9 @@ export default function PropuestasVersionarioView({ isDark, filters, advancedFil
               )}
               {advancedFiltersOmitidos.length > 0 && (
                 <p className={`text-[11px] mt-1 ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
-                  El filtro avanzado por Formato no aplica en Desglose sin un filtro de Periodo — selecciona un rango de catorcenas para usarlo.
+                  {PERIODOS_LIBRES
+                    ? 'El filtro avanzado por Formato no aplica en el Desglose.'
+                    : 'El filtro avanzado por Formato no aplica en Desglose sin un filtro de Periodo — selecciona un rango de catorcenas para usarlo.'}
                 </p>
               )}
             </div>

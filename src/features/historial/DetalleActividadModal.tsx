@@ -3,9 +3,21 @@ import type { ActividadComercialTarea } from '../../services/historial.service';
 import { UserAvatar } from '../../components/ui/user-avatar';
 import { formatDate } from '../../lib/utils';
 import {
-  COLUMNAS_AC, COLUMNA_LABEL, COLUMNA_COLOR, type ColumnaAC,
+  COLUMNAS_AC, COLUMNA_LABEL, COLUMNA_COLOR, type ColumnaAC, type ContenidoAC,
   columnaDeEstatus, esCancelada, parseContenidoAC, tituloCorto, estaVencida,
 } from './actividadComercial';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
+
+// Con PERIODOS_LIBRES el "Periodo" de la actividad son MESES (1-12) guardados en
+// `catorcenas`/`catorcena` del contenido (ver NuevaActividadComercialModal).
+// Un solo mes sale completo ("Noviembre 2026"); varios, abreviados ("Ene, Feb 2026").
+const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+function periodoMesesAC(c: ContenidoAC & { catorcenas?: unknown }): string | null {
+  const lista = Array.isArray(c.catorcenas) && c.catorcenas.length > 0 ? c.catorcenas : (c.catorcena != null ? [c.catorcena] : []);
+  const meses = lista.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12).map(n => MESES[n - 1]);
+  const texto = meses.length === 1 ? meses[0] : meses.map(m => m.slice(0, 3)).join(', ');
+  return [texto, c.anio].filter(Boolean).join(' ') || null;
+}
 
 // Detalle de una Actividad Comercial (click en la tarjeta del tablero).
 // Ver todo + cambiar de columna + abrir el modal de edicion (si tiene permiso).
@@ -101,7 +113,9 @@ export function DetalleActividadModal({ tarea, isDark, puedeEditar, moviendo, on
               <Campo isDark={isDark} icon={Tag} label="Tipo" value={c.subtipo ? (c.ref_id != null ? `${c.subtipo} #${c.ref_id}` : c.subtipo) : null} />
               <Campo isDark={isDark} icon={Hash} label="ID Cliente" value={tarea.cuic} />
               <Campo isDark={isDark} icon={User} label="Asesor de la cuenta" value={tarea.asesor} />
-              <Campo isDark={isDark} icon={Layers} label="Catorcena / Año" value={[c.catorcena ? `Cat ${c.catorcena}` : null, c.anio].filter(Boolean).join(' / ') || null} />
+              {PERIODOS_LIBRES
+                ? <Campo isDark={isDark} icon={Layers} label="Periodo (mes / año)" value={periodoMesesAC(c)} />
+                : <Campo isDark={isDark} icon={Layers} label="Catorcena / Año" value={[c.catorcena ? `Cat ${c.catorcena}` : null, c.anio].filter(Boolean).join(' / ') || null} />}
               <Campo isDark={isDark} icon={Tag} label="Estatus de la actividad" value={c.estatus_actividad} />
               <Campo isDark={isDark} icon={Hash} label="Campaña" value={tarea.campania_id ? `#${tarea.campania_id}` : null} />
               <Campo isDark={isDark} icon={Hash} label="Propuesta" value={tarea.id_propuesta ? `#${tarea.id_propuesta}` : null} />

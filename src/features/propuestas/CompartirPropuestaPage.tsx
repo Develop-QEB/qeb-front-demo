@@ -17,6 +17,7 @@ import { formatCurrency, formatDate } from '../../lib/utils';
 import { toNum } from '../../utils/excelFormat';
 import { descargarExcelCompartir, FMT_COORD } from '../../utils/excelCompartir';
 import { horarioLabel } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { useThemeStore } from '../../store/themeStore';
 // Versionado de circuitos completados: filas/pines 'no_vigente' en gris,
 // leyenda "Última versión completada", estilos de PDF/Excel.
@@ -119,7 +120,7 @@ interface FilterFieldConfig {
   type: 'string' | 'number';
 }
 
-const FILTER_FIELDS: FilterFieldConfig[] = [
+const FILTER_FIELDS_TODOS: FilterFieldConfig[] = [
   { field: 'codigo_unico', label: 'Codigo', type: 'string' },
   { field: 'plaza', label: 'Plaza', type: 'string' },
   { field: 'tipo_de_cara', label: 'Tipo', type: 'string' },
@@ -129,6 +130,8 @@ const FILTER_FIELDS: FilterFieldConfig[] = [
   { field: 'caras_totales', label: 'Caras', type: 'number' },
   { field: 'tarifa_publica', label: 'Tarifa', type: 'number' },
 ];
+// PERIODOS_LIBRES: sin catorcenas el campo llega null → el filtro "Catorcena" no aplica.
+const FILTER_FIELDS: FilterFieldConfig[] = FILTER_FIELDS_TODOS.filter(f => !(PERIODOS_LIBRES && f.field === 'numero_catorcena'));
 
 const FILTER_OPERATORS: { value: FilterOperator; label: string; forTypes: ('string' | 'number')[] }[] = [
   { value: '=', label: 'Igual a', forTypes: ['string', 'number'] },
@@ -366,7 +369,9 @@ export function CompartirPropuestaPage() {
     enabled: propuestaId > 0,
   });
 
-  const tipoPeriodo = (details?.cotizacion as any)?.tipo_periodo || 'catorcena';
+  // PERIODOS_LIBRES: todo es 'mensual' (fechas libres) → meses, nunca "Cat N / AAAA".
+  // Debe coincidir con ClientePropuestaMapPage (catKeyOf del alcance compartido por URL).
+  const tipoPeriodo = PERIODOS_LIBRES ? 'mensual' : ((details?.cotizacion as any)?.tipo_periodo || 'catorcena');
   // UDC (aeropuerto AICM): sin geolocalización → en compartir se oculta el
   // "Resumen de Circuitos" + mapa y se muestra la ficha técnica de reservados.
   const esUDC = ((details?.propuesta as any)?.sap_database || (details?.solicitud as any)?.sap_database || '').toString().toUpperCase() === 'UDC';
@@ -2289,7 +2294,7 @@ export function CompartirPropuestaPage() {
           <div className="h-[500px] relative">
             {demasiadosPines && (
               <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 max-w-md px-4 py-2.5 rounded-xl shadow-lg border bg-amber-500/95 text-amber-950 border-amber-600 text-xs font-medium text-center pointer-events-none">
-                {visibleMarkers.length.toLocaleString()} pines: Seleccionar Catorcenas para mostrarlos aquí.
+                {visibleMarkers.length.toLocaleString()} pines: Seleccionar {PERIODOS_LIBRES ? 'Periodos' : 'Catorcenas'} para mostrarlos aquí.
                 O usa <strong>Expandir Mapa</strong> para ver todos.
               </div>
             )}

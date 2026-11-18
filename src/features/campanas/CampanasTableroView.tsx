@@ -2,6 +2,8 @@ import { useCallback, useMemo } from 'react';
 import { Building2, Calendar, Clock, DollarSign, History, Megaphone } from 'lucide-react';
 import { Campana } from '../../types';
 import { formatCurrency, formatDate, formatDateCompact } from '../../lib/utils';
+import { dateRangeShort, dayMonthShort } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { TableroBoard, TableroCard, type TableroColumna } from '../../components/tablero/TableroBoard';
 import { buildMapaColumnas, fechaUltimoCambio, normalizaEstatus } from '../../lib/tableroVistas';
 import { esCampanaIncompleta, IncompletaBadge } from './campanaCompletitud';
@@ -83,6 +85,19 @@ export function columnaDeCampana(status: string | null | undefined): string | nu
   return MAPA_COLUMNAS.get(normalizaEstatus(status)) ?? null;
 }
 
+// Periodo por fechas para la tarjeta: "1 Abr – 30 Abr 2026" (o "15 Abr 2026"
+// si es un solo dia). Se usa con fechas libres (demo sin catorcenas,
+// PERIODOS_LIBRES) y con periodos mensuales.
+function periodoFechasLabel(ini?: string | null, fin?: string | null): string | null {
+  if (!ini) return null;
+  const hasta = fin || ini;
+  const mismoDia = String(ini).slice(0, 10) === String(hasta).slice(0, 10);
+  const rango = mismoDia ? dayMonthShort(ini) : dateRangeShort(ini, hasta);
+  if (!rango) return null;
+  const anio = String(hasta).slice(0, 4);
+  return /^\d{4}$/.test(anio) ? `${rango} ${anio}` : rango;
+}
+
 interface CampanasTableroViewProps {
   /** Ya filtradas y ordenadas por la pagina (misma fuente que la tabla). */
   items: Campana[];
@@ -159,13 +174,15 @@ function TarjetaCampana({
   const cliente = campana.cliente_nombre || campana.cliente_razon_social || campana.T0_U_Cliente;
   const marca = campana.T2_U_Marca || campana.articulo;
 
-  const catorcena = campana.catorcena_inicio_num
-    ? `Cat ${String(campana.catorcena_inicio_num).padStart(2, '0')}${
-        campana.catorcena_fin_num && campana.catorcena_fin_num !== campana.catorcena_inicio_num
-          ? `-${String(campana.catorcena_fin_num).padStart(2, '0')}`
-          : ''
-      }${campana.catorcena_inicio_anio ? ` / ${campana.catorcena_inicio_anio}` : ''}`
-    : null;
+  const periodo = (PERIODOS_LIBRES || campana.tipo_periodo === 'mensual')
+    ? periodoFechasLabel(campana.fecha_inicio, campana.fecha_fin)
+    : campana.catorcena_inicio_num
+      ? `Cat ${String(campana.catorcena_inicio_num).padStart(2, '0')}${
+          campana.catorcena_fin_num && campana.catorcena_fin_num !== campana.catorcena_inicio_num
+            ? `-${String(campana.catorcena_fin_num).padStart(2, '0')}`
+            : ''
+        }${campana.catorcena_inicio_anio ? ` / ${campana.catorcena_inicio_anio}` : ''}`
+      : null;
 
   return (
     <TableroCard isDark={isDark} onClick={onAbrir} title="Abrir detalle de la campaña">
@@ -205,10 +222,10 @@ function TarjetaCampana({
       )}
 
       <div className="flex flex-wrap items-center gap-1.5 mt-2">
-        {catorcena && (
+        {periodo && (
           <span className={`inline-flex items-center gap-1 text-[10px] ${sub}`}>
             <Calendar className="h-3 w-3" />
-            {catorcena}
+            {periodo}
           </span>
         )}
         {campana.inversion != null && Number(campana.inversion) > 0 && (

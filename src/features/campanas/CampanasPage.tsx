@@ -28,6 +28,8 @@ const VISTAS_CAMPANAS: readonly VistaOpcion<ViewType>[] = [
 ];
 const VISTAS_CAMPANAS_KEYS = VISTAS_CAMPANAS.map(v => v.key);
 import { formatDate, formatCurrency } from '../../lib/utils';
+import { dayMonthYear } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { AssignInventarioCampanaModal } from './AssignInventarioCampanaModal';
 import { OrdenesMontajeModal } from './OrdenesMontajeModal';
 import { VersionarioArtesPreviewModal } from './VersionarioArtesPreviewModal';
@@ -141,6 +143,18 @@ function getMonthShort(dateStr: string): string {
   const month = parseInt(m[2]) - 1;
   if (month < 0 || month > 11) return '-';
   return `${MESES_LABEL[month]} ${m[1]}`;
+}
+
+// Fecha Inicio/Fin de la tabla y del CSV. Demo sin catorcenas (PERIODOS_LIBRES):
+// fecha exacta ("15 Abr 2026"), igual que el detalle; si no, el mes.
+function getPeriodoShort(dateStr: string): string {
+  if (PERIODOS_LIBRES) return dayMonthYear(dateStr) || '-';
+  return getMonthShort(dateStr);
+}
+
+// Fecha 'YYYY-MM-DD' para las exportaciones (corta el ISO: sin desfase de zona).
+function fechaISO(v: unknown): string {
+  return v ? String(v).slice(0, 10) : '';
 }
 
 // Status / Period / EstatusArte colors — dos mapas estáticos por tema.
@@ -387,7 +401,8 @@ function FilterChip({
   value,
   onChange,
   onClear,
-  isDark = true
+  isDark = true,
+  optionLabel,
 }: {
   label: string;
   options: string[];
@@ -395,16 +410,19 @@ function FilterChip({
   onChange: (value: string) => void;
   onClear: () => void;
   isDark?: boolean;
+  /** Texto visible de cada opción (por defecto, el valor tal cual). */
+  optionLabel?: (value: string) => string;
 }) {
   const [open, setOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const fmt = (v: string) => (optionLabel ? optionLabel(v) : v);
 
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options;
     return options.filter(opt =>
-      opt.toLowerCase().includes(searchTerm.toLowerCase())
+      (optionLabel ? optionLabel(opt) : opt).toLowerCase().includes(searchTerm.toLowerCase())
     );
-  }, [options, searchTerm]);
+  }, [options, searchTerm, optionLabel]);
 
   const handleClose = () => {
     setOpen(false);
@@ -422,7 +440,7 @@ function FilterChip({
             : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'
           }`}
       >
-        <span>{value || label}</span>
+        <span>{value ? fmt(value) : label}</span>
         {value ? (
           <X className={`h-3 w-3 ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`} onClick={(e) => { e.stopPropagation(); onClear(); }} />
         ) : (
@@ -462,7 +480,7 @@ function FilterChip({
                         : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
                       }`}
                   >
-                    {option}
+                    {fmt(option)}
                   </button>
                 ))
               )}
@@ -477,7 +495,10 @@ function FilterChip({
   );
 }
 
-// Period Filter Popover Component
+// Period Filter Popover Component.
+// Demo sin catorcenas (PERIODOS_LIBRES): queda SOLO el rango de años (el back
+// filtra campañas cuyo rango de fechas toca esos años); los selectores de
+// catorcena se ocultan y nunca se mandan catorcenaInicio/catorcenaFin.
 function PeriodFilterPopover({
   catorcenasData,
   yearInicio,
@@ -545,7 +566,11 @@ function PeriodFilterPopover({
 
   const handleApply = () => {
     if (canApply) {
-      onApply(tempYearInicio!, tempYearFin!, tempCatorcenaInicio, tempCatorcenaFin);
+      onApply(
+        tempYearInicio!, tempYearFin!,
+        PERIODOS_LIBRES ? undefined : tempCatorcenaInicio,
+        PERIODOS_LIBRES ? undefined : tempCatorcenaFin,
+      );
       setOpen(false);
     }
   };
@@ -601,7 +626,7 @@ function PeriodFilterPopover({
             </div>
 
             <div className="p-3 space-y-3">
-              <div className="grid grid-cols-2 gap-2">
+              <div className={`grid ${PERIODOS_LIBRES ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Año Inicio *</label>
                   <select
@@ -623,6 +648,7 @@ function PeriodFilterPopover({
                     ))}
                   </select>
                 </div>
+                {!PERIODOS_LIBRES && (
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Cat. Inicio</label>
                   <select
@@ -643,9 +669,10 @@ function PeriodFilterPopover({
                     ))}
                   </select>
                 </div>
+                )}
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className={`grid ${PERIODOS_LIBRES ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Año Fin *</label>
                   <select
@@ -667,6 +694,7 @@ function PeriodFilterPopover({
                     ))}
                   </select>
                 </div>
+                {!PERIODOS_LIBRES && (
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Cat. Fin</label>
                   <select
@@ -687,6 +715,7 @@ function PeriodFilterPopover({
                     ))}
                   </select>
                 </div>
+                )}
               </div>
             </div>
 
@@ -970,7 +999,8 @@ const CampanaRow = React.memo(function CampanaRow({
   const periodStatus = getPeriodStatus(item.fecha_inicio, item.fecha_fin);
   const periodMap = getPeriodColors(isDark);
   const periodColor = periodMap[periodStatus] || getDefaultStatusColor(isDark);
-  const isMensual = (item as any).tipo_periodo === 'mensual';
+  // PERIODOS_LIBRES: todo es por fechas (nunca "Cat N / AAAA").
+  const isMensual = PERIODOS_LIBRES || (item as any).tipo_periodo === 'mensual';
 
   // Inversión: con filtro usa el valor que ya filtró el backend;
   // sin filtro usa el total dinámico cargado por batch (invTotal).
@@ -1046,7 +1076,7 @@ const CampanaRow = React.memo(function CampanaRow({
         {isMensual && item.fecha_inicio ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${isDark ? 'bg-cyan-500/10 text-cyan-300' : 'bg-cyan-50 text-cyan-700'} text-xs border border-cyan-500/20`}>
             <Calendar className="h-3 w-3" />
-            {getMonthShort(item.fecha_inicio)}
+            {getPeriodoShort(item.fecha_inicio)}
           </span>
         ) : item.catorcena_inicio_num && item.catorcena_inicio_anio ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${isDark ? 'bg-cyan-500/10 text-cyan-300' : 'bg-cyan-50 text-cyan-700'} text-xs border border-cyan-500/20`}>
@@ -1062,7 +1092,7 @@ const CampanaRow = React.memo(function CampanaRow({
         {isMensual && item.fecha_fin ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${isDark ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700'} text-xs border border-amber-500/20`}>
             <Calendar className="h-3 w-3" />
-            {getMonthShort(item.fecha_fin)}
+            {getPeriodoShort(item.fecha_fin)}
           </span>
         ) : item.catorcena_fin_num && item.catorcena_fin_anio ? (
           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md ${isDark ? 'bg-amber-500/10 text-amber-300' : 'bg-amber-50 text-amber-700'} text-xs border border-amber-500/20`}>
@@ -1375,8 +1405,10 @@ export function CampanasPage() {
   });
 
   // Get current catorcena
+  // PERIODOS_LIBRES: no hay catorcena vigente (sin chip "Actual", sin badge
+  // "En curso" por catorcena; el Versionario de Artes arma su rango por fechas).
   const currentCatorcena = useMemo((): Catorcena | null => {
-    if (!catorcenasData?.data) return null;
+    if (PERIODOS_LIBRES || !catorcenasData?.data) return null;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -1618,7 +1650,8 @@ export function CampanasPage() {
 
   const getGroupValue = (item: Campana, field: GroupByField): string => {
     if (field === 'catorcena_inicio') {
-      if ((item as any).tipo_periodo === 'mensual' && item.fecha_inicio) {
+      // PERIODOS_LIBRES: se agrupa por mes de inicio (no hay catorcenas).
+      if ((PERIODOS_LIBRES || (item as any).tipo_periodo === 'mensual') && item.fecha_inicio) {
         return getMonthLabel(item.fecha_inicio);
       }
       return item.catorcena_inicio_num && item.catorcena_inicio_anio
@@ -1959,7 +1992,9 @@ export function CampanasPage() {
     };
 
     filteredData.forEach(item => {
-      const isMensual = (item as any).tipo_periodo === 'mensual';
+      // PERIODOS_LIBRES: todas van por mes de inicio (sin catorcenas en la BD,
+      // una campaña 'catorcena' vieja quedaría fuera de todo grupo).
+      const isMensual = PERIODOS_LIBRES || (item as any).tipo_periodo === 'mensual';
       if (isMensual && item.fecha_inicio) {
         // For mensual campaigns, group by month derived from fecha_inicio
         const parts = item.fecha_inicio.split('-');
@@ -2131,6 +2166,13 @@ export function CampanasPage() {
   const getInversionGrupo = useCallback((invMap: Record<string, number> | undefined, cat: { num: number; anio: number; isMensual?: boolean }): number => {
     if (!invMap) return 0;
     if (cat?.isMensual) {
+      // PERIODOS_LIBRES: no hay catorcenas, así que el back solo manda 'total'
+      // (la suma de abajo daba 0). Cada campaña está en UN solo grupo (su mes
+      // de inicio), así que ahí va su inversión total: cuadra con la columna
+      // Inversión de la tabla y no se cuenta doble.
+      if (PERIODOS_LIBRES) return Number(invMap['total']) || 0;
+      // OJO (modo con catorcenas): una catorcena que cruza dos meses se suma
+      // completa en el mes; no es la porción exacta del mes.
       const mIni = new Date(cat.anio, cat.num - 1, 1).getTime();
       const mFin = new Date(cat.anio, cat.num, 0, 23, 59, 59, 999).getTime();
       let sum = 0;
@@ -2456,11 +2498,13 @@ export function CampanasPage() {
   }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, activeGroupings, advancedFilters, searchTags, apsFilter, selectedCatorcenaInicio]);
   const aplicarFiltrosGuardados = useCallback((d: FiltrosDatos) => {
     setStatusSel(leerStrings(d.statusSel));
-    setTipoPeriodo(leerString(d.tipoPeriodo));
+    // PERIODOS_LIBRES: el filtro de periodo queda solo por años; tipo de
+    // periodo y catorcenas están ocultos y una vista guardada no los reactiva.
+    setTipoPeriodo(PERIODOS_LIBRES ? '' : leerString(d.tipoPeriodo));
     setYearInicio(leerNumeroOpcional(d.yearInicio));
     setYearFin(leerNumeroOpcional(d.yearFin));
-    setCatorcenaInicio(leerNumeroOpcional(d.catorcenaInicio));
-    setCatorcenaFin(leerNumeroOpcional(d.catorcenaFin));
+    setCatorcenaInicio(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.catorcenaInicio));
+    setCatorcenaFin(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.catorcenaFin));
     setHistorialFilter(leerObjetoStrings(d.historialFilter) as HistorialFilterValues);
     setCambiosSeleccion(Array.isArray(d.cambiosSeleccion) ? leerStrings(d.cambiosSeleccion) : null);
     // Maximo 2 agrupaciones, igual que el selector del Versionario.
@@ -2468,7 +2512,7 @@ export function CampanasPage() {
     setAdvancedFilters(leerCondiciones<AdvancedFilterCondition>(d.advancedFilters));
     setSearchTags(leerStrings(d.searchTags));
     setApsFilter(leerEnum(d.apsFilter, ['todas', 'con', 'sin'] as const, 'todas'));
-    setSelectedCatorcenaInicio(leerString(d.selectedCatorcenaInicio));
+    setSelectedCatorcenaInicio(PERIODOS_LIBRES ? '' : leerString(d.selectedCatorcenaInicio));
     setSearchInput('');
     setExpandedGroups(new Set());
     setShowFilters(true);
@@ -2526,11 +2570,13 @@ export function CampanasPage() {
     const hayFiltro = !!(catorcenaInicio && catorcenaFin && yearInicio && yearFin);
     const rows = filteredData.map(c => {
       const periodStatus = getPeriodStatus(c.fecha_inicio, c.fecha_fin);
-      const catIni = (c as any).tipo_periodo === 'mensual'
-        ? getMonthShort(c.fecha_inicio)
+      // Mismo criterio que la tabla (PERIODOS_LIBRES: fecha exacta, sin catorcena).
+      const porFechas = PERIODOS_LIBRES || (c as any).tipo_periodo === 'mensual';
+      const catIni = porFechas
+        ? getPeriodoShort(c.fecha_inicio)
         : (c.catorcena_inicio_num && c.catorcena_inicio_anio ? `Cat ${c.catorcena_inicio_num} ${c.catorcena_inicio_anio}` : '-');
-      const catFin = (c as any).tipo_periodo === 'mensual'
-        ? getMonthShort(c.fecha_fin)
+      const catFin = porFechas
+        ? getPeriodoShort(c.fecha_fin)
         : (c.catorcena_fin_num && c.catorcena_fin_anio ? `Cat ${c.catorcena_fin_num} ${c.catorcena_fin_anio}` : '-');
       // Misma lógica que la columna de inversión en la tabla:
       // Con filtro: usar c.inversion (backend ya lo filtró por período).
@@ -2661,12 +2707,18 @@ export function CampanasPage() {
           const periodo = (catorcena as any).isMensual
             ? `Mes ${catorcena.num}`
             : `Catorcena #${String(catorcena.num).padStart(2, '0')}`;
+          // "Inicio o Periodo" / "Fin o Segmento". PERIODOS_LIBRES (sin
+          // catorcenas): fechas YYYY-MM-DD del circuito o, sin inventario, de
+          // la campaña (antes salía "Catorcenas AAAA" / "Mes N").
+          const periodoCols = (ini: unknown, fin: unknown): [string, string] => (PERIODOS_LIBRES
+            ? [fechaISO(ini), fechaISO(fin)]
+            : ['Catorcenas ' + catorcena.anio, periodo]);
 
           if (inventarios.length === 0) {
             rows.push([
               nombreCampana, anunciante, invStr, '', '0', '0',
               String(aps), '', String(cuic), '', vendedor, descripcion,
-              'Catorcenas ' + catorcena.anio, periodo,
+              ...periodoCols(campana.fecha_inicio, campana.fecha_fin),
               '0', '', '', '', '', '', '', '0', '0', ''
             ]);
           } else {
@@ -2689,8 +2741,7 @@ export function CampanasPage() {
                 item.articulo || '',
                 vendedor,
                 descripcion,
-                'Catorcenas ' + catorcena.anio,
-                periodo,
+                ...periodoCols(item.inicio_periodo || campana.fecha_inicio, item.fin_periodo || campana.fecha_fin),
                 estatusArte,
                 '',
                 item.archivo || '',
@@ -2767,14 +2818,23 @@ export function CampanasPage() {
       const activeCatRanges: Array<{ inicio: string; fin: string }> = [];
       const seenCat = new Set<string>();
       for (const g of campanasPorCatorcena) {
-        const cat = g.catorcena as { num: number; anio: number };
+        const cat = g.catorcena as { num: number; anio: number; isMensual?: boolean };
+        // Grupo mensual: `num` es el MES (1-12), no un número de catorcena.
+        // Antes se buscaba la catorcena con ese número (rango equivocado). La
+        // campaña mensual solo vive en su mes de inicio, así que no se recorta
+        // por ese mes (perdería los circuitos de los meses siguientes).
+        if (cat.isMensual) continue;
         const key = `${cat.num}-${cat.anio}`;
         if (seenCat.has(key)) continue;
         seenCat.add(key);
-        const c = catorcenasData?.data.find(x => x.numero_catorcena === cat.num && x.a_o === cat.anio);
+        const c = catorcenasData?.data?.find(x => x.numero_catorcena === cat.num && x.a_o === cat.anio);
         if (c?.fecha_inicio && c?.fecha_fin) {
           activeCatRanges.push({ inicio: c.fecha_inicio, fin: c.fecha_fin });
         }
+      }
+      // PERIODOS_LIBRES (sin catorcenas): el único recorte es el filtro de años.
+      if (PERIODOS_LIBRES && yearInicio && yearFin) {
+        activeCatRanges.push({ inicio: `${yearInicio}-01-01`, fin: `${yearFin}-12-31` });
       }
       const itemDentroDeRango = (item: any): boolean => {
         if (activeCatRanges.length === 0) return true;
@@ -2932,6 +2992,10 @@ export function CampanasPage() {
         if (startCat && endCat) {
           newCatRanges.push({ inicio: startCat.fecha_inicio, fin: endCat.fecha_fin });
         }
+      }
+      // PERIODOS_LIBRES (sin catorcenas): el modal solo filtra por años.
+      if (PERIODOS_LIBRES && newCatRanges.length === 0) {
+        newCatRanges.push({ inicio: `${pYearInicio}-01-01`, fin: `${pYearFin}-12-31` });
       }
 
       const itemDentroDeRangoNew = (item: any): boolean => {
@@ -3699,26 +3763,33 @@ export function CampanasPage() {
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-300'} mx-1`} />
 
-                {/* Tipo Periodo Filter */}
-                <FilterChip
-                  label="Tipo Periodo"
-                  options={['catorcena', 'mensual']}
-                  value={tipoPeriodo}
-                  onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
-                  onClear={() => { setTipoPeriodo(''); setPage(1); }}
-                  isDark={isDark}
-                />
-
-                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-300'} mx-1`} />
-
-                {/* Current Catorcena Indicator */}
-                {currentCatorcena && (
+                {/* Demo sin catorcenas (PERIODOS_LIBRES): se ocultan el chip
+                    Tipo Periodo y el de catorcena actual. El filtro de periodo
+                    se queda, solo por años (ver PeriodFilterPopover). */}
+                {!PERIODOS_LIBRES && (
                   <>
-                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} border text-xs`}>
-                      <Clock className="h-3 w-3" />
-                      <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
-                    </div>
+                    {/* Tipo Periodo Filter */}
+                    <FilterChip
+                      label="Tipo Periodo"
+                      options={['catorcena', 'mensual']}
+                      value={tipoPeriodo}
+                      onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
+                      onClear={() => { setTipoPeriodo(''); setPage(1); }}
+                      isDark={isDark}
+                    />
+
                     <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-300'} mx-1`} />
+
+                    {/* Current Catorcena Indicator */}
+                    {currentCatorcena && (
+                      <>
+                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} border text-xs`}>
+                          <Clock className="h-3 w-3" />
+                          <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
+                        </div>
+                        <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-300'} mx-1`} />
+                      </>
+                    )}
                   </>
                 )}
 
@@ -3781,6 +3852,9 @@ export function CampanasPage() {
                 <FilterChip
                   label="Agrupar"
                   options={['status', 'cliente_nombre', 'catorcena_inicio']}
+                  // PERIODOS_LIBRES: mostrar la etiqueta ("Fecha Inicio", que agrupa
+                  // por mes) en vez de la clave 'catorcena_inicio'.
+                  optionLabel={PERIODOS_LIBRES ? (v) => AVAILABLE_GROUPINGS.find(g => g.field === v)?.label ?? v : undefined}
                   value={activeGroupings[0] || ''}
                   onChange={(val) => { setActiveGroupings([val as GroupByField]); setExpandedGroups(new Set()); }}
                   onClear={() => { setActiveGroupings([]); setExpandedGroups(new Set()); }}
@@ -4042,14 +4116,14 @@ export function CampanasPage() {
                     <Calendar className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
                   </div>
                   <div>
-                    <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Vista por Catorcena</h3>
-                    <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Campañas agrupadas por periodo de inicio</p>
+                    <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{PERIODOS_LIBRES ? 'Vista por Mes' : 'Vista por Catorcena'}</h3>
+                    <p className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{PERIODOS_LIBRES ? 'Campañas agrupadas por mes de inicio' : 'Campañas agrupadas por periodo de inicio'}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-right">
                     <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{displayedCampanasPorCatorcena.length}</p>
-                    <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wide`}>Catorcenas</p>
+                    <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wide`}>{PERIODOS_LIBRES ? 'Meses' : 'Catorcenas'}</p>
                   </div>
                   <div className={`w-px h-10 ${isDark ? 'bg-zinc-800' : 'bg-gray-200'}`} />
                   <div className="text-right">
@@ -4069,7 +4143,7 @@ export function CampanasPage() {
                 <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full ${isDark ? 'bg-purple-500/10' : 'bg-purple-50'} mb-4`}>
                   <Calendar className={`w-8 h-8 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
                 </div>
-                <p className={isDark ? 'text-zinc-500' : 'text-gray-400'}>No hay campañas agrupadas por catorcena</p>
+                <p className={isDark ? 'text-zinc-500' : 'text-gray-400'}>{PERIODOS_LIBRES ? 'No hay campañas agrupadas por mes' : 'No hay campañas agrupadas por catorcena'}</p>
               </div>
             ) : (
               <div className={`divide-y ${isDark ? 'divide-zinc-800/30' : 'divide-gray-200'}`}>
@@ -4237,7 +4311,7 @@ export function CampanasPage() {
                               ? getInversionGrupo(invData, catorcena)
                               : (Number((campana as any).inversion) || 0);
                             return (
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] ${isDark ? 'bg-green-500/15 text-green-300' : 'bg-green-50 text-green-700'} border border-green-500/25 flex items-center gap-1`} title="Inversión de la catorcena">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] ${isDark ? 'bg-green-500/15 text-green-300' : 'bg-green-50 text-green-700'} border border-green-500/25 flex items-center gap-1`} title={PERIODOS_LIBRES ? 'Inversión de la campaña' : 'Inversión de la catorcena'}>
                                 <DollarSign className="h-3 w-3" /> {invCampana > 0 ? invCampana.toLocaleString() : 'Sin inversión'}
                               </span>
                             );
@@ -4681,7 +4755,7 @@ export function CampanasPage() {
                         }, 0);
 
                         return totalInversion > 0 ? (
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] ${isDark ? 'bg-green-500/15 text-green-300' : 'bg-green-50 text-green-700'} border border-green-500/25 flex items-center gap-1`} title="Inversión de la catorcena">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] ${isDark ? 'bg-green-500/15 text-green-300' : 'bg-green-50 text-green-700'} border border-green-500/25 flex items-center gap-1`} title={PERIODOS_LIBRES ? 'Inversión de las campañas que inician en el mes' : 'Inversión de la catorcena'}>
                             <DollarSign className="h-3 w-3" /> {totalInversion.toLocaleString()}
                           </span>
                         ) : (
@@ -4746,7 +4820,7 @@ export function CampanasPage() {
         {activeView === 'catorcena' && (
           <div className={`flex items-center justify-between px-5 py-3 border-t ${isDark ? 'border-zinc-800/50 bg-zinc-900/30 text-zinc-500' : 'border-gray-200 bg-gray-50 text-gray-400'} text-xs`}>
             <span>
-              {displayedCampanasPorCatorcena.length} catorcenas · {uniqueCampsInCatorcenaView} campañas
+              {displayedCampanasPorCatorcena.length} {PERIODOS_LIBRES ? 'meses' : 'catorcenas'} · {uniqueCampsInCatorcenaView} campañas
               {activeGroupings.length > 1 && (
                 <span className={`${isDark ? 'text-fuchsia-400' : 'text-fuchsia-600'} ml-2`}>
                   · Subagrupado por {AVAILABLE_GROUPINGS.find(g => g.field === activeGroupings[1])?.label}

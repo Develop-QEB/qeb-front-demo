@@ -36,6 +36,17 @@ import { puedeFiltrarDesposteo, puedeAprobarDesposteoFacturacion } from '../../s
 import { NuevaActividadComercialModal } from './NuevaActividadComercialModal';
 import { inventariosService } from '../../services/inventarios.service';
 import { TAREA_TIPO_VIGENCIA_BLOQUEO, esInventarioBloqueado, describirVigencia } from '../../lib/bloqueoInventario';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
+import { MESES_LARGO } from '../../lib/periodos';
+
+// Clave de periodo de una cara de autorización. Con PERIODOS_LIBRES el back no
+// resuelve catorcena (llega null), así que se agrupa por el rango exacto de fechas.
+function periodoKeyCara(c: { catorcena?: string | null; inicio_periodo?: string; fin_periodo?: string }): string {
+  if (!PERIODOS_LIBRES) return c.catorcena || 'Sin periodo';
+  return c.inicio_periodo && c.fin_periodo
+    ? `${formatDate(c.inicio_periodo)} → ${formatDate(c.fin_periodo)}`
+    : 'Sin periodo';
+}
 
 // [TEMPORAL] Ocultar "Actividad Comercial" en producción (pedido de Dirección,
 // oct 2026): la feature de Akary entró a main con el merge de release del 29-sep
@@ -2246,11 +2257,13 @@ function ApprovalModal({
   const catorcenaGroups = useMemo(() => {
     const unsorted = new Map<string, CaraAutorizacion[]>();
     allCaras.forEach(c => {
-      const key = c.catorcena || 'Sin periodo';
+      const key = periodoKeyCara(c);
       if (!unsorted.has(key)) unsorted.set(key, []);
       unsorted.get(key)!.push(c);
     });
     const sorted = new Map([...unsorted.entries()].sort((a, b) => {
+      // PERIODOS_LIBRES: orden cronológico por la fecha de inicio del grupo.
+      if (PERIODOS_LIBRES) return String(a[1][0]?.inicio_periodo || '9999').localeCompare(String(b[1][0]?.inicio_periodo || '9999'));
       const parse = (k: string) => { const m = k.match(/Cat\s+(\d+)\s*-\s*(\d+)/); return m ? Number(m[2]) * 100 + Number(m[1]) : 9999; };
       return parse(a[0]) - parse(b[0]);
     }));
@@ -2393,7 +2406,8 @@ function ApprovalModal({
             el body scroll se sale del contenedor (sintoma: "no navega bien"). */}
         <div className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4">
           {Array.from(catorcenaGroups.entries()).map(([catorcena, caras]) => {
-            const periodoInfo = caras[0]?.inicio_periodo && caras[0]?.fin_periodo
+            // PERIODOS_LIBRES: la clave del grupo ya es el rango de fechas → no repetirlo.
+            const periodoInfo = !PERIODOS_LIBRES && caras[0]?.inicio_periodo && caras[0]?.fin_periodo
               ? `${formatDate(caras[0].inicio_periodo)} → ${formatDate(caras[0].fin_periodo)}`
               : '';
             const isCollapsed = collapsedCatorcenas.has(catorcena);
@@ -3207,6 +3221,9 @@ function TaskDrawer({
                 
                 // Si es el título "CATORCENAS INCLUIDAS"
                 if (lineaTrim.includes('CATORCENAS INCLUIDAS')) {
+                  // PERIODOS_LIBRES: sin catorcenas el back escribe "Sin catorcenas
+                  // definidas" (esa línea ya se oculta) → se oculta también el título.
+                  if (PERIODOS_LIBRES) return null;
                   return (
                     <h4 key={idx} className="font-semibold text-purple-300 mt-4 mb-2 text-sm">
                       📅 {lineaTrim}
@@ -3297,7 +3314,11 @@ function TaskDrawer({
             const catorcenasList = Array.isArray(c.catorcenas) && c.catorcenas.length > 0
               ? c.catorcenas
               : (c.catorcena ? [c.catorcena] : []);
-            if (catorcenasList.length > 0) {
+            if (catorcenasList.length > 0 && PERIODOS_LIBRES) {
+              // PERIODOS_LIBRES: el arreglo guarda MESES (1..12), ver NuevaActividadComercialModal.
+              const meses = catorcenasList.filter(n => n >= 1 && n <= 12).map(n => MESES_LARGO[n - 1]);
+              if (meses.length > 0) campos.push({ label: meses.length === 1 ? 'Mes' : 'Meses', value: meses.join(', ') });
+            } else if (catorcenasList.length > 0) {
               const label = catorcenasList.length === 1 ? 'Catorcena' : 'Catorcenas';
               campos.push({ label, value: catorcenasList.map(n => `Cat ${n}`).join(', ') });
             }
@@ -3493,7 +3514,7 @@ function TaskDrawer({
           {isAutorizacionTask && carasData && carasData.length > 0 && (() => {
             const catMap = new Map<string, { inicio?: string; fin?: string }>();
             carasData.forEach(c => {
-              const key = c.catorcena || 'Sin periodo';
+              const key = periodoKeyCara(c);
               if (!catMap.has(key)) catMap.set(key, { inicio: c.inicio_periodo, fin: c.fin_periodo });
             });
             if (catMap.size === 0) return null;
@@ -3501,13 +3522,14 @@ function TaskDrawer({
               <div className={`p-3 rounded-xl ${isDark ? 'bg-cyan-500/5 border-cyan-500/20' : 'bg-cyan-50 border-cyan-200'} border`}>
                 <div className={`flex items-center gap-2 mb-2 ${isDark ? 'text-cyan-400' : 'text-cyan-600'}`}>
                   <Calendar className="h-4 w-4" />
-                  <span className="text-xs font-medium">Catorcenas</span>
+                  <span className="text-xs font-medium">{PERIODOS_LIBRES ? 'Periodos' : 'Catorcenas'}</span>
                 </div>
                 <div className="space-y-1">
                   {Array.from(catMap.entries()).map(([cat, dates]) => (
                     <div key={cat} className="flex items-center justify-between">
                       <span className={`text-xs font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{cat}</span>
-                      {dates.inicio && dates.fin && (
+                      {/* PERIODOS_LIBRES: la clave ya es el rango → no repetir las fechas */}
+                      {!PERIODOS_LIBRES && dates.inicio && dates.fin && (
                         <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                           {formatDate(dates.inicio)} → {formatDate(dates.fin)}
                         </span>

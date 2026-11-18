@@ -22,7 +22,8 @@ import { getPermissions } from '../../lib/permissions';
 import { useSocketCampana } from '../../hooks/useSocket';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { udcFichaDe, contratoDeArticulo } from '../../lib/udc';
-import { horarioLabel } from '../../lib/periodos';
+import { horarioLabel, dayMonthYear } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { esInventarioBloqueado } from '../../lib/bloqueoInventario';
 
 // Mini-preview (cuadrito cyan con el aspect-ratio real de la pantalla) para las
@@ -92,6 +93,8 @@ const DARK_MAP_STYLES: google.maps.MapTypeStyle[] = [
 
 // Formatear fecha como "Cat X / YYYY"
 function formatAsCatorcena(dateStr: string): string {
+  // PERIODOS_LIBRES: sin catorcenas → fecha exacta ("15 Nov 2026").
+  if (PERIODOS_LIBRES) return dayMonthYear(dateStr) || dateStr;
   try {
     const fecha = new Date(dateStr);
     if (isNaN(fecha.getTime())) return dateStr;
@@ -122,6 +125,11 @@ function dateToCatorcena(dateStr: string, catorcenas: Catorcena[]): { catorcena:
 }
 
 function getCatorcenaDisplay(dateStr: string, catorcenas: Catorcena[], tipoPeriodo?: string): string {
+  // PERIODOS_LIBRES: fechas libres por circuito → Inicio/Fin con la fecha exacta.
+  if (PERIODOS_LIBRES) {
+    const exacta = dayMonthYear(dateStr);
+    if (exacta) return exacta;
+  }
   if (tipoPeriodo === 'mensual') {
     const parts = dateStr.split('-');
     if (parts.length >= 2) {
@@ -1156,13 +1164,16 @@ export function CampanaDetailPage() {
     queryFn: () => solicitudesService.getCatorcenas(),
     staleTime: 1000 * 60 * 30, // 30 min
     gcTime: 1000 * 60 * 60,    // 1 h
+    enabled: !PERIODOS_LIBRES, // demo sin catorcenas
   });
   const catorcenas = catorcenasData?.data || [];
   // Sin default 'catorcena': formatInicioPeriodo/getSCGroupValue necesitan
   // distinguir "la campaña declara catorcena" de "no llegó el dato" para
   // decidir si aplican la heurística de duración. Todos los demás consumidores
   // solo comparan === 'mensual', así que undefined se comporta igual.
-  const tipoPeriodo = (campana as any)?.tipo_periodo || undefined;
+  // PERIODOS_LIBRES: todo es 'mensual' (fechas libres) → etiquetas/agrupaciones
+  // por mes, nunca "Cat N / AAAA" (aunque la campaña aún no haya cargado).
+  const tipoPeriodo = PERIODOS_LIBRES ? 'mensual' : ((campana as any)?.tipo_periodo || undefined);
 
   // Calcular centro del mapa basado en inventario
   const mapCenter = useMemo(() => {
@@ -2314,12 +2325,12 @@ export function CampanaDetailPage() {
                 </button>
                 {showIncompleteDetail && campana.incompleteness_detail && campana.incompleteness_detail.length > 0 && (
                   <div className={`absolute top-full right-0 mt-2 z-50 rounded-lg border shadow-xl p-3 min-w-[220px] ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'}`}>
-                    <p className={`text-xs font-semibold mb-2 ${isDark ? 'text-zinc-300' : 'text-gray-600'}`}>Desglose por catorcena:</p>
+                    <p className={`text-xs font-semibold mb-2 ${isDark ? 'text-zinc-300' : 'text-gray-600'}`}>{PERIODOS_LIBRES ? 'Desglose por periodo:' : 'Desglose por catorcena:'}</p>
                     <div className="space-y-1.5">
-                      {campana.incompleteness_detail.map((d: any) => (
+                      {campana.incompleteness_detail.map((d: any, dIdx: number) => (
                         <div key={`${d.anio}-${d.catorcena}`} className="flex items-center justify-between gap-4">
                           <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                            Cat {String(d.catorcena).padStart(2, '0')}
+                            {PERIODOS_LIBRES ? `Periodo ${dIdx + 1}` : `Cat ${String(d.catorcena).padStart(2, '0')}`}
                           </span>
                           <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
                             d.completa

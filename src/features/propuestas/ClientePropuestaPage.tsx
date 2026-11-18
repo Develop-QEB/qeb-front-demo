@@ -11,6 +11,7 @@ import { formatCurrency, formatDate } from '../../lib/utils';
 import { toNum } from '../../utils/excelFormat';
 import { descargarExcelCompartir, FMT_ENTERO, FMT_COORD } from '../../utils/excelCompartir';
 import { horarioLabel } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { useThemeStore } from '../../store/themeStore';
 // Versionado de circuitos completados (ultima version completada; piezas
 // desplazadas/quitadas en gris). Mismos helpers que la Vista Compartir interna.
@@ -142,7 +143,7 @@ interface FilterFieldConfig {
   type: 'string' | 'number';
 }
 
-const FILTER_FIELDS: FilterFieldConfig[] = [
+const FILTER_FIELDS_TODOS: FilterFieldConfig[] = [
   { field: 'codigo_unico', label: 'Codigo', type: 'string' },
   { field: 'plaza', label: 'Plaza', type: 'string' },
   { field: 'tipo_de_cara', label: 'Tipo', type: 'string' },
@@ -152,6 +153,8 @@ const FILTER_FIELDS: FilterFieldConfig[] = [
   { field: 'caras_totales', label: 'Caras', type: 'number' },
   { field: 'tarifa_publica', label: 'Tarifa', type: 'number' },
 ];
+// PERIODOS_LIBRES: sin catorcenas el campo llega null → el filtro "Catorcena" no aplica.
+const FILTER_FIELDS: FilterFieldConfig[] = FILTER_FIELDS_TODOS.filter(f => !(PERIODOS_LIBRES && f.field === 'numero_catorcena'));
 
 const FILTER_OPERATORS: { value: FilterOperator; label: string; forTypes: ('string' | 'number')[] }[] = [
   { value: '=', label: 'Igual a', forTypes: ['string', 'number'] },
@@ -290,7 +293,8 @@ export function ClientePropuestaPage() {
   });
 
   const inventario = data?.inventario || [];
-  const tipoPeriodo = (data?.cotizacion as any)?.tipo_periodo || 'catorcena';
+  // PERIODOS_LIBRES: todo es 'mensual' (fechas libres) → meses, nunca "Cat N / AAAA".
+  const tipoPeriodo = PERIODOS_LIBRES ? 'mensual' : ((data?.cotizacion as any)?.tipo_periodo || 'catorcena');
   // UDC (aeropuerto AICM): el payload público no trae sap_database, así que lo
   // detectamos por el inventario (plaza AICM). En UDC se muestra la ficha técnica
   // (UdcReservadosTable) y se oculta el mapa de ubicaciones (sin geo).

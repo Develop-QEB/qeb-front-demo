@@ -1076,6 +1076,9 @@ async getUsuarios(): Promise<{ id: number; nombre: string }[]> {
     yearInicio?: number;
     yearFin?: number;
     ocupacion?: 'vendido' | 'disponible' | 'todo';
+    // Demo (PERIODOS_LIBRES): rango por fechas libres (YYYY-MM-DD).
+    fechaInicio?: string;
+    fechaFin?: string;
   } = {}): Promise<OrdenMontajeCAT[]> {
     const response = await api.get<ApiResponse<OrdenMontajeCAT[]>>('/campanas/ordenes-montaje/cat', { params });
     if (!response.data.success || !response.data.data) {
@@ -1091,6 +1094,9 @@ async getUsuarios(): Promise<{ id: number; nombre: string }[]> {
     yearInicio?: number;
     yearFin?: number;
     ocupacion?: 'vendido' | 'disponible' | 'todo';
+    // Demo (PERIODOS_LIBRES): rango por fechas libres (YYYY-MM-DD).
+    fechaInicio?: string;
+    fechaFin?: string;
   } = {}): Promise<OrdenMontajeINVIAN[]> {
     const response = await api.get<ApiResponse<OrdenMontajeINVIAN[]>>('/campanas/ordenes-montaje/invian', { params });
     if (!response.data.success || !response.data.data) {

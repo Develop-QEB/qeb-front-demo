@@ -8,6 +8,8 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, X, Loader2 } from 'lucide-react';
 import { campanasService } from '../../services/campanas.service';
 import { Campana } from '../../types';
+import { dateRangeShort } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 
 // Campaña con reservas por debajo de las caras esperadas (totales del listado,
 // mismo criterio/exclusiones que el badge "Incompleta" del detalle de campaña).
@@ -15,6 +17,30 @@ export function esCampanaIncompleta(c: Campana): boolean {
   return c.caras_esperadas_total != null
     && Number(c.caras_esperadas_total) > 0
     && Number(c.reservas_validas_total ?? 0) < Number(c.caras_esperadas_total);
+}
+
+// Fila del desglose de completitud (incompleteness_detail). Hoy el back la
+// manda por catorcena; las fechas son opcionales (desglose por periodo).
+type DesgloseFila = {
+  catorcena?: number | null;
+  anio?: number | null;
+  inicio_periodo?: string | null;
+  fin_periodo?: string | null;
+  fecha_inicio?: string | null;
+  fecha_fin?: string | null;
+};
+
+// Etiqueta de la fila: "Cat 08 / 2026". Sin catorcena (demo con fechas
+// libres, PERIODOS_LIBRES) usa el rango de fechas si viene, y si no
+// "Periodo N" (mismo criterio que el detalle de campaña). Nunca "Cat undefined".
+function etiquetaDesglose(d: DesgloseFila, idx: number): string {
+  if (!PERIODOS_LIBRES && d.catorcena) {
+    return `Cat ${String(d.catorcena).padStart(2, '0')} / ${d.anio ?? ''}`;
+  }
+  const ini = d.inicio_periodo || d.fecha_inicio;
+  const fin = d.fin_periodo || d.fecha_fin || ini;
+  const rango = ini ? dateRangeShort(ini, fin) : '';
+  return rango || `Periodo ${idx + 1}`;
 }
 
 // Badge "Incompleta (X/Y caras)" para la tabla de campañas. Al dar clic abre el
@@ -80,7 +106,7 @@ export function IncompletaBadge({ campana, isDark }: { campana: Campana; isDark:
         ref={btnRef}
         onClick={toggle}
         className={`px-1.5 py-0.5 rounded-full text-[9px] flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity ${isDark ? 'bg-yellow-500/20 text-yellow-300' : 'bg-yellow-50 text-yellow-700'} border border-yellow-500/30`}
-        title="Ver desglose por catorcena"
+        title={PERIODOS_LIBRES ? 'Ver desglose por periodo' : 'Ver desglose por catorcena'}
       >
         <AlertTriangle className="h-3 w-3" />
         Incompleta ({reservadas}/{esperadas})
@@ -119,7 +145,7 @@ export function IncompletaBadge({ campana, isDark }: { campana: Campana; isDark:
             </div>
             {/* Body */}
             <div className="p-3">
-              <p className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Desglose por catorcena</p>
+              <p className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{PERIODOS_LIBRES ? 'Desglose por periodo' : 'Desglose por catorcena'}</p>
               {isLoading ? (
                 <div className="flex items-center gap-2 py-1">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-yellow-400" />
@@ -127,10 +153,10 @@ export function IncompletaBadge({ campana, isDark }: { campana: Campana; isDark:
                 </div>
               ) : detail && detail.length > 0 ? (
                 <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                  {detail.map(d => (
-                    <div key={`${d.anio}-${d.catorcena}`} className="flex items-center justify-between gap-4">
+                  {detail.map((d, idx) => (
+                    <div key={`${d.anio}-${d.catorcena}-${idx}`} className="flex items-center justify-between gap-4">
                       <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        Cat {String(d.catorcena).padStart(2, '0')} / {d.anio}
+                        {etiquetaDesglose(d, idx)}
                       </span>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
                         d.completa

@@ -12,6 +12,19 @@ import {
   ACTIVIDAD_TIPOS_ACTIVIDAD_PICKER,
 } from '../../services/notificaciones.service';
 import { clientesService } from '../../services/clientes.service';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
+
+// Con PERIODOS_LIBRES (sin catorcenas) el "Periodo" se elige por MES. El back
+// solo persiste la clasificacion numerica en `catorcenas`/`catorcena` (1..26),
+// asi que el mes (1..12) viaja en esos mismos campos; las vistas lo leen como
+// mes cuando PERIODOS_LIBRES esta activo.
+const PERIODO_MAX = PERIODOS_LIBRES ? 12 : 26;
+const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const etiquetaPeriodo = (n: number, corta = false): string => {
+  if (!PERIODOS_LIBRES) return `Cat ${n}`;
+  const mes = MESES[n - 1] ?? String(n);
+  return corta ? mes.slice(0, 3) : mes;
+};
 
 // Tarea a editar. Estos son los campos que precargamos. Todos opcionales
 // para tolerar filas viejas con contenido incompleto o parseo fallido.
@@ -64,6 +77,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
   const [createdId, setCreatedId] = useState<number | null>(null);
   // Ajuste feedback 2026-08-15: selectores manuales adicionales.
   // Catorcena cambio a MULTI-select (feedback 2026-10-19): array de 1-26.
+  // Con PERIODOS_LIBRES el mismo array guarda meses (1-12), ver PERIODO_MAX.
   // Estatus: 3 opciones Abierto|Activo|Finalizado (feedback 2026-10-19);
   // 'Cerrado' queda como alias legacy equivalente a 'Finalizado'.
   const [anio, setAnio] = useState<string>('');
@@ -142,9 +156,10 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
         }
         if (c.anio) setAnio(String(c.anio));
         // Catorcenas: aceptamos array nuevo o fallback al campo legacy singular.
+        // Con PERIODOS_LIBRES son meses: se descarta lo que no sea 1..12.
         if (Array.isArray(c.catorcenas) && c.catorcenas.length > 0) {
-          setCatorcenas(c.catorcenas.filter(n => Number.isFinite(n) && n >= 1 && n <= 26));
-        } else if (c.catorcena) {
+          setCatorcenas(c.catorcenas.filter(n => Number.isFinite(n) && n >= 1 && n <= PERIODO_MAX));
+        } else if (c.catorcena && c.catorcena >= 1 && c.catorcena <= PERIODO_MAX) {
           setCatorcenas([c.catorcena]);
         }
         // 'Cerrado' legacy se normaliza a 'Finalizado' al editar.
@@ -177,17 +192,17 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
     const y = new Date().getFullYear();
     return [y - 1, y, y + 1];
   }, []);
-  const catorcenasOpciones = useMemo(() => Array.from({ length: 26 }, (_, i) => i + 1), []);
+  const catorcenasOpciones = useMemo(() => Array.from({ length: PERIODO_MAX }, (_, i) => i + 1), []);
   const toggleCatorcena = (n: number) => {
     setCatorcenas(prev => prev.includes(n) ? prev.filter(x => x !== n) : [...prev, n].sort((a, b) => a - b));
   };
   const catorcenasLabel = catorcenas.length === 0
-    ? 'Selecciona catorcena(s)'
+    ? (PERIODOS_LIBRES ? 'Selecciona mes(es)' : 'Selecciona catorcena(s)')
     : catorcenas.length === 1
-      ? `Cat ${catorcenas[0]}`
+      ? etiquetaPeriodo(catorcenas[0])
       : catorcenas.length <= 4
-        ? catorcenas.map(c => `Cat ${c}`).join(', ')
-        : `${catorcenas.length} catorcenas`;
+        ? catorcenas.map(c => etiquetaPeriodo(c, true)).join(', ')
+        : `${catorcenas.length} ${PERIODOS_LIBRES ? 'meses' : 'catorcenas'}`;
 
   const listQuery = useQuery({
     queryKey: ['actividad-comercial-refs', subtipo, debouncedSearch],
@@ -319,6 +334,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
       anio: anio ? Number(anio) : undefined,
       // Catorcenas: enviamos SIEMPRE array; mantenemos la clave singular como
       // alias (primera) para que listados legacy sigan mostrando algo.
+      // Con PERIODOS_LIBRES son los meses elegidos (1-12; el back valida 1-26).
       catorcenas: catorcenas.length > 0 ? catorcenas : undefined,
       catorcena: catorcenas[0] ?? undefined,
       estatus_actividad: estatusActividad || undefined,
@@ -690,8 +706,9 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                 </select>
               </div>
               <div className="relative">
-                <label className={labelCls}>Periodo (catorcena)</label>
-                {/* Multi-select con checkboxes (feedback Jos 2026-10-19). */}
+                <label className={labelCls}>{PERIODOS_LIBRES ? 'Periodo (mes)' : 'Periodo (catorcena)'}</label>
+                {/* Multi-select con checkboxes (feedback Jos 2026-10-19).
+                    Con PERIODOS_LIBRES las opciones son los 12 meses. */}
                 <button
                   type="button"
                   onClick={() => setCatorcenaDropdownOpen(o => !o)}
@@ -716,7 +733,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                           checked={catorcenas.includes(c)}
                           onChange={() => toggleCatorcena(c)}
                         />
-                        Cat {c}
+                        {etiquetaPeriodo(c)}
                       </label>
                     ))}
                   </div>

@@ -14,6 +14,7 @@ import { solicitudesService } from '../../services/solicitudes.service';
 import { Catorcena } from '../../types';
 import { useThemeStore } from '../../store/themeStore';
 import { udcZonaDeArticulo, esArticuloUDC } from '../../lib/udc';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import * as XLSX from 'xlsx';
 
 // Una fila es digital según el tipo del inventario (`tradicional_digital`); si
@@ -681,9 +682,11 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
   }, [isOpen]);
 
   // Get catorcenas for filter
+  // PERIODOS_LIBRES: no hay catorcenas; el periodo se filtra con Desde/Hasta.
   const { data: catorcenasData } = useQuery({
     queryKey: ['catorcenas'],
     queryFn: () => solicitudesService.getCatorcenas(),
+    enabled: !PERIODOS_LIBRES,
   });
 
   // Set default catorcena filter to current catorcena on open.
@@ -691,6 +694,7 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
   // se parsea como medianoche UTC, que en México (UTC-6) cae en el día anterior y rompía el
   // match en los bordes de la catorcena. El slice a 10 chars sirve para fechas puras e ISO.
   useEffect(() => {
+    if (PERIODOS_LIBRES) return; // sin catorcenas: el reporte abre sin filtro de periodo
     if (isOpen && catorcenasData?.data && selectedCatorcenas.length === 0) {
       const now = new Date();
       const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -724,12 +728,21 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
     };
   }, [selectedCatorcenas]);
 
+  // PERIODOS_LIBRES: el rango Desde/Hasta también viaja al back (filtra por
+  // traslape y arma el inventario libre para 'Disponible'/'Todo'); en pantalla
+  // se sigue filtrando por la fecha de inicio de cada circuito.
+  const apiFechaRange = useMemo(
+    () => (PERIODOS_LIBRES && fechaInicio && fechaFin ? { fechaInicio, fechaFin } : {}),
+    [fechaInicio, fechaFin]
+  );
+
   // Query for CAT data
   const { data: catData, isLoading: isLoadingCAT } = useQuery({
-    queryKey: ['ordenes-montaje-cat', status, apiCatorcenaRange, selectedCatorcenas, ocupacionFilter],
+    queryKey: ['ordenes-montaje-cat', status, apiCatorcenaRange, apiFechaRange, selectedCatorcenas, ocupacionFilter],
     queryFn: () => campanasService.getOrdenMontajeCAT({
       status: status || undefined,
       ...apiCatorcenaRange,
+      ...apiFechaRange,
       ocupacion: ocupacionFilter,
     }),
     enabled: isOpen && (activeTab === 'cat' || activeTab === 'digital' || activeTab === 'ocupacion-digital' || activeTab === 'udc'),
@@ -740,10 +753,11 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
 
   // Query for INVIAN data
   const { data: invianData, isLoading: isLoadingINVIAN } = useQuery({
-    queryKey: ['ordenes-montaje-invian', status, apiCatorcenaRange, selectedCatorcenas, ocupacionFilter],
+    queryKey: ['ordenes-montaje-invian', status, apiCatorcenaRange, apiFechaRange, selectedCatorcenas, ocupacionFilter],
     queryFn: () => campanasService.getOrdenMontajeINVIAN({
       status: status || undefined,
       ...apiCatorcenaRange,
+      ...apiFechaRange,
       ocupacion: ocupacionFilter,
     }),
     enabled: isOpen && (activeTab === 'invian' || activeTab === 'invian-digital' || activeTab === 'invian-unmas'),
@@ -1891,7 +1905,7 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                 Filtros
                 {hasActiveFilters && (
                   <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/20 text-[10px]">
-                    {(selectedCatorcenas.length > 0 ? 1 : 0) + (fechaInicio ? 1 : 0) + (ocupacionFilter !== 'vendido' ? 1 : 0) + (apsEspecificoFilter !== 'todas' ? 1 : 0) + (formatoFilter.length > 0 ? 1 : 0) + currentFilters.length + currentGroupings.length + (currentSortField ? 1 : 0)}
+                    {(selectedCatorcenas.length > 0 ? 1 : 0) + (fechaInicio || fechaFin ? 1 : 0) +(ocupacionFilter !== 'vendido' ? 1 : 0) + (apsEspecificoFilter !== 'todas' ? 1 : 0) + (formatoFilter.length > 0 ? 1 : 0) + currentFilters.length + currentGroupings.length + (currentSortField ? 1 : 0)}
                   </span>
                 )}
               </button>
@@ -1906,7 +1920,8 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                   </div>
 
                   <div className="p-4 space-y-4 max-h-[50vh] overflow-y-auto">
-                    {/* Ocupación */}
+                    {/* Ocupación — con PERIODOS_LIBRES, 'Disponible'/'Todo' usan el rango
+                        Desde/Hasta (el back arma el inventario libre de esas fechas). */}
                     <div>
                       <label className="text-xs font-medium text-zinc-400 mb-2 block">Ocupación</label>
                       <div className="flex gap-2">
@@ -1933,6 +1948,11 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                           ? 'Muestra lo que ya está en campañas (vendido). El filtro de APS aplica aquí.'
                           : 'Incluye inventario libre/reservado del período. La columna Estado muestra RESERVADO / DISPONIBLE.'}
                       </p>
+                      {PERIODOS_LIBRES && !ocupacionSoloVendido && !(fechaInicio && fechaFin) && (
+                        <p className="text-[10px] text-amber-400 mt-1 leading-snug">
+                          Elige Desde y Hasta (o "Aplicar mes actual") para ver el inventario disponible.
+                        </p>
+                      )}
                     </div>
 
                     {/* Formato (multiselect) — aplica en TODAS las pestañas */}
@@ -2002,7 +2022,29 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                       </div>
                     </div>
 
+                    {/* Quick: Mes actual (PERIODOS_LIBRES) — llena Desde/Hasta con el mes en curso */}
+                    {PERIODOS_LIBRES && (
+                    <div>
+                      <button
+                        onClick={() => {
+                          const now = new Date();
+                          const y = now.getFullYear();
+                          const m = now.getMonth();
+                          const pad = (n: number) => String(n).padStart(2, '0');
+                          const ultimoDia = new Date(y, m + 1, 0).getDate();
+                          setFechaInicio(`${y}-${pad(m + 1)}-01`);
+                          setFechaFin(`${y}-${pad(m + 1)}-${pad(ultimoDia)}`);
+                          setCurrentPage(1);
+                        }}
+                        className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 transition-colors"
+                      >
+                        ⏱ Aplicar mes actual
+                      </button>
+                    </div>
+                    )}
+
                     {/* Quick: Catorcena Actual */}
+                    {!PERIODOS_LIBRES && (
                     <div>
                       <button
                         onClick={() => {
@@ -2021,6 +2063,7 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                         ⏱ Aplicar catorcena actual
                       </button>
                     </div>
+                    )}
 
                     {/* Date Range */}
                     <div>
@@ -2079,16 +2122,24 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                           <div className="flex items-center justify-between text-xs">
                             <span className="text-purple-300">Rango seleccionado:</span>
                             <span className="text-white font-medium">
-                              {new Date(fechaInicio).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              {/* formatDate parsea YYYY-MM-DD sin zona horaria (new Date('YYYY-MM-DD')
+                                  es medianoche UTC y en México mostraba el día anterior). */}
+                              {formatDate(fechaInicio)}
                               {' → '}
-                              {new Date(fechaFin).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              {formatDate(fechaFin)}
                             </span>
                           </div>
                         </div>
                       )}
+                      {PERIODOS_LIBRES && (
+                        <p className="text-[10px] text-zinc-500 mt-1.5 leading-snug">
+                          Filtra por la fecha de inicio de cada circuito.
+                        </p>
+                      )}
                     </div>
 
-                    {/* Periodos (catorcenas — sirve para mensual y catorcena) */}
+                    {/* Periodos (catorcenas — sirve para mensual y catorcena). Oculto con PERIODOS_LIBRES. */}
+                    {!PERIODOS_LIBRES && (
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-xs font-medium text-zinc-400">Periodos ({selectedCatorcenas.length} seleccionados)</label>
@@ -2135,6 +2186,7 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
                         )}
                       </div>
                     </div>
+                    )}
 
                     {/* Sort */}
                     <div>

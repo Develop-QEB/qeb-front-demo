@@ -1,4 +1,5 @@
 import api from '../lib/api';
+import { PERIODOS_LIBRES } from '../config/featureFlags';
 
 export interface DashboardKPIs {
   total: number;
@@ -109,8 +110,10 @@ export interface TopCliente {
 // en terminos de la tabla: p. ej. el lunes 3-ago ya corre la Cat 16 aunque su
 // fecha_inicio en tabla sea 4-ago. Comparacion por fecha YYYY-MM-DD (las
 // fechas vienen como ISO a medianoche UTC).
+// Con PERIODOS_LIBRES no hay catorcenas: siempre null (el dashboard arranca
+// por fechas, ver filtroInicialDashboard).
 export function resolveCatorcenaActual(opts?: FilterOptions): Catorcena | null {
-  if (!opts) return null;
+  if (PERIODOS_LIBRES || !opts) return null;
   const cats = opts.catorcenas || [];
   const d = new Date();
   d.setDate(d.getDate() + 1); // "manana": compensa el corrimiento de la tabla
@@ -123,6 +126,29 @@ export function resolveCatorcenaActual(opts?: FilterOptions): Catorcena | null {
   const pasadas = cats.filter(c => dia(c.fecha_inicio) <= ref);
   if (pasadas.length === 0) return null;
   return pasadas.reduce((a, b) => (dia(a.fecha_inicio) >= dia(b.fecha_inicio) ? a : b));
+}
+
+// YYYY-MM-DD en hora local (mismo formato que los <input type="date">).
+function ymdLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Mes calendario en curso (dia 1 al ultimo dia), como rango de fechas libres.
+export function periodoMesActual(ref: Date = new Date()): { fecha_inicio: string; fecha_fin: string } {
+  return {
+    fecha_inicio: ymdLocal(new Date(ref.getFullYear(), ref.getMonth(), 1)),
+    fecha_fin: ymdLocal(new Date(ref.getFullYear(), ref.getMonth() + 1, 0)),
+  };
+}
+
+// Filtro con el que ARRANCA el dashboard. Lo comparten DashboardPage y el
+// prefetch (usePrefetch) para pedir stats con la MISMA queryKey.
+//  - PERIODOS_LIBRES: el mes en curso por fechas (no depende de filter-options).
+//  - Con catorcenas: la catorcena vigente, o sin periodo si no se resolvio.
+export function filtroInicialDashboard(opts?: FilterOptions): DashboardFilters {
+  if (PERIODOS_LIBRES) return periodoMesActual();
+  const actual = resolveCatorcenaActual(opts);
+  return actual ? { catorcena_id: actual.id } : {};
 }
 
 function appendMulti(params: URLSearchParams, key: string, value?: string[]): void {

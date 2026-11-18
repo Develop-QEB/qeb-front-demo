@@ -12,7 +12,8 @@ import { Header } from '../../components/layout/Header';
 import { solicitudesService } from '../../services/solicitudes.service';
 import { Solicitud, Catorcena } from '../../types';
 import { formatCurrency, formatDate } from '../../lib/utils';
-import { tablePeriodoLabel } from '../../lib/periodos';
+import { tablePeriodoLabel, dayMonthYear } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 import { CreateSolicitudModal } from './CreateSolicitudModal';
 import { ViewSolicitudModal, StatusModal, AtenderModal } from './SolicitudModals';
 import { useAuthStore } from '../../store/authStore';
@@ -610,21 +611,28 @@ const SolicitudRow = React.memo(function SolicitudRow({
       <td className="px-4 py-3">
         <span className={`font-medium ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>{formatCurrency(item.presupuesto)}</span>
       </td>
-      <td className="px-4 py-3">
-        {(item as any).tipo_periodo ? (
-          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-            (item as any).tipo_periodo === 'mensual'
-              ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-50 text-blue-700') + ' border border-blue-500/30'
-              : (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-50 text-amber-700') + ' border border-amber-500/30'
-          }`}>
-            {(item as any).tipo_periodo === 'mensual' ? 'Mensual' : 'Catorcena'}
-          </span>
-        ) : <span className={`${isDark ? 'text-zinc-600' : 'text-gray-400'} text-xs`}>-</span>}
-      </td>
+      {/* Tipo de periodo (Mensual / Catorcena). Oculto en el demo sin
+          catorcenas (PERIODOS_LIBRES): todo es por fechas libres. */}
+      {!PERIODOS_LIBRES && (
+        <td className="px-4 py-3">
+          {(item as any).tipo_periodo ? (
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+              (item as any).tipo_periodo === 'mensual'
+                ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-50 text-blue-700') + ' border border-blue-500/30'
+                : (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-50 text-amber-700') + ' border border-amber-500/30'
+            }`}>
+              {(item as any).tipo_periodo === 'mensual' ? 'Mensual' : 'Catorcena'}
+            </span>
+          ) : <span className={`${isDark ? 'text-zinc-600' : 'text-gray-400'} text-xs`}>-</span>}
+        </td>
+      )}
       <td className="px-4 py-3">
         {(() => {
           const tp = (item as any).tipo_periodo;
-          const label = tablePeriodoLabel(tp, (item as any).periodo_fecha_inicio, (item as any).catorcena_inicio, (item as any).anio_inicio);
+          // PERIODOS_LIBRES: fecha exacta del periodo ("15 Abr 2026"), sin catorcena.
+          const label = PERIODOS_LIBRES
+            ? (dayMonthYear((item as any).periodo_fecha_inicio) || '-')
+            : tablePeriodoLabel(tp, (item as any).periodo_fecha_inicio, (item as any).catorcena_inicio, (item as any).anio_inicio);
           if (label === '-') return <span className={`${isDark ? 'text-zinc-600' : 'text-gray-400'} text-xs`}>-</span>;
           return <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-xs`}>{label}</span>;
         })()}
@@ -632,7 +640,9 @@ const SolicitudRow = React.memo(function SolicitudRow({
       <td className="px-4 py-3">
         {(() => {
           const tp = (item as any).tipo_periodo;
-          const label = tablePeriodoLabel(tp, (item as any).periodo_fecha_fin, (item as any).catorcena_fin, (item as any).anio_fin);
+          const label = PERIODOS_LIBRES
+            ? (dayMonthYear((item as any).periodo_fecha_fin) || '-')
+            : tablePeriodoLabel(tp, (item as any).periodo_fecha_fin, (item as any).catorcena_fin, (item as any).anio_fin);
           if (label === '-') return <span className={`${isDark ? 'text-zinc-600' : 'text-gray-400'} text-xs`}>-</span>;
           return <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-xs`}>{label}</span>;
         })()}
@@ -805,6 +815,8 @@ export function SolicitudesPage() {
     queryFn: () => solicitudesService.getCatorcenas(),
     staleTime: 1000 * 60 * 30, // 30 min
     gcTime: 1000 * 60 * 60,    // 1 h
+    // Demo sin catorcenas: el filtro de periodo por catorcena está oculto.
+    enabled: !PERIODOS_LIBRES,
   });
 
   // Combine debounced tags + debounced input into all active search terms
@@ -1014,7 +1026,7 @@ export function SolicitudesPage() {
 
   // Get current catorcena
   const currentCatorcena = useMemo((): Catorcena | null => {
-    if (!catorcenasData?.data) return null;
+    if (PERIODOS_LIBRES || !catorcenasData?.data) return null;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -1171,11 +1183,13 @@ export function SolicitudesPage() {
   }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, groupBy, advancedFilters, searchTags]);
   const aplicarFiltrosGuardados = React.useCallback((d: FiltrosDatos) => {
     setStatusSel(leerStrings(d.statusSel));
-    setTipoPeriodo(leerString(d.tipoPeriodo));
-    setYearInicio(leerNumeroOpcional(d.yearInicio));
-    setYearFin(leerNumeroOpcional(d.yearFin));
-    setCatorcenaInicio(leerNumeroOpcional(d.catorcenaInicio));
-    setCatorcenaFin(leerNumeroOpcional(d.catorcenaFin));
+    // PERIODOS_LIBRES: los filtros de periodo por catorcena y tipo de periodo
+    // están ocultos; una vista guardada no los reactiva (no viajan al back).
+    setTipoPeriodo(PERIODOS_LIBRES ? '' : leerString(d.tipoPeriodo));
+    setYearInicio(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.yearInicio));
+    setYearFin(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.yearFin));
+    setCatorcenaInicio(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.catorcenaInicio));
+    setCatorcenaFin(PERIODOS_LIBRES ? undefined : leerNumeroOpcional(d.catorcenaFin));
     setHistorialFilter(leerObjetoStrings(d.historialFilter) as HistorialFilterValues);
     setCambiosSeleccion(Array.isArray(d.cambiosSeleccion) ? leerStrings(d.cambiosSeleccion) : null);
     setGroupBy(leerString(d.groupBy));
@@ -1262,7 +1276,7 @@ export function SolicitudesPage() {
             </div>
             <div className="mt-4 flex items-center gap-2">
               <span className={`text-xs px-2 py-1 rounded-full ${isDark ? 'bg-zinc-800/80 text-zinc-300 border-zinc-700/50' : 'bg-gray-100 text-gray-700 border-gray-200'} border`}>
-                {(statusSel.length > 0 || allSearchTerms.length > 0 || advancedFilters.length > 0) ? 'Filtrado' : 'Todas las catorcenas'}
+                {(statusSel.length > 0 || allSearchTerms.length > 0 || advancedFilters.length > 0) ? 'Filtrado' : (PERIODOS_LIBRES ? 'Todas' : 'Todas las catorcenas')}
               </span>
             </div>
           </div>
@@ -1622,52 +1636,59 @@ export function SolicitudesPage() {
 
                 <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
 
-                {/* Tipo Periodo Filter */}
-                <FilterChip
-                  label="Tipo Periodo"
-                  options={['catorcena', 'mensual']}
-                  value={tipoPeriodo}
-                  onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
-                  onClear={() => { setTipoPeriodo(''); setPage(1); }}
-                  isDark={isDark}
-                />
-
-                <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
-
-                {/* Current Catorcena Indicator */}
-                {currentCatorcena && (
+                {/* Demo sin catorcenas (PERIODOS_LIBRES): se ocultan el chip
+                    Tipo Periodo, el de catorcena actual y el filtro de periodo
+                    por año/catorcena (su popover exige catorcenas). */}
+                {!PERIODOS_LIBRES && (
                   <>
-                    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                      <Clock className="h-3 w-3" />
-                      <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
-                    </div>
+                    {/* Tipo Periodo Filter */}
+                    <FilterChip
+                      label="Tipo Periodo"
+                      options={['catorcena', 'mensual']}
+                      value={tipoPeriodo}
+                      onChange={(val) => { setTipoPeriodo(val); setPage(1); }}
+                      onClear={() => { setTipoPeriodo(''); setPage(1); }}
+                      isDark={isDark}
+                    />
+
                     <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+
+                    {/* Current Catorcena Indicator */}
+                    {currentCatorcena && (
+                      <>
+                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border ${isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                          <Clock className="h-3 w-3" />
+                          <span>Actual: Cat. {currentCatorcena.numero_catorcena} / {currentCatorcena.a_o}</span>
+                        </div>
+                        <div className={`h-4 w-px ${isDark ? 'bg-zinc-700' : 'bg-gray-200'} mx-1`} />
+                      </>
+                    )}
+
+                    {/* Period Filter */}
+                    <PeriodFilterPopover
+                      catorcenasData={catorcenasData}
+                      yearInicio={yearInicio}
+                      yearFin={yearFin}
+                      catorcenaInicio={catorcenaInicio}
+                      catorcenaFin={catorcenaFin}
+                      isDark={isDark}
+                      onApply={(yi, yf, ci, cf) => {
+                        setYearInicio(yi);
+                        setYearFin(yf);
+                        setCatorcenaInicio(ci);
+                        setCatorcenaFin(cf);
+                        setPage(1);
+                      }}
+                      onClear={() => {
+                        setYearInicio(undefined);
+                        setYearFin(undefined);
+                        setCatorcenaInicio(undefined);
+                        setCatorcenaFin(undefined);
+                        setPage(1);
+                      }}
+                    />
                   </>
                 )}
-
-                {/* Period Filter */}
-                <PeriodFilterPopover
-                  catorcenasData={catorcenasData}
-                  yearInicio={yearInicio}
-                  yearFin={yearFin}
-                  catorcenaInicio={catorcenaInicio}
-                  catorcenaFin={catorcenaFin}
-                  isDark={isDark}
-                  onApply={(yi, yf, ci, cf) => {
-                    setYearInicio(yi);
-                    setYearFin(yf);
-                    setCatorcenaInicio(ci);
-                    setCatorcenaFin(cf);
-                    setPage(1);
-                  }}
-                  onClear={() => {
-                    setYearInicio(undefined);
-                    setYearFin(undefined);
-                    setCatorcenaInicio(undefined);
-                    setCatorcenaFin(undefined);
-                    setPage(1);
-                  }}
-                />
 
                 {/* Historial Filter (cambios de estatus / creacion por fecha) */}
                 <HistorialFilterPopover
@@ -1816,7 +1837,9 @@ export function SolicitudesPage() {
                       <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Campaña</th>
                       <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Marca</th>
                       <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Presupuesto</th>
-                      <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Tipo</th>
+                      {!PERIODOS_LIBRES && (
+                        <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Tipo</th>
+                      )}
                       <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Inicio</th>
                       <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Fin</th>
                       <th className={`px-4 py-3 text-left text-xs font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wider`}>Asignado</th>

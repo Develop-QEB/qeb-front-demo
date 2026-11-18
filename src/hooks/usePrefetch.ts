@@ -8,7 +8,8 @@ import { proveedoresService } from '../services/proveedores.service';
 import { inventariosService } from '../services/inventarios.service';
 import { campanasService } from '../services/campanas.service';
 import { propuestasService } from '../services/propuestas.service';
-import { dashboardService, resolveCatorcenaActual, FilterOptions } from '../services/dashboard.service';
+import { dashboardService, filtroInicialDashboard, FilterOptions } from '../services/dashboard.service';
+import { PERIODOS_LIBRES } from '../config/featureFlags';
 
 // Hook para prefetching de datos
 export function usePrefetch() {
@@ -98,23 +99,27 @@ export function usePrefetch() {
     });
   }, [queryClient]);
 
-  // Prefetch del dashboard: primero filter-options y con la catorcena actual
-  // se calienta stats con la MISMA key que usa DashboardPage (el dashboard
-  // arranca filtrado a la catorcena actual por default).
+  // Prefetch del dashboard: calienta stats con la MISMA key que usa
+  // DashboardPage (filtroInicialDashboard). Con catorcenas el filtro inicial
+  // (catorcena vigente) sale de filter-options, asi que primero se espera esa
+  // query; con PERIODOS_LIBRES es el mes en curso por fechas y van en paralelo.
   const prefetchDashboard = useCallback(async () => {
-    await queryClient.prefetchQuery({
+    const opcionesPrefetch = queryClient.prefetchQuery({
       queryKey: ['dashboard', 'filter-options'],
       queryFn: () => dashboardService.getFilterOptions(),
       staleTime: 30 * 60 * 1000,
     });
+    if (!PERIODOS_LIBRES) await opcionesPrefetch;
     const opts = queryClient.getQueryData<FilterOptions>(['dashboard', 'filter-options']);
-    const catId = resolveCatorcenaActual(opts)?.id;
-    const filters = catId ? { catorcena_id: catId } : {};
-    await queryClient.prefetchQuery({
-      queryKey: ['dashboard', 'stats', filters],
-      queryFn: () => dashboardService.getStats(filters),
-      staleTime: 15 * 60 * 1000,
-    });
+    const filters = filtroInicialDashboard(opts);
+    await Promise.all([
+      opcionesPrefetch,
+      queryClient.prefetchQuery({
+        queryKey: ['dashboard', 'stats', filters],
+        queryFn: () => dashboardService.getStats(filters),
+        staleTime: 15 * 60 * 1000,
+      }),
+    ]);
   }, [queryClient]);
 
   // Prefetch ligero — solo dashboard, el resto carga lazy por ruta

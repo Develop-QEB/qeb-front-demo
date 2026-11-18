@@ -4,6 +4,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { campanasService } from '../../services/campanas.service';
 import type { VersionarioArtesPreview, VersionarioArtesPreviewRow } from '../../utils/exportVersionarioArtes';
 import type { Catorcena } from '../../types';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 
 // ---- FilterChipModal — versión local del FilterChip para uso dentro del modal ----
 function FilterChipModal({
@@ -271,9 +272,9 @@ function PeriodFilterModal({
   const getDisplayText = () => {
     if (!isActive) return 'Periodo';
     let text = `${yearInicio}`;
-    if (catorcenaInicio) text += `/C${catorcenaInicio}`;
+    if (catorcenaInicio && !PERIODOS_LIBRES) text += `/C${catorcenaInicio}`;
     text += ` - ${yearFin}`;
-    if (catorcenaFin) text += `/C${catorcenaFin}`;
+    if (catorcenaFin && !PERIODOS_LIBRES) text += `/C${catorcenaFin}`;
     return text;
   };
 
@@ -306,7 +307,8 @@ function PeriodFilterModal({
               <p className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mt-1`}>Selecciona año inicio y fin</p>
             </div>
             <div className="p-3 space-y-3">
-              <div className="grid grid-cols-2 gap-2">
+              {/* PERIODOS_LIBRES: solo años (sin selects de catorcena). */}
+              <div className={`grid ${PERIODOS_LIBRES ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Año Inicio *</label>
                   <select
@@ -323,6 +325,7 @@ function PeriodFilterModal({
                     {yearInicioOptions.map(y => <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
+                {!PERIODOS_LIBRES && (
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Cat. Inicio</label>
                   <select
@@ -339,8 +342,9 @@ function PeriodFilterModal({
                     {catorcenasInicioOptions.map(c => <option key={c.id} value={c.numero_catorcena}>Cat. {c.numero_catorcena}</option>)}
                   </select>
                 </div>
+                )}
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className={`grid ${PERIODOS_LIBRES ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Año Fin *</label>
                   <select
@@ -357,6 +361,7 @@ function PeriodFilterModal({
                     {yearFinOptions.map(y => <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
+                {!PERIODOS_LIBRES && (
                 <div>
                   <label className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Cat. Fin</label>
                   <select
@@ -373,6 +378,7 @@ function PeriodFilterModal({
                     {catorcenasFinOptions.map(c => <option key={c.id} value={c.numero_catorcena}>Cat. {c.numero_catorcena}</option>)}
                   </select>
                 </div>
+                )}
               </div>
             </div>
             <div className={`p-3 border-t ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex items-center justify-between gap-2`}>
@@ -826,8 +832,9 @@ export function VersionarioArtesPreviewModal({ isOpen, onClose, preview, isLoadi
     } else if (initialPeriod) {
       setPeriodYearInicio(initialPeriod.year);
       setPeriodYearFin(initialPeriod.year);
-      setPeriodCatInicio(initialPeriod.catorcena);
-      setPeriodCatFin(initialPeriod.catorcena);
+      // PERIODOS_LIBRES: el periodo es solo por año (no hay catorcenas).
+      setPeriodCatInicio(PERIODOS_LIBRES ? undefined : initialPeriod.catorcena);
+      setPeriodCatFin(PERIODOS_LIBRES ? undefined : initialPeriod.catorcena);
       setShowFilters(true);
     }
   }, [isOpen]);

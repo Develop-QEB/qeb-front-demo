@@ -9,6 +9,8 @@ import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, X, Loader2 } from 'lucide-react';
 import { propuestasService } from '../../services/propuestas.service';
 import { Propuesta } from '../../types';
+import { dateRangeShort } from '../../lib/periodos';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 
 // Status badge colors — dos mapas estáticos. El dark-mode toggle sigue
 // funcionando porque al cambiar `isDark` el componente re-renderiza y
@@ -100,6 +102,30 @@ export function esPropuestaIncompleta(p: Propuesta): boolean {
     && Number(p.reservas_validas_total ?? 0) < Number(p.caras_esperadas_total);
 }
 
+// Fila del desglose de completitud. Hoy el back la manda por catorcena; las
+// fechas son opcionales (por si el desglose llega por periodo de fechas).
+type DesgloseFila = {
+  catorcena?: number | null;
+  anio?: number | null;
+  inicio_periodo?: string | null;
+  fin_periodo?: string | null;
+  fecha_inicio?: string | null;
+  fecha_fin?: string | null;
+};
+
+// Etiqueta de la fila: "Cat 08 / 2026". Sin catorcena (demo con fechas
+// libres, PERIODOS_LIBRES) usa el rango de fechas si viene, y si no
+// "Periodo N" (mismo criterio que el detalle de campaña). Nunca "Cat undefined".
+function etiquetaDesglose(d: DesgloseFila, idx: number): string {
+  if (!PERIODOS_LIBRES && d.catorcena) {
+    return `Cat ${String(d.catorcena).padStart(2, '0')} / ${d.anio ?? ''}`;
+  }
+  const ini = d.inicio_periodo || d.fecha_inicio;
+  const fin = d.fin_periodo || d.fecha_fin || ini;
+  const rango = ini ? dateRangeShort(ini, fin) : '';
+  return rango || `Periodo ${idx + 1}`;
+}
+
 // Badge "Incompleta (X/Y)" para la tabla de propuestas. Al dar clic abre el
 // desglose por catorcena (GET /propuestas/:id/completitud), igual que el badge
 // de campañas. Popover con position:fixed + portal para que no lo recorte el
@@ -156,7 +182,7 @@ export function IncompletaBadge({ propuesta, isDark }: { propuesta: Propuesta; i
         ref={btnRef}
         onClick={toggle}
         className={`px-1.5 py-0.5 rounded-full text-[9px] flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity ${isDark ? 'bg-yellow-500/20 text-yellow-300' : 'bg-yellow-50 text-yellow-700'} border border-yellow-500/30`}
-        title="Ver desglose por catorcena"
+        title={PERIODOS_LIBRES ? 'Ver desglose por periodo' : 'Ver desglose por catorcena'}
       >
         <AlertTriangle className="h-3 w-3" />
         Incompleta ({reservadas}/{esperadas})
@@ -187,7 +213,7 @@ export function IncompletaBadge({ propuesta, isDark }: { propuesta: Propuesta; i
               </button>
             </div>
             <div className="p-3">
-              <p className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Desglose por catorcena</p>
+              <p className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{PERIODOS_LIBRES ? 'Desglose por periodo' : 'Desglose por catorcena'}</p>
               {isLoading ? (
                 <div className="flex items-center gap-2 py-1">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-yellow-400" />
@@ -195,10 +221,10 @@ export function IncompletaBadge({ propuesta, isDark }: { propuesta: Propuesta; i
                 </div>
               ) : detail && detail.length > 0 ? (
                 <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                  {detail.map(d => (
-                    <div key={`${d.anio}-${d.catorcena}`} className="flex items-center justify-between gap-4">
+                  {detail.map((d, idx) => (
+                    <div key={`${d.anio}-${d.catorcena}-${idx}`} className="flex items-center justify-between gap-4">
                       <span className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                        Cat {String(d.catorcena).padStart(2, '0')} / {d.anio}
+                        {etiquetaDesglose(d, idx)}
                       </span>
                       <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
                         d.completa

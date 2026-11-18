@@ -16,6 +16,7 @@ import { campanasService } from '../../services/campanas.service';
 import { notificacionesService } from '../../services/notificaciones.service';
 import { analisisOcupacionService, AnalisisOcupacion, InventarioResumen } from '../../services/analisisOcupacion.service';
 import { Inventario } from '../../types';
+import { PERIODOS_LIBRES } from '../../config/featureFlags';
 
 import { InventarioMap } from './InventarioMap';
 import { BloqueoModal, BloqueoData } from './BloqueoModal';
@@ -228,6 +229,9 @@ export function InventariosPage() {
   const analisisMenuRef = useRef<HTMLDivElement>(null);
   const bloqueoMenuRef = useRef<HTMLDivElement>(null);
   const isDev = user?.rol === 'DEV';
+  // Auditoría de conflictos y Reorganizar ocupación trabajan por catorcena:
+  // con PERIODOS_LIBRES (sin catorcenas) no se ofrecen.
+  const herramientasCatorcena = isDev && !PERIODOS_LIBRES;
 
   useEffect(() => {
     if (!analisisMenuOpen && !bloqueoMenuOpen) return;
@@ -266,7 +270,7 @@ export function InventariosPage() {
   // igual que el módulo. El parámetro se limpia para que un refresh no reabra.
   useEffect(() => {
     if (searchParams.get('auditoria') !== '1') return;
-    if (user?.rol === 'DEV') {
+    if (user?.rol === 'DEV' && !PERIODOS_LIBRES) {
       setAuditoriaAutoIniciar(true);
       setIsAuditoriaOpen(true);
     }
@@ -1343,7 +1347,7 @@ export function InventariosPage() {
                         <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Abrir un análisis guardado</div>
                       </div>
                     </button>
-                    {isDev && (
+                    {herramientasCatorcena && (
                       <button
                         onClick={() => { setAnalisisMenuOpen(false); setAuditoriaAutoIniciar(false); setIsAuditoriaOpen(true); }}
                         className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors border-t ${isDark ? 'text-amber-300 hover:bg-amber-500/10 border-zinc-800' : 'text-amber-700 hover:bg-amber-50 border-gray-100'}`}
@@ -1355,7 +1359,7 @@ export function InventariosPage() {
                         </div>
                       </button>
                     )}
-                    {isDev && (
+                    {herramientasCatorcena && (
                       <button
                         onClick={() => { setAnalisisMenuOpen(false); setIsReorganizarOpen(true); }}
                         className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left text-sm transition-colors border-t ${isDark ? 'text-cyan-300 hover:bg-cyan-500/10 border-zinc-800' : 'text-cyan-700 hover:bg-cyan-50 border-gray-100'}`}
@@ -1439,7 +1443,7 @@ export function InventariosPage() {
                           )}
                         </div>
                         <div className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                          Matriz inventario × catorcena con tareas a Tráfico
+                          {PERIODOS_LIBRES ? 'Matriz inventario × periodo con tareas a Tráfico' : 'Matriz inventario × catorcena con tareas a Tráfico'}
                         </div>
                       </div>
                     </button>
@@ -1864,7 +1868,7 @@ export function InventariosPage() {
                                       <CalendarIcon className="h-3 w-3" />
                                       {item.inicio_periodo?.split('T')[0]} — {item.fin_periodo?.split('T')[0]}
                                     </span>
-                                    <span>{item.numero_catorcena && item.anio_catorcena
+                                    <span>{!PERIODOS_LIBRES && item.numero_catorcena && item.anio_catorcena
                                       ? `Cat ${item.numero_catorcena} / ${item.anio_catorcena}`
                                       : item.inicio_periodo
                                         ? `${(() => { const parts = item.inicio_periodo.split('-'); const meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']; return parts.length >= 2 ? `${meses[parseInt(parts[1]) - 1]} ${parts[0]}` : '-'; })()}`
@@ -1957,7 +1961,7 @@ export function InventariosPage() {
                                       {accion.detalles && (
                                         <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{accion.detalles}</p>
                                       )}
-                                      {(dondeLabel || accion.catorcena || accion.articulo) && (
+                                      {(dondeLabel || (!PERIODOS_LIBRES && accion.catorcena) || accion.articulo) && (
                                         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
                                           {dondeLabel && href && (
                                             <a
@@ -1969,7 +1973,7 @@ export function InventariosPage() {
                                               {dondeLabel}
                                             </a>
                                           )}
-                                          {accion.catorcena && (
+                                          {!PERIODOS_LIBRES && accion.catorcena && (
                                             <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${isDark ? 'border-zinc-700 text-zinc-400' : 'border-gray-300 text-gray-500'}`}>
                                               {accion.catorcena}
                                             </span>
@@ -2642,8 +2646,8 @@ export function InventariosPage() {
         initialAnalisis={analisisInicial}
       />
 
-      {/* Auditoría de conflictos sobre todo el inventario (solo DEV) */}
-      {isDev && (
+      {/* Auditoría de conflictos sobre todo el inventario (solo DEV; no con PERIODOS_LIBRES) */}
+      {herramientasCatorcena && (
         <AuditoriaConflictosModal
           open={isAuditoriaOpen}
           onClose={() => { setIsAuditoriaOpen(false); setAuditoriaAutoIniciar(false); }}
@@ -2660,8 +2664,8 @@ export function InventariosPage() {
         onCreateNew={() => { setIsAnalisisListOpen(false); openAnalisisVacio(); }}
       />
 
-      {/* Reorganizar Ocupación (DEV) */}
-      {isDev && (
+      {/* Reorganizar Ocupación (DEV; no con PERIODOS_LIBRES) */}
+      {herramientasCatorcena && (
         <ReorganizarOcupacionModal
           open={isReorganizarOpen}
           onClose={() => setIsReorganizarOpen(false)}
