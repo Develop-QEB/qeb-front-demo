@@ -10,12 +10,20 @@ import {
 } from 'lucide-react';
 import { campanasService, OrdenMontajeCAT, OrdenMontajeINVIAN, ImagenDigital } from '../../services/campanas.service';
 import { horarioLabel } from '../../lib/periodos';
-import { ALLOWED_DIGITAL_ITEM_CODES } from '../../config/allowedDigitalArticles';
 import { solicitudesService } from '../../services/solicitudes.service';
 import { Catorcena } from '../../types';
 import { useThemeStore } from '../../store/themeStore';
 import { udcZonaDeArticulo, esArticuloUDC } from '../../lib/udc';
 import * as XLSX from 'xlsx';
+
+// Una fila es digital según el tipo del inventario (`tradicional_digital`); si
+// no viene (dato sucio), según el código del artículo (contiene "DIG").
+function esFilaDigital(item: { tradicional_digital?: string | null; numero_articulo?: string | null }): boolean {
+  const td = (item.tradicional_digital || '').toUpperCase();
+  if (td === 'DIGITAL') return true;
+  if (td === 'TRADICIONAL') return false;
+  return /DIG/i.test(item.numero_articulo || '');
+}
 
 // URL base para archivos estáticos
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
@@ -1170,17 +1178,9 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
     let items = [...invianData];
 
     // Excluir digitales — usar el campo `tradicional_digital` del inventario
-    // (fuente de verdad). Antes filtrábamos por una whitelist hardcodeada de
-    // ItemCodes y se colaban los digitales nuevos que no estaban listados
-    // (ej. RT-PB-SEG-MX, BF-P2-COB-AC). Whitelist queda como fallback solo
-    // cuando `tradicional_digital` viene NULL.
-    items = items.filter(item => {
-      const td = (item.tradicional_digital || '').toUpperCase();
-      if (td === 'DIGITAL') return false;
-      if (td === 'TRADICIONAL') return true;
-      // Sin tradicional_digital definido (data sucia) → fallback a whitelist
-      return !item.numero_articulo || !ALLOWED_DIGITAL_ITEM_CODES.has(item.numero_articulo);
-    });
+    // (fuente de verdad). Si viene NULL (dato sucio), se decide por el código
+    // del artículo (contiene "DIG").
+    items = items.filter(item => !esFilaDigital(item));
 
     // Búsqueda de texto
     if (allSearchTerms.length > 0) {
@@ -1266,14 +1266,9 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
   const filteredINVIANDigitalData = useMemo(() => {
     let items = invianData || [];
 
-    // Solo digitales — usar tradicional_digital del back. Whitelist como
-    // fallback cuando tradicional_digital viene NULL (data sucia).
-    items = items.filter(item => {
-      const td = (item.tradicional_digital || '').toUpperCase();
-      if (td === 'DIGITAL') return true;
-      if (td === 'TRADICIONAL') return false;
-      return item.numero_articulo != null && ALLOWED_DIGITAL_ITEM_CODES.has(item.numero_articulo);
-    });
+    // Solo digitales — usar tradicional_digital del back; si viene NULL (dato
+    // sucio), se decide por el código del artículo (contiene "DIG").
+    items = items.filter(item => esFilaDigital(item));
 
     // Búsqueda de texto
     if (allSearchTerms.length > 0) {
@@ -1630,7 +1625,7 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
   const getINVIANDigitalUniqueValues = useMemo(() => {
     const valuesMap: Record<string, string[]> = {};
     if (!invianData) return valuesMap;
-    const digitalItems = invianData.filter(item => item.numero_articulo != null && ALLOWED_DIGITAL_ITEM_CODES.has(item.numero_articulo));
+    const digitalItems = invianData.filter(item => esFilaDigital(item));
     INVIAN_FILTER_FIELDS.forEach(fieldConfig => {
       const values = new Set<string>();
       digitalItems.forEach(item => {

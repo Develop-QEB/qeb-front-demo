@@ -21,16 +21,15 @@ import { inventariosService, InventarioDisponible } from '../../services/inventa
 import { propuestasService, ReservaModalItem, CaraUpdateData, type ReservaHistorialItem } from '../../services/propuestas.service';
 import { formatCurrency } from '../../lib/utils';
 import { parseCircuitoDigital } from '../../lib/circuitos';
-import { articuloValidoEnPeriodo, esArticuloGranFormato, hora12h } from '../../lib/periodos';
+import { esArticuloGranFormato, hora12h } from '../../lib/periodos';
 import { HistorialFiltrado } from '../historial/HistorialFiltrado';
 import { TimeInput } from '../../components/ui/TimeInput';
-import { circuitosService } from '../../services/circuitos.service';
 import { clientesService } from '../../services/clientes.service';
-import { useEnvironmentStore, getEndpoints } from '../../store/environmentStore';
 import { useAuthStore } from '../../store/authStore';
 import { getPermissions, esAsesorComercial, esTrafico } from '../../lib/permissions';
-import { filterAllowedArticulos } from '../../config/allowedDigitalArticles';
-import { parseArticuloUDC, esArticuloUDCBasura, buildUdcInventarioDisponible, udcPantallaNum, udcFichaDe, UDC_FORMATO } from '../../lib/udc';
+import { buildUdcInventarioDisponible, udcPantallaNum, udcFichaDe, UDC_FORMATO } from '../../lib/udc';
+import { ArticuloManualInput } from '../../components/ArticuloManualInput';
+import { componerBf, parsearArticulo, articuloDesdeCodigo } from '../../lib/articuloManual';
 
 // Mini-preview (cuadrito cyan con el aspect-ratio real) para las filas UDC.
 // Solo se pinta si el código corresponde a una pantalla UDC (udcFichaDe la halla).
@@ -963,7 +962,19 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   const [newCara, setNewCara] = useState<Omit<CaraItem, 'localId'>>(EMPTY_CARA);
   const [tarifaPublicaInput, setTarifaPublicaInput] = useState<string>('');
   const [tarifaPublicaFocused, setTarifaPublicaFocused] = useState(false);
-  const [selectedArticulo, setSelectedArticulo] = useState<SAPArticulo | null>(null);
+
+  // Demo (artículos manuales): la pareja BF de un artículo de renta se deriva de
+  // su clave. Cubre la edición de un circuito que aún no tenía pareja BF. Si la
+  // cara ya trae su pareja BF guardada, se respeta (no se recalcula).
+  useEffect(() => {
+    const code = newCara.articulo;
+    if (!code || isBfCfArticle(code) || newCara.articuloBf) return;
+    const { operacion, clave } = parsearArticulo(code);
+    if (operacion === 'RT' && clave) {
+      setNewCara(prev => ({ ...prev, articuloBf: componerBf(clave) }));
+    }
+  }, [newCara.articulo, newCara.articuloBf]);
+
   const [showAddCaraForm, setShowAddCaraForm] = useState(false);
   // Modo masivo: ON = aplica al rango catorcena_inicio..catorcena_fin (crear N o editar la serie)
   const [modoMasivoP, setModoMasivoP] = useState(false);
@@ -1246,40 +1257,15 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     enabled: isOpen,
   });
 
-  // BD SAP del catálogo: UDC (aeropuerto) si el cliente seleccionado o la
-  // propuesta son UDC; si no, ambiente global (CIMU/TRADE intactos).
-  const sapDbArticulos = (((selectedClienteCuic as any)?.sap_database || propuesta?.sap_database || '') as string).toUpperCase() === 'UDC'
-    ? ('UDC' as const)
-    : useEnvironmentStore.getState().environment;
   // UDC (aeropuerto): inventario sin geolocalización/plaza → en el buscador se
   // oculta el mapa y el panel de ubicación (POI/radio/KML/leyenda).
-  // OJO: depende de que la PROPUESTA/CLIENTE sea UDC — NO del ambiente global
-  // (`sapDbArticulos` cae al ambiente): antes, navegar en ambiente UDC ocultaba
-  // el mapa en TODAS las propuestas, no solo en las UDC.
+  // OJO: depende de que la PROPUESTA/CLIENTE sea UDC — NO del ambiente global:
+  // antes, navegar en ambiente UDC ocultaba el mapa en TODAS las propuestas,
+  // no solo en las UDC.
   const esUDC = (((selectedClienteCuic as any)?.sap_database || propuesta?.sap_database || '') as string).toUpperCase() === 'UDC';
-  // Fetch articulos from SAP
-  const { data: articulosData, isLoading: articulosLoading } = useQuery({
-    queryKey: ['sap-articulos', sapDbArticulos],
-    queryFn: async () => {
-      try {
-        const response = await fetch(getEndpoints(sapDbArticulos).articulos);
-        if (!response.ok) throw new Error('Error fetching articulos');
-        const data = await response.json();
-        let list = (data.value || data) as SAPArticulo[];
-        if (sapDbArticulos === 'UDC') {
-          list = list.filter(a => !esArticuloUDCBasura(a.ItemCode));
-          // (Gran formato dentro de UDC DESHABILITADO 2026-10-29: el selector UDC
-          // vuelve a mostrar SOLO pantallas del aeropuerto; gran formato para
-          // usuarios UDC será vía CIMU/TRADE como tarea aparte.)
-        }
-        return filterAllowedArticulos(list);
-      } catch {
-        return [] as SAPArticulo[];
-      }
-    },
-    enabled: isOpen,
-    staleTime: 5 * 60 * 1000,
-  });
+  // Demo: no hay catálogo de artículos; se capturan a mano (ArticuloManualInput).
+  // articulosData queda vacío (y estable) para las referencias que solo lo consultaban.
+  const articulosData = useMemo<SAPArticulo[]>(() => [], []);
 
   // ¿El buscador debe comportarse como UDC (ficha de pantallas del aeropuerto) o
   // como normal (gran formato con inventario real)? Se decide POR CARA: una
@@ -1741,7 +1727,6 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       setShowAddCaraForm(false);
       setEditingCaraId(null);
       setNewCara(EMPTY_CARA);
-      setSelectedArticulo(null);
       periodInitializedRef.current = false;
       initialValuesSetRef.current = false;
       asignadosInitializedRef.current = false;
@@ -2698,21 +2683,16 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         )
       : null;
 
-    // Resolve articuloBf (SAPArticulo object) from pair's articulo code
-    let articuloBfResolved: SAPArticulo | null = null;
-    if (bfPair && bfPair.articulo && articulosData) {
-      articuloBfResolved = articulosData.find(a => a.ItemCode === bfPair.articulo) || null;
-    }
+    // Demo (sin catálogo): el BF existente se arma desde el código guardado de la
+    // pareja. El ItemCode va TAL CUAL (sin normalizar) porque el guardado lo compara
+    // contra existingBfPair.articulo para decidir si es la misma pareja.
+    // Sin pareja guardada queda null y el useEffect lo deriva de la clave (RT).
+    const articuloBfResolved: SAPArticulo | null = bfPair && bfPair.articulo
+      ? { ItemCode: bfPair.articulo, ItemName: articuloDesdeCodigo(bfPair.articulo)?.ItemName || bfPair.articulo }
+      : null;
 
     setEditingCaraId(cara.localId);
-
-    // Find and set the selectedArticulo if we have the articulo code
-    if (cara.articulo && articulosData) {
-      const foundArticulo = articulosData.find(a => a.ItemCode === cara.articulo);
-      if (foundArticulo) {
-        setSelectedArticulo(foundArticulo);
-      }
-    }
+    // (El artículo se muestra directo de newCara.articulo con articuloDesdeCodigo.)
 
     // Calculate caras en renta.
     // BF/CF/CT: el split flujo/contra es el split de la bonificación (KPI),
@@ -2826,7 +2806,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
     // BF validation: bonificacion > 0 on RT article requires articuloBf
     const needsBfArticle = (newCara.bonificacion || 0) > 0 && !esCortesia && !esBonificacion && !esImpresion && !esServicio && !isEspecialArticle(artCode);
     if (needsBfArticle && !newCara.articuloBf) {
-      alert('Debes seleccionar el artículo de bonificación (BF) antes de guardar, o quita las caras de bonificación a 0.');
+      alert('Captura el artículo de renta antes de guardar (la bonificación se registra como su pareja BF-<clave>), o pon las caras de bonificación en 0.');
       return;
     }
 
@@ -3434,7 +3414,6 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       }
 
       setNewCara(EMPTY_CARA);
-      setSelectedArticulo(null);
       setShowAddCaraForm(false);
       // Flujo completo exitoso — no borrar BF al limpiar si algo falla despues.
       createdBfIdForRollback = null;
@@ -3761,7 +3740,6 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   const handleCancelCaraForm = () => {
     const wasEditing = !!editingCaraId;
     setNewCara(EMPTY_CARA);
-    setSelectedArticulo(null);
     setShowAddCaraForm(false);
     setEditingCaraId(null);
     if (wasEditing) {
@@ -8940,7 +8918,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     </span>
                     {effectiveCanEdit && canEditResumen && (
                       <button
-                        onClick={() => { if (hasSavedPendingAuth) return; setShowAddCaraForm(true); setEditingCaraId(null); setNewCara(EMPTY_CARA); setSelectedArticulo(null); }}
+                        onClick={() => { if (hasSavedPendingAuth) return; setShowAddCaraForm(true); setEditingCaraId(null); setNewCara(EMPTY_CARA); }}
                         disabled={hasSavedPendingAuth}
                         className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg transition-colors ${hasSavedPendingAuth
                           ? (isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed' : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed')
@@ -9005,175 +8983,39 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       </div>
                     </div>
 
-                    {/* Artículo selector */}
+                    {/* Artículo (captura manual: operación + clave). Mismo permiso que
+                        antes: en edición solo se cambia si canEditArticuloOnEdit. */}
                     <div className="mb-4">
-                      <label className={`text-xs mb-1 block ${(editingCaraId && !permissions.canEditArticuloOnEdit) ? 'text-zinc-800' : `${isDark ? 'text-zinc-500' : 'text-gray-400'}`}`}>Artículo SAP</label>
-                      {canEditResumen && (!editingCaraId || permissions.canEditArticuloOnEdit) ? (
-                        <SearchableSelect
-                          label="Seleccionar artículo"
-                          options={(articulosData || []).filter(a => {
-                            const code = a.ItemCode.toUpperCase();
-                            // BF/CF solo aparecen en el dropdown de bonificación, no en el
-                            // principal. Los CF-#### (servicio/mantenimiento) SÍ van aquí.
-                            if (isBfCfArticle(code)) return false;
-                            // UDC (aeropuerto): todos sus artículos son digitales/mensual; la
-                            // heurística de periodo (pensada para CIMU) solo reconoce ~18 de 91
-                            // y ocultaría el resto. Si la propuesta es UDC, mostrarlos todos.
-                            if (esUDC) return true;
-                            // Gran Formato ↔ periodo: mensual solo muestra Gran Formato;
-                            // catorcena los excluye. Excepción: digital PB/CL también
-                            // en mensual (ver articuloValidoEnPeriodo).
-                            return articuloValidoEnPeriodo(a.ItemName, a.ItemCode, tipoPeriodo as 'catorcena' | 'mensual');
-                          })}
-                          value={selectedArticulo}
-                          onChange={async (item: SAPArticulo) => {
-                            setSelectedArticulo(item);
-                            // Detectar CIRCUITO DIGITAL
-                            const circuito = parseCircuitoDigital(item.ItemCode);
-                            if (circuito) {
-                              // Validar unicidad: el mismo CTO+plaza+catorcena/mes solo una vez
-                              // Se permite repetir en distintas catorcenas/meses
-                              if (newCara.catorcena_inicio && newCara.anio_inicio) {
-                                const ya = caras.find(c => {
-                                  if (editingCaraId && c.localId === editingCaraId) return false;
-                                  if (c.esBf) return false;
-                                  const ci = parseCircuitoDigital(c.articulo);
-                                  if (!ci || ci.cto !== circuito.cto || ci.plazaCode !== circuito.plazaCode) return false;
-                                  return c.catorcena_inicio === newCara.catorcena_inicio && c.anio_inicio === newCara.anio_inicio;
-                                });
-                                if (ya) {
-                                  alert(`Ya tienes el circuito ${circuito.ctoLabel} (${circuito.plazaLabel}) en ese ${tipoPeriodo === 'mensual' ? 'mes' : 'catorcena'}. Solo se puede incluir una vez por periodo.`);
-                                  setSelectedArticulo(null);
-                                  return;
-                                }
-                              }
-                              try {
-                                const det = await circuitosService.detalle(item.ItemCode);
-                                const tarifa = getTarifaPublicaFromArticulo(item);
-                                const tarifaPiso = getTarifaPisoFromArticulo(item);
-                                // Formato como muebles reales del circuito (en lugar de "MIXTO").
-                                const formatosCircuito = Object.keys((det as any).muebles || {}).filter(Boolean);
-                                setNewCara({
-                                  ...newCara,
-                                  articulo: item.ItemCode,
-                                  tarifa_publica: tarifa,
-                                  costo: tarifaPiso,
-                                  caras: det.total,
-                                  // Mensual = solo Flujo. Catorcena = conteos reales del circuito.
-                                  caras_flujo: tipoPeriodo === 'mensual' ? det.total : det.flujo,
-                                  caras_contraflujo: tipoPeriodo === 'mensual' ? 0 : det.contraflujo,
-                                  bonificacion: 0,
-                                  estados: circuito.plazaLabel,
-                                  ciudad: '',
-                                  formato: formatosCircuito.length > 0 ? formatosCircuito.join(', ') : 'MIXTO',
-                                  tipo: 'Digital',
-                                });
-                                return;
-                              } catch (e: any) {
-                                alert(`Error al cargar circuito: ${e?.message || e}`);
-                                setSelectedArticulo(null);
-                                return;
-                              }
-                            }
-
-                            // UDC (aeropuerto AICM): todo Digital, mensual, plaza AICM.
-                            // Excepción: gran formato (puente/cartelera) dentro de una
-                            // propuesta UDC cae a la rama normal de abajo (autollenado CIMU).
-                            if (sapDbArticulos === 'UDC' && !esArticuloGranFormato(item.ItemName, item.ItemCode)) {
-                              const udc = parseArticuloUDC(item.ItemCode, item.ItemName);
-                              const tarifaUdc = getTarifaPublicaFromArticulo(item);
-                              const tarifaPisoUdc = getTarifaPisoFromArticulo(item);
-                              const esCT = item.ItemCode.toUpperCase().startsWith('CT');
-                              const esIN = item.ItemCode.toUpperCase().startsWith('IN');
-                              const esIM = item.ItemCode.toUpperCase().startsWith('IM');
-                              const esESP = isEspecialArticle(item.ItemCode.toUpperCase());
-                              const esSrvCF = isServicioCFArticle(item.ItemCode);
-                              setNewCara({
-                                ...newCara,
-                                articulo: item.ItemCode,
-                                tarifa_publica: esCT ? 0 : tarifaUdc,
-                                costo: esCT ? 0 : tarifaPisoUdc,
-                                caras: esCT ? 0 : newCara.caras,
-                                caras_flujo: esCT ? 0 : newCara.caras_flujo,
-                                caras_contraflujo: esCT ? 0 : newCara.caras_contraflujo,
-                                bonificacion: (esIM || esIN || esESP || esSrvCF) ? 0 : newCara.bonificacion,
-                                estados: udc?.plazaLabel || 'Ciudad de México / AM',
-                                ciudad: udc?.ciudad || 'AICM',
-                                // UDC: todo el inventario es mueble 'PANTALLA DIGITAL'; parseArticuloUDC
-                                // da label vacío para el esquema PANT-* → autollenar con el mueble real.
-                                formato: UDC_FORMATO,
-                                tipo: 'Digital',
-                              });
-                              return;
-                            }
-
-                            // Auto-complete all fields from article
-                            const tarifa = getTarifaPublicaFromArticulo(item);
-                            const tarifaPiso = getTarifaPisoFromArticulo(item);
-                            const ciudadEstado = getCiudadEstadoFromArticulo(item.ItemName, item.ItemCode);
-                            // Auto-set plaza buscando el nombre de plaza dentro del ItemName.
-                            // Comparamos SIN ACENTOS porque las plazas en BD pueden traer
-                            // tilde (ej. "MÉRIDA") pero los ItemName de SAP vienen sin acento.
-                            const itemNameNorm = stripAccents((item.ItemName || '').toUpperCase());
-                            const plazasBackend = (solicitudFilters as any)?.plazas as { plaza: string }[] | undefined;
-                            const plazaPorNombre = plazasBackend?.find(p => itemNameNorm.includes(stripAccents(p.plaza.toUpperCase())));
-                            const formatoBase = getFormatoFromArticulo(item.ItemName, item.ItemCode);
-                            const tipo = getTipoFromName(item.ItemName, item.ItemCode);
-                            // Para artículos digitales: incluir PARABUS, MUPIS y COLUMNA (los
-                            // muebles físicos donde corre la pantalla rotando los formatos).
-                            const formato = tipo === 'Digital'
-                              ? (formatoBase && formatoBase !== 'PARABUS'
-                                  ? `${formatoBase}, PARABUS, MUPIS, COLUMNA`
-                                  : 'PARABUS, MUPIS, COLUMNA')
-                              : formatoBase;
-                            const isCortesia = item.ItemCode.toUpperCase().startsWith('CT');
-                            const isIntercambio = item.ItemCode.toUpperCase().startsWith('IN');
-                            const isImpresion = item.ItemCode.toUpperCase().startsWith('IM');
-                            const isEspecial = isEspecialArticle(item.ItemCode.toUpperCase());
-                            const isSrvCF = isServicioCFArticle(item.ItemCode);
-                            const isTarifaCero = isCortesia;
-                            setNewCara({
-                              ...newCara,
-                              articulo: item.ItemCode,
-                              tarifa_publica: isTarifaCero ? 0 : tarifa,  // CT = 0, todo lo demás usa SAP
-                              costo: isTarifaCero ? 0 : tarifaPiso,  // Tarifa piso desde PriceList 11
-                              caras: isCortesia ? 0 : newCara.caras,
-                              caras_flujo: isCortesia ? 0 : newCara.caras_flujo,
-                              caras_contraflujo: isCortesia ? 0 : newCara.caras_contraflujo,
-                              bonificacion: (isImpresion || isIntercambio || isEspecial || isSrvCF) ? 0 : newCara.bonificacion,
-                              estados: plazaPorNombre?.plaza || ciudadEstado?.estado || newCara.estados,
-                              // Si ciudadEstado existe, usar su ciudad (incluso si es vacía para CDMX)
-                              ciudad: ciudadEstado ? ciudadEstado.ciudad : newCara.ciudad,
-                              formato: formato || newCara.formato,
-                              tipo: tipo || newCara.tipo,
-                            });
-                          }}
-                          onClear={() => {
-                            setSelectedArticulo(null);
-                            setNewCara({ ...newCara, articulo: '', tarifa_publica: 0, estados: '', ciudad: '', formato: '', tipo: '' });
-                          }}
-                          displayKey="ItemName"
-                          valueKey="ItemCode"
-                          searchKeys={['ItemCode', 'ItemName']}
-                          loading={articulosLoading}
-                          renderOption={(item: SAPArticulo) => (
-                            <div>
-                              <div className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.ItemCode}</div>
-                              <div className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{item.ItemName}</div>
-                            </div>
-                          )}
-                          renderSelected={(item: SAPArticulo) => (
-                            <div className="text-left">
-                              <div className="font-medium text-sm">{item.ItemCode}</div>
-                              <div className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} truncate`}>{item.ItemName}</div>
-                            </div>
-                          )}
-                        />
-                      ) : (
-                        <div className={`px-3 py-2 ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'} border ${isDark ? 'border-zinc-700/30' : 'border-gray-200/30'} rounded-lg text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
-                          {selectedArticulo ? `${selectedArticulo.ItemCode} - ${selectedArticulo.ItemName}` : newCara.articulo || 'Sin artículo'}
-                        </div>
-                      )}
+                      <label className={`text-xs mb-1 block ${(editingCaraId && !permissions.canEditArticuloOnEdit) ? 'text-zinc-800' : `${isDark ? 'text-zinc-500' : 'text-gray-400'}`}`}>Artículo</label>
+                      <ArticuloManualInput
+                        value={articuloDesdeCodigo(newCara.articulo)}
+                        isDark={isDark}
+                        disabled={!canEditResumen || (!!editingCaraId && !permissions.canEditArticuloOnEdit)}
+                        onChange={(art) => {
+                          if (!art) {
+                            setNewCara({ ...newCara, articulo: '', articuloBf: null });
+                            return;
+                          }
+                          const { operacion, clave } = parsearArticulo(art.ItemCode);
+                          const esCT = operacion === 'CT';
+                          const sinBonif = operacion === 'IM' || operacion === 'IN' || operacion === 'ES';
+                          // Plaza, formato y tipo NO se autollenan: se capturan a mano.
+                          setNewCara({
+                            ...newCara,
+                            articulo: art.ItemCode,
+                            // Cortesía: sin tarifa ni renta.
+                            tarifa_publica: esCT ? 0 : newCara.tarifa_publica,
+                            costo: esCT ? 0 : newCara.costo,
+                            caras: esCT ? 0 : newCara.caras,
+                            caras_flujo: esCT ? 0 : newCara.caras_flujo,
+                            caras_contraflujo: esCT ? 0 : newCara.caras_contraflujo,
+                            // Impresión / Intercambio / Ejecución especial: sin bonificación.
+                            bonificacion: sinBonif ? 0 : newCara.bonificacion,
+                            // Renta: la bonificación se registra como su pareja BF-<clave>.
+                            articuloBf: operacion === 'RT' ? componerBf(clave) : null,
+                          });
+                        }}
+                      />
                     </div>
 
                     {/* Periodo - catorcena o mes, filtrada por rango de propuesta */}
@@ -9601,19 +9443,14 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                         )}
                       </div>
                       <div className="space-y-1">
-                        {/* Tipo: SIEMPRE deshabilitado.
-                            - Al CREAR: el valor lo deriva el artículo (Digital/Tradicional) y no
-                              se debe permitir overrride manual.
-                            - Al EDITAR: el tipo lo trae de BD; cambiarlo en circuitos digitales
-                              rompe el flujo (RT-DIG/BF-DIG/CT-DIG son Digital por definición), y
-                              en caras normales no hay razón válida para cambiarlo manualmente
-                              (era fuente del bug 70739 — caras Digital se volvían Tradicional). */}
+                        {/* Tipo (Tradicional / Digital). Demo: el artículo es manual y ya no
+                            determina el tipo, así que se elige a mano (alta y edición). */}
                         <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Tipo</label>
                         <select
                           value={newCara.tipo}
-                          disabled
-                          title="El tipo lo determina el artículo y no se puede cambiar manualmente"
-                          className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800' : 'bg-gray-50'} border ${isDark ? 'border-zinc-700' : 'border-gray-200'} rounded-lg text-sm ${isDark ? 'text-white' : 'text-gray-900'} focus:outline-none focus:ring-1 focus:ring-purple-500/50 opacity-60 cursor-not-allowed`}
+                          onChange={(e) => canEditResumen && setNewCara({ ...newCara, tipo: e.target.value })}
+                          disabled={!canEditResumen}
+                          className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800' : 'bg-gray-50'} border ${isDark ? 'border-zinc-700' : 'border-gray-200'} rounded-lg text-sm ${isDark ? 'text-white' : 'text-gray-900'} focus:outline-none focus:ring-1 focus:ring-purple-500/50 ${!canEditResumen ? 'opacity-60 cursor-not-allowed' : ''}`}
                         >
                           <option value="">Seleccionar</option>
                           <option value="Tradicional">Tradicional</option>
@@ -9698,36 +9535,17 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                       </div>
                     </div>
 
-                    {/* Artículo BF - below the grid when bonificacion > 0 */}
+                    {/* Bonificación: se registra sola como la pareja BF del artículo de renta
+                        (derivada de su clave, o la pareja ya guardada al editar). */}
                     {(newCara.bonificacion || 0) > 0
+                      && newCara.articuloBf
                       && !newCara.articulo?.toUpperCase().startsWith('CT')
                       && !newCara.articulo?.toUpperCase().startsWith('IM')
                       && !newCara.articulo?.toUpperCase().startsWith('BF')
                       && !newCara.articulo?.toUpperCase().startsWith('CF')
                       && !isEspecialArticle((newCara.articulo || '').toUpperCase()) && (
-                      <div className={`mt-3 mb-4 p-3 ${isDark ? 'bg-emerald-900/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'} rounded-lg border`}>
-                        <label className={`text-xs font-medium ${isDark ? 'text-emerald-400' : 'text-emerald-600'} mb-1 block`}>Artículo de Bonificación (BF)</label>
-                        <SearchableSelect
-                          label=""
-                          options={(articulosData || []).filter(a => isBfCfArticle(a.ItemCode))}
-                          value={newCara.articuloBf || null}
-                          onChange={(item: SAPArticulo) => setNewCara({ ...newCara, articuloBf: item })}
-                          onClear={() => setNewCara({ ...newCara, articuloBf: null })}
-                          displayKey="ItemName"
-                          valueKey="ItemCode"
-                          searchKeys={['ItemCode', 'ItemName']}
-                          renderOption={(item: SAPArticulo) => (
-                            <div>
-                              <div className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.ItemCode}</div>
-                              <div className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{item.ItemName}</div>
-                            </div>
-                          )}
-                          renderSelected={(item: SAPArticulo) => (
-                            <div className="text-left">
-                              <div className={`text-xs font-mono ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>{item.ItemCode}</div>
-                            </div>
-                          )}
-                        />
+                      <div className={`mt-3 mb-4 p-3 ${isDark ? 'bg-emerald-900/10 border-emerald-500/20' : 'bg-emerald-50 border-emerald-200'} rounded-lg border text-xs ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>
+                        La bonificación se registrará como <span className="font-mono">{newCara.articuloBf.ItemCode}</span>
                       </div>
                     )}
 
