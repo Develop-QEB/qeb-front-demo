@@ -21,7 +21,7 @@ import { uploadsService } from '../../services/uploads.service';
 import { parseCircuitoDigital, type CircuitoInfo } from '../../lib/circuitos';
 import { CircuitCheckbox } from '../../components/ui/CircuitCheckbox';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
-import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED } from '../../config/featureFlags';
+import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED, PERIODOS_LIBRES } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
@@ -793,7 +793,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
   const [notas, setNotas] = useState('');
 
   // Dates
-  const [tipoPeriodo, setTipoPeriodo] = useState<'catorcena' | 'mensual'>('catorcena');
+  const [tipoPeriodo, setTipoPeriodo] = useState<'catorcena' | 'mensual'>(PERIODOS_LIBRES ? 'mensual' : 'catorcena');
   const [yearInicio, setYearInicio] = useState<number | undefined>();
   const [yearFin, setYearFin] = useState<number | undefined>();
   const [catorcenaInicio, setCatorcenaInicio] = useState<number | undefined>();
@@ -983,8 +983,10 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
     [esUDC, newCara.articulo, newCaraEsGranFormato]
   );
   const udcRentaLocked = !!(udcPantallasNewCara && udcPantallasNewCara.length > 0);
+  // Demo (PERIODOS_LIBRES): siempre fechas libres ('mensual'), también tras
+  // limpiar el formulario o cargar una solicitud para editar.
   useEffect(() => {
-    if (esUDC && tipoPeriodo !== 'mensual') {
+    if ((PERIODOS_LIBRES || esUDC) && tipoPeriodo !== 'mensual') {
       setTipoPeriodo('mensual');
       setCatorcenaInicio(undefined);
       setCatorcenaFin(undefined);
@@ -2892,7 +2894,13 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                     <Calendar className="h-4 w-4 text-purple-400" />
                     Rango de Fechas
                   </label>
-                  {/* Toggle Catorcena / Mensual — UDC (aeropuerto) es SOLO mensual */}
+                  {/* Demo (PERIODOS_LIBRES): sin catorcenas, solo fechas libres. */}
+                  {PERIODOS_LIBRES ? (
+                    <span className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                      Meses de la campaña · fechas libres por circuito
+                    </span>
+                  ) : (
+                  /* Toggle Catorcena / Mensual — UDC (aeropuerto) es SOLO mensual */
                   <div className={`flex items-center ${isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-gray-100 border-gray-200'} rounded-lg border p-0.5`}>
                     {!esUDC && (
                     <button
@@ -2931,6 +2939,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                       Mensual
                     </button>
                   </div>
+                  )}
                 </div>
 
                 {tipoPeriodo === 'catorcena' ? (

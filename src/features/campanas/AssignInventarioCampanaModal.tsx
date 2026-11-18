@@ -51,7 +51,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { SaveChangesConfirmModal, type ModifiedCircuito } from '../../components/SaveChangesConfirmModal';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
 import { CircuitCheckbox } from '../../components/ui/CircuitCheckbox';
-import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED, AUTORIZACION_ELIMINACION_ENABLED } from '../../config/featureFlags';
+import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED, AUTORIZACION_ELIMINACION_ENABLED, PERIODOS_LIBRES } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
@@ -842,7 +842,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
   // Tipo string (no literal union) para evitar narrowing dentro de ramas JSX que
   // hacen el `tipoPeriodo === 'mensual'` "no overlap" después de un check previo.
   const [tipoPeriodo, setTipoPeriodo] = useState<string>(
-    (campana as any)?.tipo_periodo === 'mensual' ? 'mensual' : 'catorcena'
+    PERIODOS_LIBRES || (campana as any)?.tipo_periodo === 'mensual' ? 'mensual' : 'catorcena'
   );
 
   // Socket para actualizar usuarios en tiempo real
@@ -1495,7 +1495,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
       // Sincronizar tipoPeriodo con el detail (fuente de verdad).
       const tpDetail = (campanaDetails as any).tipo_periodo;
       if (tpDetail === 'mensual' || tpDetail === 'catorcena') {
-        setTipoPeriodo(tpDetail);
+        setTipoPeriodo(PERIODOS_LIBRES ? 'mensual' : tpDetail);
       }
 
       // Set period from campaign data

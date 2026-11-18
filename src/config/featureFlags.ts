@@ -25,3 +25,10 @@ export const AUTORIZACIONES_DIRECCION_ENABLED = false;
  * el circuito se elimina directo, sin pedir motivo para Gerencia.
  */
 export const AUTORIZACION_ELIMINACION_ENABLED = false;
+
+/**
+ * Periodos por fechas libres (sin catorcenas). Las solicitudes, propuestas y
+ * campañas usan siempre el modo de fechas libres por circuito (internamente
+ * 'mensual'); no se ofrecen catorcenas ni filtros/etiquetas por catorcena.
+ */
+export const PERIODOS_LIBRES = true;

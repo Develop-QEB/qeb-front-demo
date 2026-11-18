@@ -51,7 +51,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { SaveChangesConfirmModal, type ModifiedCircuito } from '../../components/SaveChangesConfirmModal';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
 import { CircuitCheckbox } from '../../components/ui/CircuitCheckbox';
-import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED } from '../../config/featureFlags';
+import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED, PERIODOS_LIBRES } from '../../config/featureFlags';
 import { etiquetarEstatusEnTexto } from '../../lib/estatusLabels';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
@@ -834,7 +834,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
   // sincroniza con cotizacion del detail endpoint cuando carga (fuente de verdad).
   // Tipo string (no literal union) para evitar narrowing dentro de ramas JSX.
   const [tipoPeriodo, setTipoPeriodo] = useState<string>(
-    (propuesta as any)?.tipo_periodo === 'mensual' ? 'mensual' : 'catorcena'
+    PERIODOS_LIBRES || (propuesta as any)?.tipo_periodo === 'mensual' ? 'mensual' : 'catorcena'
   );
 
   // WebSocket para escuchar cambios en reservas en tiempo real
@@ -1524,7 +1524,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
       // Sincronizar tipoPeriodo con cotizacion (fuente de verdad).
       const tpDetail = (solicitudDetails.cotizacion as any)?.tipo_periodo;
       if (tpDetail === 'mensual' || tpDetail === 'catorcena') {
-        setTipoPeriodo(tpDetail);
+        setTipoPeriodo(PERIODOS_LIBRES ? 'mensual' : tpDetail);
       }
 
       // Set period from cotizacion dates — only on first load, not after updates
