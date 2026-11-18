@@ -4467,7 +4467,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   onChange={(e) => setImu(e.target.checked)}
                   className="checkbox-purple w-5 h-5"
                 />
-                <span className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>IMU (Impresión  IMU)</span>
+                <span className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>Impresión incluida</span>
               </label>
             </div>
           )}

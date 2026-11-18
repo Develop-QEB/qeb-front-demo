@@ -30,6 +30,7 @@ import type { InventarioReservado as SvcInventarioReservado } from '../../servic
 // Config UNICA de Google Maps (mismo id/key/libraries en toda la app) para
 // que el script se inyecte una sola vez. Ver src/config/googleMaps.ts.
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
+import { MARCA, rgb } from '../../config/marca';
 
 // IMU Color Palette
 const IMU_BLUE = '#0054A6';
@@ -627,12 +628,13 @@ export function ClientePropuestaPage() {
     const pageHeight = doc.internal.pageSize.getHeight();
     let y = 15;
 
-    const PDF_BLUE = [0, 84, 166] as const;
-    const PDF_GREEN = [122, 184, 0] as const;
+    // Colores de marca (config/marca.ts)
+    const PDF_PRIMARIO = rgb(MARCA.colores.primario);
+    const PDF_ACENTO = rgb(MARCA.colores.acento);
 
     // Píldora resaltada para la leyenda de contexto: ámbar = Circuitos Muestra,
     // verde IMU = Circuitos Confirmados. Header (pág. 1) + pie de TODAS las páginas.
-    const LEY_BG = esCampana ? PDF_GREEN : ([255, 193, 7] as const);
+    const LEY_BG = esCampana ? PDF_ACENTO : ([255, 193, 7] as const);
     const LEY_TX = esCampana ? ([255, 255, 255] as const) : ([102, 60, 0] as const);
     const drawLeyendaPill = (centerX: number, topY: number) => {
       doc.setFontSize(8);
@@ -649,7 +651,7 @@ export function ClientePropuestaPage() {
     const clientViewUrl = `${window.location.origin}/cliente/propuesta/${propuestaId}${esCampana ? '?ctx=campana' : ''}`;
 
     const addSectionTitle = (title: string, yPos: number) => {
-      doc.setFillColor(PDF_BLUE[0], PDF_BLUE[1], PDF_BLUE[2]);
+      doc.setFillColor(PDF_PRIMARIO[0], PDF_PRIMARIO[1], PDF_PRIMARIO[2]);
       doc.rect(marginX, yPos, pageWidth - marginX * 2, 7, 'F');
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
@@ -667,7 +669,7 @@ export function ClientePropuestaPage() {
         doc.rect(x + 1, yPos, fieldWidth - 2, 14, 'FD');
         doc.setFontSize(7);
         doc.setFont('helvetica', 'bold');
-        doc.setTextColor(PDF_BLUE[0], PDF_BLUE[1], PDF_BLUE[2]);
+        doc.setTextColor(PDF_PRIMARIO[0], PDF_PRIMARIO[1], PDF_PRIMARIO[2]);
         doc.text(field.label, x + 3, yPos + 4);
         doc.setFontSize(9);
         doc.setFont('helvetica', 'normal');
@@ -679,9 +681,9 @@ export function ClientePropuestaPage() {
     };
 
     // Header
-    doc.setFillColor(PDF_BLUE[0], PDF_BLUE[1], PDF_BLUE[2]);
+    doc.setFillColor(PDF_PRIMARIO[0], PDF_PRIMARIO[1], PDF_PRIMARIO[2]);
     doc.rect(0, 0, pageWidth, 22, 'F');
-    doc.setFillColor(PDF_GREEN[0], PDF_GREEN[1], PDF_GREEN[2]);
+    doc.setFillColor(PDF_ACENTO[0], PDF_ACENTO[1], PDF_ACENTO[2]);
     doc.rect(0, 20, pageWidth, 2, 'F');
     doc.setFontSize(18);
     doc.setFont('helvetica', 'bold');
@@ -739,9 +741,9 @@ export function ClientePropuestaPage() {
     y = addSectionTitle('RESUMEN DE INVERSION', y);
     const kpiBoxWidth = (pageWidth - marginX * 2 - 15) / 4;
     const kpiItems = [
-      { label: 'Caras Totales', value: String(kpis.total), color: PDF_BLUE },
+      { label: 'Caras Totales', value: String(kpis.total), color: PDF_PRIMARIO },
       { label: 'En Renta', value: String(kpis.renta), color: [66, 133, 244] as const },
-      { label: 'Bonificadas', value: String(kpis.bonificadas), color: PDF_GREEN },
+      { label: 'Bonificadas', value: String(kpis.bonificadas), color: PDF_ACENTO },
       { label: 'Inversion Total', value: formatCurrency(kpis.inversion), color: [0, 59, 113] as const },
     ];
     kpiItems.forEach((kpi, idx) => {
@@ -820,7 +822,7 @@ export function ClientePropuestaPage() {
         const catHeaderLabel = tipoPeriodo === 'mensual' && gFechaIni && gFechaFin
           ? `${catorcena}  |  ${fmtDM(gFechaIni)} – ${fmtDM(gFechaFin)}`
           : catorcena;
-        doc.setFillColor(PDF_BLUE[0], PDF_BLUE[1], PDF_BLUE[2]);
+        doc.setFillColor(PDF_PRIMARIO[0], PDF_PRIMARIO[1], PDF_PRIMARIO[2]);
         doc.roundedRect(marginX, y, pageWidth - marginX * 2, 8, 1, 1, 'F');
         doc.setFontSize(10);
         doc.setFont('helvetica', 'bold');
@@ -833,7 +835,7 @@ export function ClientePropuestaPage() {
           const groupBonif = items.reduce((sum, i) => sum + (Number(i.caras_bonificadas) || 0), 0);
           const groupTarifa = items.reduce((sum, i) => sum + inversionBruta(i), 0);
 
-          doc.setFillColor(PDF_GREEN[0], PDF_GREEN[1], PDF_GREEN[2]);
+          doc.setFillColor(PDF_ACENTO[0], PDF_ACENTO[1], PDF_ACENTO[2]);
           doc.roundedRect(marginX + 5, y, pageWidth - marginX * 2 - 10, 6, 1, 1, 'F');
           doc.setFontSize(8);
           doc.setFont('helvetica', 'bold');
@@ -861,7 +863,7 @@ export function ClientePropuestaPage() {
             startY: y,
             margin: { left: marginX + 5, right: marginX + 5 },
             styles: { fontSize: 7, cellPadding: 2, textColor: [40, 40, 40] },
-            headStyles: { fillColor: [230, 240, 250], textColor: [PDF_BLUE[0], PDF_BLUE[1], PDF_BLUE[2]], fontStyle: 'bold', fontSize: 7 },
+            headStyles: { fillColor: [230, 240, 250], textColor: [PDF_PRIMARIO[0], PDF_PRIMARIO[1], PDF_PRIMARIO[2]], fontStyle: 'bold', fontSize: 7 },
             alternateRowStyles: { fillColor: [250, 252, 255] },
             columnStyles: {
               0: { cellWidth: 30 },
@@ -889,14 +891,14 @@ export function ClientePropuestaPage() {
     const totalPages = doc.getNumberOfPages();
     for (let i = 1; i <= totalPages; i++) {
       doc.setPage(i);
-      doc.setFillColor(PDF_BLUE[0], PDF_BLUE[1], PDF_BLUE[2]);
+      doc.setFillColor(PDF_PRIMARIO[0], PDF_PRIMARIO[1], PDF_PRIMARIO[2]);
       doc.rect(0, pageHeight - 14, pageWidth, 14, 'F');
-      doc.setFillColor(PDF_GREEN[0], PDF_GREEN[1], PDF_GREEN[2]);
+      doc.setFillColor(PDF_ACENTO[0], PDF_ACENTO[1], PDF_ACENTO[2]);
       doc.rect(0, pageHeight - 14, 4, 14, 'F');
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
-      doc.text('IMU - Grupo IMU', marginX + 5, pageHeight - 6);
+      doc.text(`${MARCA.nombre} - ${MARCA.lema}`, marginX + 5, pageHeight - 6);
       doc.setFontSize(7);
       doc.setFont('helvetica', 'normal');
       doc.text('Desarrollado por QEB', marginX + 5, pageHeight - 2);
@@ -943,7 +945,7 @@ export function ClientePropuestaPage() {
     return (
       <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-zinc-900' : 'bg-gradient-to-br from-white via-blue-50 to-green-50'}`}>
         <div className="text-center">
-          <img src="/logo-grupo-imu.png" alt="IMU" className="h-20 w-auto mx-auto mb-4 animate-pulse" />
+          <img src={isDark ? MARCA.logoBlancoUrl : MARCA.logoUrl} alt={MARCA.nombre} className="h-20 w-auto mx-auto mb-4 animate-pulse" />
           <Loader2 className="h-8 w-8 animate-spin text-[#0054A6] mx-auto" />
           <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-2`}>Cargando propuesta...</p>
         </div>
@@ -955,7 +957,7 @@ export function ClientePropuestaPage() {
     return (
       <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-zinc-900' : 'bg-gradient-to-br from-white via-blue-50 to-green-50'}`}>
         <div className="text-center">
-          <img src="/logo-grupo-imu.png" alt="IMU" className="h-16 w-auto mx-auto mb-4" />
+          <img src={isDark ? MARCA.logoBlancoUrl : MARCA.logoUrl} alt={MARCA.nombre} className="h-16 w-auto mx-auto mb-4" />
           <p className="text-red-600 font-medium">Error al cargar la propuesta</p>
         </div>
       </div>
@@ -969,7 +971,7 @@ export function ClientePropuestaPage() {
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="flex items-center justify-center">
-              <img src="/logo-grupo-imu.png" alt="IMU" className="h-14 w-auto object-contain" />
+              <img src={isDark ? MARCA.logoBlancoUrl : MARCA.logoUrl} alt={MARCA.nombre} className="h-14 w-auto object-contain" />
             </div>
             <div className={`border-l pl-4 ${isDark ? 'border-zinc-700' : 'border-gray-300'}`}>
               <h1 className="text-xl font-bold text-[#0054A6]">Propuesta de Campaña</h1>
@@ -1622,10 +1624,10 @@ export function ClientePropuestaPage() {
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mt-6">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-4">
-              <img src="/logo-grupo-imu.png" alt="IMU" className="h-10 w-auto" />
+              <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-10 w-auto" />
               <div className="border-l border-gray-200 pl-4">
-                <p className="text-sm font-medium text-gray-700">Grupo IMU</p>
-                <p className="text-xs text-gray-500">Soluciones en publicidad exterior</p>
+                <p className="text-sm font-medium text-gray-700">{MARCA.nombre}</p>
+                <p className="text-xs text-gray-500">{MARCA.lema}</p>
               </div>
             </div>
             <div className="text-center md:text-right">

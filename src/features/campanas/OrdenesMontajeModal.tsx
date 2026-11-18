@@ -1916,17 +1916,6 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
               Ocupacion Digital
             </button>
             <button
-              onClick={() => { setActiveTab('udc'); setCurrentPage(1); }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                activeTab === 'udc'
-                  ? 'bg-gradient-to-r from-cyan-500 to-teal-500 text-white shadow-lg shadow-cyan-500/25'
-                  : isDark ? 'text-zinc-400 hover:text-zinc-200' : 'text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              <Monitor className="h-4 w-4" />
-              UDC Aeropuerto
-            </button>
-            <button
               onClick={() => { setActiveTab('digital'); setCurrentPage(1); }}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 activeTab === 'digital'

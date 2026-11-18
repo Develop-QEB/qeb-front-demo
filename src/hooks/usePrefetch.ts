@@ -9,30 +9,6 @@ import { inventariosService } from '../services/inventarios.service';
 import { campanasService } from '../services/campanas.service';
 import { propuestasService } from '../services/propuestas.service';
 import { dashboardService, resolveCatorcenaActual, FilterOptions } from '../services/dashboard.service';
-import { getSapCache, setSapCache, SAP_CACHE_KEYS } from '../lib/sapCache';
-import { filterAllowedArticulos } from '../config/allowedDigitalArticles';
-import { SAP_BASE_URL } from '../store/environmentStore';
-
-// SAP_BASE_URL viene de environmentStore (una sola fuente; lee VITE_SAP_URL).
-
-// Interfaces para SAP
-interface SAPCuicItem {
-  U_CIC: string | number;
-  U_RazonSocial?: string;
-  U_UnidadNeg?: string;
-  U_Asesor?: string;
-  U_Agencia?: string;
-  U_Producto?: string;
-  U_Marca?: string;
-  U_Categoria?: string;
-  U_Cliente?: string;
-  CardCode?: string;
-}
-
-interface SAPArticulo {
-  ItemCode: string;
-  ItemName: string;
-}
 
 // Hook para prefetching de datos
 export function usePrefetch() {
@@ -57,56 +33,7 @@ export function usePrefetch() {
     });
   }, [queryClient]);
 
-  // Prefetch SAP CUIC data
-  const prefetchSapCuic = useCallback(() => {
-    queryClient.prefetchQuery({
-      queryKey: ['sap-cuic-all', 0],
-      queryFn: async () => {
-        // Try cache first
-        const cached = getSapCache<SAPCuicItem[]>(SAP_CACHE_KEYS.CUIC);
-        if (cached && cached.length > 0) {
-          return cached;
-        }
-        // Fetch from SAP
-        const response = await fetch(`${SAP_BASE_URL}/cuic`);
-        if (!response.ok) throw new Error('Error fetching CUIC');
-        const data = await response.json();
-        const items = (data.value || data) as SAPCuicItem[];
-        if (items && items.length > 0) {
-          setSapCache(SAP_CACHE_KEYS.CUIC, items);
-        }
-        return items;
-      },
-      staleTime: 30 * 60 * 1000, // 30 minutos
-    });
-  }, [queryClient]);
-
-  // Prefetch SAP Articulos data
-  const prefetchSapArticulos = useCallback(() => {
-    queryClient.prefetchQuery({
-      queryKey: ['sap-articulos-all', 0],
-      queryFn: async () => {
-        // Try cache first
-        const cached = getSapCache<SAPArticulo[]>(SAP_CACHE_KEYS.ARTICULOS);
-        if (cached && cached.length > 0) {
-          return cached;
-        }
-        // Fetch from SAP
-        const response = await fetch(`${SAP_BASE_URL}/articulos`);
-        if (!response.ok) throw new Error('Error fetching Articulos');
-        const data = await response.json();
-        const raw = (data.value || data) as SAPArticulo[];
-        const items = filterAllowedArticulos(raw);
-        if (items && items.length > 0) {
-          setSapCache(SAP_CACHE_KEYS.ARTICULOS, items);
-        }
-        return items;
-      },
-      staleTime: 30 * 60 * 1000, // 30 minutos
-    });
-  }, [queryClient]);
-
-  // Prefetch solicitudes (incluye SAP data)
+  // Prefetch solicitudes
   const prefetchSolicitudes = useCallback(() => {
     queryClient.prefetchQuery({
       queryKey: ['solicitudes', { page: 1, limit: 20 }],
@@ -123,10 +50,7 @@ export function usePrefetch() {
       queryFn: () => solicitudesService.getCatorcenas(),
       staleTime: 30 * 60 * 1000,
     });
-    // También precargar SAP data para cuando abran el modal
-    prefetchSapCuic();
-    prefetchSapArticulos();
-  }, [queryClient, prefetchSapCuic, prefetchSapArticulos]);
+  }, [queryClient]);
 
   // Prefetch proveedores
   const prefetchProveedores = useCallback(() => {
@@ -211,8 +135,6 @@ export function usePrefetch() {
     prefetchInventarios,
     prefetchCampanas,
     prefetchPropuestas,
-    prefetchSapCuic,
-    prefetchSapArticulos,
     prefetchAll,
     prefetchAllAsync,
   };

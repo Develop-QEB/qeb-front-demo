@@ -34,6 +34,7 @@ import {
 // Config UNICA de Google Maps (mismo id/key/libraries en toda la app) para
 // que el script se inyecte una sola vez. Ver src/config/googleMaps.ts.
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
+import { MARCA, rgb } from '../../config/marca';
 // Capas de POI / poligonos con las que Trafico armo cada circuito (Buscador de
 // Formatos -> capasMapa.ts). Vista interna: llegan TODAS, incluidas las que
 // Trafico oculto al cliente; aqui se pueden mostrar/ocultar y borrar.
@@ -846,7 +847,7 @@ export function CompartirPropuestaPage() {
     a.click();
   };
 
-  // Abrir el visor de mapa publico de QEB (pantalla completa, branding IMU) reflejando
+  // Abrir el visor de mapa publico de QEB (pantalla completa, con la marca de config/marca.ts) reflejando
   // EXACTAMENTE lo que se seleccionó para compartir. Construye el mapa "a la medida":
   //   - Seleccion de filas (checkboxes): ?sel=id@catorcena por cada reserva. La clave
   //     compuesta evita arrastrar otras catorcenas del mismo inventario (un id se repite
@@ -989,16 +990,16 @@ export function CompartirPropuestaPage() {
     const pageHeight = doc.internal.pageSize.getHeight();
     let y = 15;
 
-    // IMU Brand Colors
-    const IMU_BLUE: [number, number, number] = [0, 84, 166]; // #0054A6
-    const IMU_GREEN: [number, number, number] = [122, 184, 0]; // #7AB800
-    const IMU_DARK: [number, number, number] = [0, 61, 122]; // Darker blue
+    // Colores de marca (config/marca.ts)
+    const MARCA_PRIMARIO = rgb(MARCA.colores.primario);
+    const MARCA_ACENTO = rgb(MARCA.colores.acento);
+    const MARCA_OSCURO = rgb(MARCA.colores.oscuro);
     const WHITE: [number, number, number] = [255, 255, 255];
 
     // Píldora resaltada para la leyenda de contexto: ámbar = Circuitos Muestra,
-    // verde IMU = Circuitos Confirmados. Se pinta en el header (pág. 1) y en el
+    // color de acento = Circuitos Confirmados. Se pinta en el header (pág. 1) y en el
     // pie de TODAS las páginas.
-    const LEY_BG: [number, number, number] = esCampana ? IMU_GREEN : [255, 193, 7];
+    const LEY_BG: [number, number, number] = esCampana ? MARCA_ACENTO : [255, 193, 7];
     const LEY_TX: [number, number, number] = esCampana ? WHITE : [102, 60, 0];
     const drawLeyendaPill = (centerX: number, topY: number) => {
       doc.setFontSize(8);
@@ -1017,17 +1018,17 @@ export function CompartirPropuestaPage() {
     doc.rect(0, 0, pageWidth, 30, 'F');
 
     // Top accent bar - green
-    doc.setFillColor(...IMU_GREEN);
+    doc.setFillColor(...MARCA_ACENTO);
     doc.rect(0, 0, pageWidth, 3, 'F');
 
     // Bottom accent bar - blue
-    doc.setFillColor(...IMU_BLUE);
+    doc.setFillColor(...MARCA_PRIMARIO);
     doc.rect(0, 27, pageWidth, 3, 'F');
 
-    // IMU Logo - Load and add image with correct proportions
+    // Logo de marca - Load and add image with correct proportions
     try {
       const logoImg = new Image();
-      logoImg.src = '/logo-grupo-imu.png';
+      logoImg.src = MARCA.logoUrl;
       await new Promise((resolve, reject) => {
         logoImg.onload = resolve;
         logoImg.onerror = reject;
@@ -1044,14 +1045,14 @@ export function CompartirPropuestaPage() {
       // Fallback to styled text
       doc.setFontSize(18);
       doc.setFont('helvetica', 'bold');
-      doc.setTextColor(...IMU_BLUE);
-      doc.text('GRUPO IMU', marginX, 18);
+      doc.setTextColor(...MARCA_PRIMARIO);
+      doc.text(MARCA.nombre, marginX, 18);
     }
 
     // Title - centered
     doc.setFontSize(14);
     doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...IMU_DARK);
+    doc.setTextColor(...MARCA_OSCURO);
     doc.text('PROPUESTA DE CAMPAÑA PUBLICITARIA', pageWidth / 2, 14, { align: 'center' });
 
     // "Documento Interno" + píldora resaltada con la leyenda, centrados como grupo
@@ -1075,12 +1076,12 @@ export function CompartirPropuestaPage() {
     doc.setTextColor(80, 80, 80);
     doc.text(fechaActual, pageWidth - marginX, 10, { align: 'right' });
     doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...IMU_BLUE);
+    doc.setTextColor(...MARCA_PRIMARIO);
     doc.text(`Propuesta #${propuestaId}`, pageWidth - marginX, 16, { align: 'right' });
 
     // Link styled as button
     const clientViewUrl = `${window.location.origin}/cliente/propuesta/${propuestaId}${esCampana ? '?ctx=campana' : ''}`;
-    doc.setFillColor(...IMU_GREEN);
+    doc.setFillColor(...MARCA_ACENTO);
     doc.roundedRect(pageWidth - marginX - 45, 19, 45, 6, 1, 1, 'F');
     doc.setFontSize(7);
     doc.setFont('helvetica', 'bold');
@@ -1090,7 +1091,7 @@ export function CompartirPropuestaPage() {
     y = 38;
 
     // Client info section
-    doc.setFillColor(...IMU_BLUE);
+    doc.setFillColor(...MARCA_PRIMARIO);
     doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
     doc.setFontSize(10);
     doc.setTextColor(...WHITE);
@@ -1111,7 +1112,7 @@ export function CompartirPropuestaPage() {
       const x = marginX + (idx % 3) * 95;
       const row = Math.floor(idx / 3);
       doc.setFont('helvetica', 'bold');
-      doc.setTextColor(...IMU_BLUE);
+      doc.setTextColor(...MARCA_PRIMARIO);
       doc.text(`${label}:`, x, y + row * 7);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(60, 60, 60);
@@ -1120,7 +1121,7 @@ export function CompartirPropuestaPage() {
     y += 22;
 
     // Campaign info
-    doc.setFillColor(...IMU_BLUE);
+    doc.setFillColor(...MARCA_PRIMARIO);
     doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
     doc.setTextColor(...WHITE);
     doc.text('DATOS DE LA PROPUESTA', marginX + 5, y + 5);
@@ -1128,7 +1129,7 @@ export function CompartirPropuestaPage() {
 
     doc.setTextColor(60, 60, 60);
     doc.setFont('helvetica', 'bold');
-    doc.setTextColor(...IMU_BLUE);
+    doc.setTextColor(...MARCA_PRIMARIO);
     doc.text('Nombre Campaña:', marginX, y);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(60, 60, 60);
@@ -1169,7 +1170,7 @@ export function CompartirPropuestaPage() {
     }
     if (periodoText) {
       doc.setFont('helvetica', 'bold');
-      doc.setTextColor(...IMU_BLUE);
+      doc.setTextColor(...MARCA_PRIMARIO);
       doc.text('Periodo:', marginX + 150, y);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(60, 60, 60);
@@ -1179,7 +1180,7 @@ export function CompartirPropuestaPage() {
 
     //if (details?.propuesta?.descripcion) {
       //doc.setFont('helvetica', 'bold');
-      //doc.setTextColor(...IMU_BLUE);
+      //doc.setTextColor(...MARCA_PRIMARIO);
       //doc.text('Descripción:', marginX, y);
       //doc.setFont('helvetica', 'normal');
       //doc.setTextColor(60, 60, 60);
@@ -1190,15 +1191,15 @@ export function CompartirPropuestaPage() {
     //y += 8;
 
     // KPIs with IMU colored boxes
-    doc.setFillColor(...IMU_BLUE);
+    doc.setFillColor(...MARCA_PRIMARIO);
     doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
     doc.setTextColor(...WHITE);
     doc.text('RESUMEN DE MÉTRICAS', marginX + 5, y + 5);
     y += 12;
 
     const kpiData = [
-      { label: 'Total Caras', value: String(kpis.total), color: IMU_BLUE },
-      { label: 'En Renta', value: String(kpis.renta), color: IMU_GREEN },
+      { label: 'Total Caras', value: String(kpis.total), color: MARCA_PRIMARIO },
+      { label: 'En Renta', value: String(kpis.renta), color: MARCA_ACENTO },
       { label: 'Bonificadas', value: String(kpis.bonificadas), color: [0, 150, 180] as [number, number, number] }, // Cyan
       { label: 'Inversión Total', value: formatCurrency(kpis.inversion), color: [220, 160, 0] as [number, number, number] }, // Amber
     ];
@@ -1296,7 +1297,7 @@ export function CompartirPropuestaPage() {
         const catHeaderLabel = tipoPeriodo === 'mensual' && groupFechaIni && groupFechaFin
           ? `${catorcena}  |  ${formatDayMonthCom(groupFechaIni)} – ${formatDayMonthCom(groupFechaFin)}`
           : catorcena;
-        doc.setFillColor(...IMU_BLUE);
+        doc.setFillColor(...MARCA_PRIMARIO);
         doc.roundedRect(marginX, y, pageWidth - marginX * 2, 8, 1, 1, 'F');
         doc.setFontSize(10);
         doc.setFont('helvetica', 'bold');
@@ -1325,7 +1326,7 @@ export function CompartirPropuestaPage() {
           }
 
           // === ARTICULO SUB-HEADER ===
-          doc.setFillColor(...IMU_GREEN);
+          doc.setFillColor(...MARCA_ACENTO);
           doc.roundedRect(marginX + 5, y, pageWidth - marginX * 2 - 10, 6, 1, 1, 'F');
           doc.setFontSize(8);
           doc.setFont('helvetica', 'bold');
@@ -1401,7 +1402,7 @@ export function CompartirPropuestaPage() {
               const tipo = (Number(it.caras_bonificadas) || 0) > 0 && (Number(it.caras_renta) || 0) === 0 ? 'Bonificación' : 'Renta';
               doc.setFontSize(9);
               doc.setFont('helvetica', 'bold');
-              doc.setTextColor(...IMU_DARK);
+              doc.setTextColor(...MARCA_OSCURO);
               doc.text(`${nombre}${zona ? `   ·   ${zona}` : ''}`, x + 1, rowTop + imgH + 5);
               doc.setFontSize(7.5);
               doc.setFont('helvetica', 'normal');
@@ -1447,7 +1448,7 @@ export function CompartirPropuestaPage() {
             startY: y,
             margin: { left: marginX + 5, right: marginX + 5 },
             styles: { fontSize: 7, cellPadding: 2 },
-            headStyles: { fillColor: [230, 240, 250], textColor: IMU_BLUE, fontStyle: 'bold', fontSize: 7 },
+            headStyles: { fillColor: [230, 240, 250], textColor: MARCA_PRIMARIO, fontStyle: 'bold', fontSize: 7 },
             alternateRowStyles: { fillColor: [250, 252, 255] },
             columnStyles: {
               0: { cellWidth: 52 },
@@ -1503,7 +1504,7 @@ export function CompartirPropuestaPage() {
 
         doc.addPage();
         y = 20;
-        doc.setFillColor(...IMU_BLUE);
+        doc.setFillColor(...MARCA_PRIMARIO);
         doc.rect(marginX, y, pageWidth - marginX * 2, 7, 'F');
         doc.setFontSize(10);
         doc.setFont('helvetica', 'bold');
@@ -1520,7 +1521,7 @@ export function CompartirPropuestaPage() {
           const maxH = pageHeight - 46;
           if (imgH > maxH) { imgH = maxH; imgW = imgH * ratio; }
           if (y + 8 + imgH > pageHeight - 16) { doc.addPage(); y = 20; }
-          doc.setFillColor(...IMU_GREEN);
+          doc.setFillColor(...MARCA_ACENTO);
           doc.roundedRect(marginX, y, maxW, 6, 1, 1, 'F');
           doc.setFontSize(8);
           doc.setFont('helvetica', 'bold');
@@ -1570,14 +1571,14 @@ export function CompartirPropuestaPage() {
     const totalPages = doc.getNumberOfPages();
     for (let i = 1; i <= totalPages; i++) {
       doc.setPage(i);
-      doc.setFillColor(...IMU_GREEN);
+      doc.setFillColor(...MARCA_ACENTO);
       doc.rect(0, pageHeight - 12, pageWidth, 1, 'F');
-      doc.setFillColor(...IMU_BLUE);
+      doc.setFillColor(...MARCA_PRIMARIO);
       doc.rect(0, pageHeight - 11, pageWidth, 11, 'F');
       doc.setTextColor(...WHITE);
       doc.setFontSize(8);
       doc.setFont('helvetica', 'normal');
-      doc.text('Grupo IMU | Documento generado automaticamente', marginX, pageHeight - 4);
+      doc.text(`${MARCA.nombre} | Documento generado automaticamente`, marginX, pageHeight - 4);
       drawLeyendaPill(pageWidth / 2, pageHeight - 8.3);
       doc.setFontSize(8);
       doc.setFont('helvetica', 'normal');

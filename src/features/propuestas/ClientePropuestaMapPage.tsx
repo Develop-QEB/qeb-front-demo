@@ -24,6 +24,7 @@ import {
 // Config UNICA de Google Maps (mismo id/key/libraries en toda la app) para
 // que el script se inyecte una sola vez. Ver src/config/googleMaps.ts.
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
+import { MARCA } from '../../config/marca';
 // Capas de POI / poligonos con las que Trafico armo cada circuito. Al cliente
 // solo le llegan las marcadas visibles (vienen dentro del payload publico).
 import { CapaMapa, boundsDeCapas, crearFiltroCapas } from './capasMapa';
@@ -561,7 +562,7 @@ export function ClientePropuestaMapPage() {
     return (
       <div className="flex items-center justify-center h-screen bg-gradient-to-br from-white via-blue-50 to-green-50">
         <div className="text-center">
-          <img src="/logo-grupo-imu.png" alt="IMU" className="h-20 w-auto mx-auto mb-4 animate-pulse" />
+          <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-20 w-auto mx-auto mb-4 animate-pulse" />
           <Loader2 className="h-8 w-8 animate-spin text-[#0054A6] mx-auto" />
           <p className="text-gray-500 mt-2">Cargando propuesta...</p>
         </div>
@@ -573,7 +574,7 @@ export function ClientePropuestaMapPage() {
     return (
       <div className="flex items-center justify-center h-screen bg-gradient-to-br from-white via-blue-50 to-green-50">
         <div className="text-center">
-          <img src="/logo-grupo-imu.png" alt="IMU" className="h-16 w-auto mx-auto mb-4" />
+          <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-16 w-auto mx-auto mb-4" />
           <p className="text-red-600 font-medium">Error al cargar la propuesta</p>
         </div>
       </div>
@@ -588,7 +589,7 @@ export function ClientePropuestaMapPage() {
       <header className="sticky top-0 z-50 backdrop-blur shadow-md border-b bg-white/95 border-gray-200">
         <div className="max-w-full mx-auto px-3 sm:px-4 py-2.5 sm:py-4 flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-            <img src="/logo-grupo-imu.png" alt="IMU" className="h-9 sm:h-14 w-auto object-contain shrink-0" />
+            <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-9 sm:h-14 w-auto object-contain shrink-0" />
             <div className="border-l pl-2 sm:pl-4 border-gray-300 min-w-0">
               <h1 className="text-base sm:text-xl font-bold text-[#0054A6] truncate">Propuesta de Campaña</h1>
               <p className="text-[11px] sm:text-sm text-gray-500">Referencia #{propuestaId}</p>

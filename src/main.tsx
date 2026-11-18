@@ -14,6 +14,12 @@ try {
   }
 } catch { /* ignore */ }
 
+// Demo sin SAP: borrar cachés SAP que un navegador pudo guardar en versiones
+// anteriores (catálogos de clientes/artículos y la BD SAP seleccionada).
+try {
+  ['sap_cuic_cache', 'sap_articulos_cache', 'environment-storage'].forEach((k) => localStorage.removeItem(k));
+} catch { /* ignore */ }
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

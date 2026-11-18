@@ -24,30 +24,7 @@ import { articuloUDCPantallas, udcFichaDe, udcFichaImg, UDC_MAPA_COORDS, UDC_MAP
 import udcMapaPA from '../propuestas/assets/udc-mapa-aicm-t1.jpg';
 import udcMapaPB from '../propuestas/assets/udc-mapa-aicm-t1-pb.jpg';
 
-// Logo Grupo IMU
-const LOGO_IMU_URL = '/logo-grupo-imu.png';
-
-// Helper to load image as base64
-const loadImageAsBase64 = (url: string): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        resolve(canvas.toDataURL('image/png'));
-      } else {
-        reject(new Error('Could not get canvas context'));
-      }
-    };
-    img.onerror = reject;
-    img.src = url;
-  });
-};
+import { MARCA, rgb, cargarLogo } from '../../config/marca';
 
 // Status badge colors
 const getStatusColors = (isDark: boolean): Record<string, { bg: string; text: string; border: string; gradient: string }> => ({
@@ -321,10 +298,10 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
     const contentWidth = pageWidth - marginX * 2;
     const centerX = pageWidth / 2;
 
-    // Colores corporativos IMU
-    const imuBlue: [number, number, number] = [0, 113, 206];
-    const imuGreen: [number, number, number] = [118, 183, 42];
-    const imuDarkBlue: [number, number, number] = [27, 42, 74];
+    // Colores de marca (config/marca.ts)
+    const colorPrimario = rgb(MARCA.colores.primario);
+    const colorAcento = rgb(MARCA.colores.acento);
+    const colorOscuro = rgb(MARCA.colores.oscuro);
     const white: [number, number, number] = [255, 255, 255];
     const lightBg: [number, number, number] = [250, 251, 252];
     const textDark: [number, number, number] = [30, 41, 59];
@@ -335,32 +312,29 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
     doc.rect(0, 0, pageWidth, pageHeight, 'F');
 
     // === HEADER ===
-    doc.setFillColor(...imuDarkBlue);
+    doc.setFillColor(...colorOscuro);
     doc.rect(0, 0, pageWidth, 32, 'F');
-    doc.setFillColor(...imuGreen);
+    doc.setFillColor(...colorAcento);
     doc.rect(0, 32, pageWidth, 2, 'F');
 
-    // Logo Grupo IMU - cargar imagen
+    // Logo de marca (versión para fondo oscuro) - cargar imagen
     try {
-      const logoBase64 = await loadImageAsBase64(LOGO_IMU_URL);
-      // El logo original es ~6033x6151, lo escalamos para el header
-      const logoHeight = 22;
-      const logoWidth = logoHeight * (6033 / 6151); // Mantener proporción
-      doc.addImage(logoBase64, 'PNG', marginX, 5, logoWidth, logoHeight);
+      const logo = await cargarLogo(MARCA.logoBlancoUrl);
+      // Mantener la proporción del logo configurado, sin pasar de 45mm de ancho
+      const logoHeight = Math.min(18, 45 / logo.ratio);
+      const logoWidth = logoHeight * logo.ratio;
+      doc.addImage(logo.dataUrl, 'PNG', marginX, 16 - logoHeight / 2, logoWidth, logoHeight);
     } catch (err) {
       // Fallback: texto si no carga la imagen
       console.warn('No se pudo cargar el logo, usando texto:', err);
-      doc.setTextColor(...imuGreen);
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Grupo', marginX, 11);
       doc.setTextColor(...white);
       doc.setFontSize(18);
-      doc.text('IMU', marginX, 21);
-      doc.setFontSize(5);
+      doc.setFont('helvetica', 'bold');
+      doc.text(MARCA.nombre, marginX, 18);
+      doc.setFontSize(6);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(160, 165, 175);
-      doc.text('Imagenes y muebles urbanos', marginX, 27);
+      doc.text(MARCA.lema, marginX, 25);
     }
 
     // Título "SOLICITUD" centrado
@@ -381,13 +355,13 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
     doc.setFillColor(...lightBg);
     doc.roundedRect(marginX, yPos, contentWidth, 32, 3, 3, 'F');
 
-    doc.setTextColor(...imuDarkBlue);
+    doc.setTextColor(...colorOscuro);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
     doc.text('DATOS DE LA CAMPAÑA', marginX + 5, yPos + 8);
 
     // Línea decorativa
-    doc.setFillColor(...imuBlue);
+    doc.setFillColor(...colorPrimario);
     doc.rect(marginX + 5, yPos + 10, 35, 0.5, 'F');
 
     const col1 = marginX + 5;
@@ -417,7 +391,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
       };
       const labelIni = data.cotizacion?.fecha_inicio ? ml(data.cotizacion.fecha_inicio) : '-';
       const labelFin = data.cotizacion?.fecha_fin ? ml(data.cotizacion.fecha_fin) : '-';
-      doc.setTextColor(...imuBlue);
+      doc.setTextColor(...colorPrimario);
       doc.setFont('helvetica', 'bold');
       doc.text(`${labelIni} a ${labelFin}`, col1 + 15, yPos + 24);
     } else {
@@ -427,7 +401,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
       const catInicio = data.cotizacion?.fecha_inicio ? getCatorcenaDisplay(data.cotizacion.fecha_inicio, catorcenas, tipoPeriodo) : '';
       const catFin = data.cotizacion?.fecha_fin ? getCatorcenaDisplay(data.cotizacion.fecha_fin, catorcenas, tipoPeriodo) : '';
 
-      doc.setTextColor(...imuBlue);
+      doc.setTextColor(...colorPrimario);
       doc.setFont('helvetica', 'bold');
       doc.text(`${fechaInicio}`, col1 + 15, yPos + 24);
       doc.setFont('helvetica', 'normal');
@@ -437,7 +411,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
       doc.setTextColor(...textDark);
       doc.text('al', col1 + 60, yPos + 24);
 
-      doc.setTextColor(...imuBlue);
+      doc.setTextColor(...colorPrimario);
       doc.setFont('helvetica', 'bold');
       doc.text(`${fechaFin}`, col1 + 67, yPos + 24);
       doc.setFont('helvetica', 'normal');
@@ -451,12 +425,12 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
     doc.setFillColor(...lightBg);
     doc.roundedRect(marginX, yPos, contentWidth, 40, 3, 3, 'F');
 
-    doc.setTextColor(...imuDarkBlue);
+    doc.setTextColor(...colorOscuro);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
     doc.text('INFORMACIÓN DEL CLIENTE', marginX + 5, yPos + 8);
 
-    doc.setFillColor(...imuGreen);
+    doc.setFillColor(...colorAcento);
     doc.rect(marginX + 5, yPos + 10, 40, 0.5, 'F');
 
     const clienteInfo = [
@@ -486,7 +460,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
 
     // === RESUMEN (centrado y estético) ===
     if (data.cotizacion) {
-      doc.setFillColor(...imuDarkBlue);
+      doc.setFillColor(...colorOscuro);
       doc.roundedRect(marginX, yPos, contentWidth, 20, 3, 3, 'F');
 
       const summaryItems = [
@@ -524,12 +498,12 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
 
     // === DETALLE DE CARAS ===
     if (groupedCaras.length > 0) {
-      doc.setTextColor(...imuDarkBlue);
+      doc.setTextColor(...colorOscuro);
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
       doc.text('DETALLE DE CIRCUITOS', marginX, yPos);
 
-      doc.setFillColor(...imuBlue);
+      doc.setFillColor(...colorPrimario);
       doc.rect(marginX, yPos + 2, 28, 0.5, 'F');
 
       yPos += 8;
@@ -540,9 +514,9 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
           doc.setFillColor(...white);
           doc.rect(0, 0, pageWidth, pageHeight, 'F');
           // Mini header
-          doc.setFillColor(...imuDarkBlue);
+          doc.setFillColor(...colorOscuro);
           doc.rect(0, 0, pageWidth, 10, 'F');
-          doc.setFillColor(...imuGreen);
+          doc.setFillColor(...colorAcento);
           doc.rect(0, 10, pageWidth, 1, 'F');
           doc.setTextColor(...white);
           doc.setFontSize(7);
@@ -552,7 +526,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
         }
 
         // Header de catorcena
-        doc.setFillColor(...imuBlue);
+        doc.setFillColor(...colorPrimario);
         doc.roundedRect(marginX, yPos, contentWidth, 8, 1, 1, 'F');
         doc.setTextColor(...white);
         doc.setFontSize(8);
@@ -575,9 +549,9 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
             doc.addPage();
             doc.setFillColor(...white);
             doc.rect(0, 0, pageWidth, pageHeight, 'F');
-            doc.setFillColor(...imuDarkBlue);
+            doc.setFillColor(...colorOscuro);
             doc.rect(0, 0, pageWidth, 10, 'F');
-            doc.setFillColor(...imuGreen);
+            doc.setFillColor(...colorAcento);
             doc.rect(0, 10, pageWidth, 1, 'F');
             doc.setTextColor(...white);
             doc.setFontSize(7);
@@ -587,7 +561,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
           }
 
           // Header del artículo
-          doc.setFillColor(...imuGreen);
+          doc.setFillColor(...colorAcento);
           doc.roundedRect(marginX + 5, yPos, contentWidth - 10, 6, 1, 1, 'F');
           doc.setTextColor(...white);
           doc.setFontSize(7);
@@ -630,7 +604,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
             },
             headStyles: {
               fillColor: [240, 245, 250],
-              textColor: imuDarkBlue,
+              textColor: colorOscuro,
               fontStyle: 'bold',
               fontSize: 7,
               halign: 'center',
@@ -692,7 +666,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
 
         doc.addPage();
         yPos = 20;
-        doc.setFillColor(...imuDarkBlue);
+        doc.setFillColor(...colorOscuro);
         doc.rect(marginX, yPos, contentWidth, 8, 'F');
         doc.setFontSize(10);
         doc.setFont('helvetica', 'bold');
@@ -709,7 +683,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
           const need = 8 + colW0 / ratio0 + 11;
           if (yPos + need > pageHeight - 16) { doc.addPage(); yPos = 20; }
 
-          doc.setFillColor(...imuGreen);
+          doc.setFillColor(...colorAcento);
           doc.roundedRect(marginX, yPos, contentWidth, 6, 1, 1, 'F');
           doc.setFontSize(8);
           doc.setFont('helvetica', 'bold');
@@ -781,7 +755,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
           })));
           doc.addPage();
           yPos = 20;
-          doc.setFillColor(...imuBlue);
+          doc.setFillColor(...colorPrimario);
           doc.rect(marginX, yPos, contentWidth, 7, 'F');
           doc.setFontSize(10);
           doc.setFont('helvetica', 'bold');
@@ -797,7 +771,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
             const maxH = pageHeight - 46;
             if (imgH > maxH) { imgH = maxH; imgW = imgH * ratio; }
             if (yPos + 8 + imgH > pageHeight - 16) { doc.addPage(); yPos = 20; }
-            doc.setFillColor(...imuGreen);
+            doc.setFillColor(...colorAcento);
             doc.roundedRect(marginX, yPos, maxW, 6, 1, 1, 'F');
             doc.setFontSize(8);
             doc.setFont('helvetica', 'bold');
@@ -844,14 +818,14 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
     const totalPages = doc.internal.pages.length - 1;
     for (let i = 1; i <= totalPages; i++) {
       doc.setPage(i);
-      doc.setFillColor(...imuGreen);
+      doc.setFillColor(...colorAcento);
       doc.rect(0, pageHeight - 8, pageWidth, 0.8, 'F');
-      doc.setFillColor(...imuDarkBlue);
+      doc.setFillColor(...colorOscuro);
       doc.rect(0, pageHeight - 7, pageWidth, 7, 'F');
       doc.setTextColor(...white);
       doc.setFontSize(6);
       doc.setFont('helvetica', 'normal');
-      doc.text('Grupo IMU', marginX, pageHeight - 2.5);
+      doc.text(MARCA.nombre, marginX, pageHeight - 2.5);
       doc.setFont('helvetica', 'italic');
       doc.text('*Precios más IVA', centerX, pageHeight - 2.5, { align: 'center' });
       doc.setFont('helvetica', 'normal');

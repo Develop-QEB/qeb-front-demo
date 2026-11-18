@@ -5833,7 +5833,7 @@ export function CampanaDetailPage() {
                       {campana && isMigratedCampaign(campana) ? (
                         <>
                           <div className="bg-cyan-500/10 border border-cyan-500/30 rounded px-2 py-1 mb-1">
-                            <span className="text-cyan-300 text-[10px] font-medium">POST IMU (Migración INVIAN)</span>
+                            <span className="text-cyan-300 text-[10px] font-medium">POST (campaña migrada)</span>
                           </div>
                           <div className="flex justify-between">
                             <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Campaña:</span>

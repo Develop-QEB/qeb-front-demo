@@ -656,7 +656,7 @@ export function buildDeliveryNote(
 
     const deliveryNote: SAPDeliveryNote = {
       Series: series,
-      CardCode: campana.card_code || 'IMU00351',
+      CardCode: campana.card_code || '',
       NumAtCard: campana.id?.toString() || '',
       Comments: campana.comentario_cambio_status || '',
       DocDueDate: (campana.fecha_fin || new Date().toISOString()).split('T')[0],
@@ -671,7 +671,7 @@ export function buildDeliveryNote(
       U_CRM_Categoria: campana.T2_U_Categoria || '',
       U_CRM_Cliente: campana.T0_U_Cliente || '',
       U_CRM_Agencia: campana.T0_U_Agencia || '',
-      U_CRM_SAP: campana.card_code || 'IMU00351',
+      U_CRM_SAP: campana.card_code || '',
       U_CRM_R_S: campana.T0_U_RazonSocial || '',
       U_CRM_Camp: campana.nombre || campana.nombre_campania || '',
       U_TIPO_VENTA: 'Comercial',

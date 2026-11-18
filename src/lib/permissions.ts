@@ -3015,18 +3015,10 @@ export function esAsesorComercial(rol?: string | null): boolean {
 }
 
 /**
- * Roles que pueden ver y usar la BD UDC (aeropuerto AICM): los roles de
- * Aeropuerto + Admin/DEV. Vía Pública, Plazas y el resto NO ven UDC.
- * Se usa para `canVerUDC` (pestaña UDC en Clientes, filtro UDC en Solicitudes, etc.).
+ * Roles que pueden ver y usar la unidad UDC. En el demo la unidad UDC no
+ * existe, así que nadie la ve (`canVerUDC` siempre es false).
  */
-export const ROLES_UDC: string[] = [
-  'Director Comercial Aeropuerto',
-  'Gerente Comercial Aeropuerto',
-  'Asesor Comercial Aeropuerto',
-  'Analista de Aeropuerto',
-  'Administrador',
-  'DEV',
-];
+export const ROLES_UDC: string[] = [];
 
 export function esRolUDC(rol?: string | null): boolean {
   return !!rol && ROLES_UDC.includes(rol);
@@ -3045,11 +3037,8 @@ export function esTrafico(rol?: string | null): boolean {
 }
 
 // Usuarios con acceso UDC por EXCEPCIÓN (además de los ROLES_UDC), por nombre.
-// Para dar UDC a alguien puntual sin cambiarle el rol. Comparación tolerante a
-// acentos / mayúsculas / espacios dobles.
-export const USUARIOS_UDC_EXTRA: string[] = [
-  'Mayra Angelica Duran Perez',
-];
+// Vacío en el demo. Comparación tolerante a acentos / mayúsculas / espacios dobles.
+export const USUARIOS_UDC_EXTRA: string[] = [];
 const normNombreUDC = (s?: string | null): string =>
   (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().replace(/\s+/g, ' ');
 export function esUsuarioUDCExtra(nombre?: string | null): boolean {

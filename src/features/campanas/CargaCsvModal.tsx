@@ -301,7 +301,7 @@ export function CargaCsvModal({ isOpen, onClose, selectedInventory, onContinue }
         setParseError(
           'No se detectaron las columnas esperadas. ' +
           'Se requiere una columna "Código Único" (formato recomendado), ' +
-          '"Clave Sitio" + "Estado" (formato SEARS) o "Unidad" + "Ciudad" (formato Coca-Cola). ' +
+          '"Clave Sitio" + "Estado" (formato A) o "Unidad" + "Ciudad" (formato B). ' +
           `Columnas detectadas en el archivo: ${detected}.`
         );
         setIsParsing(false);
@@ -530,7 +530,7 @@ export function CargaCsvModal({ isOpen, onClose, selectedInventory, onContinue }
                 <div className={`p-2 rounded-lg border flex items-center gap-2 text-xs ${isDark ? 'bg-zinc-900 border-zinc-700 text-zinc-400' : 'bg-white border-gray-200 text-gray-600'}`}>
                   <Info className="h-3.5 w-3.5 shrink-0" />
                   <span>
-                    Esquema: <strong className={isDark ? 'text-zinc-200' : 'text-gray-800'}>{schema === 'codigo-unico' ? 'Código Único' : schema === 'sears' ? 'SEARS' : schema === 'coca-cola' ? 'Coca-Cola' : 'Personalizado'}</strong>
+                    Esquema: <strong className={isDark ? 'text-zinc-200' : 'text-gray-800'}>{schema === 'codigo-unico' ? 'Código Único' : schema === 'sears' ? 'Formato A' : schema === 'coca-cola' ? 'Formato B' : 'Personalizado'}</strong>
                     {hasVersionColumn ? (
                       <> · Versión: <strong className={isDark ? 'text-zinc-200' : 'text-gray-800'}>"{versionColumnName}"</strong></>
                     ) : (

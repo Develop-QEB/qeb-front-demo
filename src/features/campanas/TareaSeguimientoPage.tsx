@@ -95,6 +95,7 @@ import { LinkPreview } from '../../components/ui/LinkPreview';
 import { exportVersionarioArtesMulti } from '../../utils/exportVersionarioArtes';
 import * as XLSX from 'xlsx';
 import { CargaCsvModal } from './CargaCsvModal';
+import { MARCA } from '../../config/marca';
 
 // Convierte URLs en texto plano a <a> clickables. Mantiene el texto restante
 // como string para no escapar el contenido. Usado en la bitácora de comentarios
@@ -6788,15 +6789,15 @@ function TaskDetailModal({
       doc.setFillColor(colorMorado[0], colorMorado[1], colorMorado[2]);
       doc.rect(0, 0, pageWidth, 30, 'F');
 
-      // Título IMU
+      // Título de marca (config/marca.ts)
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(24);
-      doc.text('IMU', 15, 15);
+      doc.text(MARCA.nombre, 15, 15);
 
       // Subtítulo
       doc.setFontSize(10);
-      doc.text('Impresiones y Mobiliario Urbano', 15, 22);
+      doc.text(MARCA.lema, 15, 22);
 
       // Fecha actual
       const fecha = new Date().toLocaleDateString('es-MX', {
@@ -6929,7 +6930,7 @@ function TaskDetailModal({
           doc.setFont('helvetica', 'bold');
           doc.setTextColor(255, 255, 255);
           doc.setFontSize(10);
-          doc.text('IMU - Continuación', 15, 10);
+          doc.text(`${MARCA.nombre} - Continuación`, 15, 10);
 
           posY = 25;
 
@@ -6958,11 +6959,16 @@ function TaskDetailModal({
       doc.setFont('helvetica', 'italic');
       doc.setTextColor(colorGris[0], colorGris[1], colorGris[2]);
       doc.setFontSize(9);
-      doc.text('Para cualquier duda o aclaración, favor de contactarnos a contacto@imu.com', pageWidth/2, posY, { align: 'center' });
+      doc.text(
+        MARCA.correoContacto
+          ? `Para cualquier duda o aclaración, favor de contactarnos a ${MARCA.correoContacto}`
+          : 'Para cualquier duda o aclaración, favor de contactarnos.',
+        pageWidth/2, posY, { align: 'center' }
+      );
 
       posY += 7;
       doc.setFontSize(8);
-      doc.text(`IMU - Impresiones y Mobiliario Urbano © ${new Date().getFullYear()}`, pageWidth/2, posY, { align: 'center' });
+      doc.text(`${MARCA.nombre} - ${MARCA.lema} © ${new Date().getFullYear()}`, pageWidth/2, posY, { align: 'center' });
 
       // Línea decorativa
       posY += 5;

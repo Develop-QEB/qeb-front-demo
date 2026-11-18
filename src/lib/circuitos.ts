@@ -1,4 +1,4 @@
-// Circuitos Digitales IMU — helper compartido backend + frontend
+// Circuitos Digitales — helper compartido backend + frontend
 //
 // Un "circuito" es un grupo predefinido de ~50 inventarios (20 en MR)
 // identificados por la combinación CTO + plaza en la tabla inventarios.

@@ -8,109 +8,9 @@ type Tutorial =
   | { id: string; type: 'demo'; category: string; title: string; demoUrl: string; width: number; height: number; previewImage: string; paddingBottom: string }
   | { id: string; type: 'pdf'; category: string; title: string; pdfUrl: string };
 
-const tutorials: Tutorial[] = [
-  {
-    id: 'asesores-solicitudes',
-    type: 'demo' as const,
-    category: 'Asesores',
-    title: 'Crear - Ver - Editar Solicitudes',
-    demoUrl: 'https://app.storylane.io/demo/qwp95lfqu2k0?embed=inline_overlay',
-    width: 2560,
-    height: 1425,
-    previewImage:
-      'https://storylane-prod-uploads.s3.us-east-2.amazonaws.com/company/company_708d0493-8c70-45e6-8886-151c1cc6fa6d/project/project_4a12c5d8-6fa6-418e-ac55-415ea0b724e1/page/1770993940788.png',
-    paddingBottom: 'calc(55.66% + 25px)',
-  },
-  {
-    id: 'Gestion-Solicitudes',
-    type: 'demo' as const,
-    category: 'Asesores',
-    title: 'Gestion de Solicitudes',
-    demoUrl: 'https://app.storylane.io/demo/aasux8feuib8?embed=inline_overlay',
-    width: 1500,
-    height: 1525,
-    previewImage:
-      'https://storylane-prod-uploads.s3.us-east-2.amazonaws.com/company/company_708d0493-8c70-45e6-8886-151c1cc6fa6d/project/project_6c04e8be-d673-40bf-a4eb-f4344fc91ebf/page/1771447559402.png',
-    paddingBottom: 'calc(55.66% + 25px)',
-  },
-  {
-    id: 'Tutorial-Tickets',
-    type: 'demo' as const,
-    category: 'Tickets',
-    title: 'Gestion de Tickets',
-    demoUrl: 'https://app.storylane.io/demo/kwvumr3w4uc5?embed=inline_overlay',
-    width: 2560,
-    height: 1425,
-    previewImage:
-      'https://storylane-prod-uploads.s3.us-east-2.amazonaws.com/company/company_708d0493-8c70-45e6-8886-151c1cc6fa6d/project/project_17ead260-3777-4e8f-a218-8fe2e9f98afb/page/1774554935634.png',
-    paddingBottom: 'calc(55.66% + 25px)',
-  },
-  { 
-    id: 'manual-asesores', 
-    
-    type: 'pdf' as const, 
-    category: 'Asesores', 
-    title: 'Manual-Asesor-Comercial-QEB', 
-    pdfUrl: 'https://drive.google.com/file/d/1mXExe-3UJ_zFTG4IkgKLwi_x6AtF0bko/preview'
-  },
-  {
-    id: 'manual-analistas',
-    type: 'pdf' as const,
-    category: 'Analistas',
-    title: 'Manual-Analista-QEB',
-    pdfUrl: 'https://drive.google.com/file/d/1oIrHe80hrL5WxdstpD7oL7S_c63SZOvE/preview'
-  },
-  {
-    id: 'manual-diseños',
-    type: 'pdf' as const,
-    category: 'Diseño',
-    title: 'Manual-Diseño-QEB',
-    pdfUrl: 'https://drive.google.com/file/d/1nBQg3OYPuaBlNJCQVpzCttKCpbyfTr00/preview'
-  },
-  {
-    id: 'manual-trafico',
-    type: 'pdf' as const,
-    category: 'Trafico',
-    title: 'Manual-Trafico-QEB',
-    pdfUrl: 'https://drive.google.com/file/d/1rSLKyWxsO7EPHYIeLbs4btJjZ-1Snr1Y/preview'
-  },
-  {
-    id: 'gestionar-campañas',
-    type: 'demo' as const,
-    category: 'Analistas',
-    title: 'Gestion de Campañas',
-    demoUrl: 'https://app.storylane.io/demo/taq3uxuzty4w?embed=inline_overlay',
-    width: 1500,
-    height: 1525,
-    previewImage:
-      'https://storylane-prod-uploads.s3.us-east-2.amazonaws.com/company/company_708d0493-8c70-45e6-8886-151c1cc6fa6d/project/project_9865049f-8508-4fbd-8ea5-486272859b7e/page/1775568519723.png',
-    paddingBottom: 'calc(55.66% + 25px)',
-  },
-  {
-    id: 'tutorial-versionario',
-    type: 'demo' as const,
-    category: 'Analistas',
-    title: 'Tutorial de Versionario',
-    demoUrl: 'https://app.storylane.io/demo/4zugtxb6t96w?embed=inline_overlay',
-    width: 1500,
-    height: 1525,
-    previewImage:
-      'https://storylane-prod-uploads.s3.us-east-2.amazonaws.com/company/company_708d0493-8c70-45e6-8886-151c1cc6fa6d/project/project_07d4b799-158a-492b-8ccd-0c7bad3a9fb4/page/1775570047634.png',
-    paddingBottom: 'calc(55.66% + 25px)',
-  },
-  {
-    id: 'tutorial-filtro',
-    type: 'demo' as const,
-    category: 'Campañas',
-    title: 'Tutorial para filtrar y exportar datos',
-    demoUrl: 'https://app.storylane.io/demo/jomjkefuskp5?embed=inline_overlay',
-    width: 2360,
-    height: 1425,
-    previewImage:
-      'https://storylane-prod-uploads.s3.us-east-2.amazonaws.com/company/company_708d0493-8c70-45e6-8886-151c1cc6fa6d/project/project_7e140c58-4280-47b4-aa0b-6a6205659a1f/page/1775591768363.png',
-    paddingBottom: 'calc(55.66% + 25px)',
-  },
-];
+// El demo no incluye los tutoriales del sistema base (demos de Storylane y
+// manuales en Drive). Para agregar tutoriales propios del demo, añadirlos aquí.
+const tutorials: Tutorial[] = [];
 
 const categories = [...new Set(tutorials.map((t) => t.category))];
 
@@ -126,10 +26,10 @@ export function AyudaModal({ isOpen, onClose, tutorialId, onSelect, chatUnreadCo
   const isDark = useThemeStore((s) => s.theme) === 'dark';
   const navigate = useNavigate();
   const scriptLoaded = useRef(false);
-  const selected = tutorials.find((t) => t.id === tutorialId) ?? tutorials[0];
+  const selected: Tutorial | undefined = tutorials.find((t) => t.id === tutorialId) ?? tutorials[0];
 
   useEffect(() => {
-    if (isOpen && !scriptLoaded.current) {
+    if (isOpen && !scriptLoaded.current && tutorials.some((t) => t.type === 'demo')) {
       if (!document.querySelector('script[src="https://js.storylane.io/js/v2/storylane.js"]')) {
         const s = document.createElement('script');
         s.src = 'https://js.storylane.io/js/v2/storylane.js';
@@ -148,7 +48,7 @@ export function AyudaModal({ isOpen, onClose, tutorialId, onSelect, chatUnreadCo
   }, [isOpen, onClose]);
 
   const handlePlay = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (selected.type !== 'demo') return;
+    if (!selected || selected.type !== 'demo') return;
     const sl = (window as any).Storylane;
     if (sl) sl.Play({ type: 'preview_embed', demo_type: 'image', width: selected.width, height: selected.height, element: e.currentTarget, demo_url: selected.demoUrl });
   };
@@ -211,14 +111,20 @@ export function AyudaModal({ isOpen, onClose, tutorialId, onSelect, chatUnreadCo
         {/* Panel derecho */}
         <div className="flex-1 flex flex-col min-w-0">
           <div className={`flex items-center justify-between px-5 py-4 border-b ${isDark ? 'border-purple-900/30' : 'border-gray-200'}`}>
-            <h3 className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'} truncate pr-4`}>{selected.title}</h3>
+            <h3 className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'} truncate pr-4`}>{selected?.title ?? 'Ayuda'}</h3>
             <button onClick={onClose} className={`p-1.5 rounded-lg ${isDark ? 'hover:bg-purple-900/30 text-purple-400 hover:text-white' : 'hover:bg-gray-100 text-gray-400 hover:text-gray-900'} transition-colors`}>
               <X className="h-5 w-5" />
             </button>
           </div>
 
           <div className="flex-1 p-5 overflow-auto">
-            {selected.type === 'pdf' ? (
+            {!selected ? (
+              <div className={`h-full flex flex-col items-center justify-center text-center gap-2 ${isDark ? 'text-purple-300/70' : 'text-gray-500'}`}>
+                <BookOpen className="h-8 w-8" />
+                <p className="text-sm">Aún no hay tutoriales disponibles.</p>
+                <p className="text-xs">Si necesitas ayuda, levanta un ticket de soporte.</p>
+              </div>
+            ) : selected.type === 'pdf' ? (
               <iframe
                 key={tutorialId}
                 src={(selected as any).pdfUrl}
