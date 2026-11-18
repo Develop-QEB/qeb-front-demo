@@ -4,7 +4,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import {
   X, Search, Plus, Trash2, ChevronDown, ChevronRight, ChevronUp, Users,
   FileText, MapPin, Layers, Pencil, Map as MapIcon, Package, Calendar,
-  Gift, Target, Save, ArrowLeft, Filter, Grid, LayoutGrid, Ruler, ArrowUpDown, ArrowUp, ArrowDown, Download, Eye, Funnel, Check, Upload, Monitor, AlertTriangle, Trophy, Loader2, Clock, RefreshCw, History, Lock, Unlock
+  Gift, Target, Save, ArrowLeft, Filter, Grid, LayoutGrid, Ruler, ArrowUpDown, ArrowUp, ArrowDown, Download, Eye, Funnel, Check, Upload, Monitor, AlertTriangle, Loader2, Clock, RefreshCw, History, Lock, Unlock
 } from 'lucide-react';
 import { GoogleMap, useLoadScript, Marker } from '@react-google-maps/api';
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
@@ -477,8 +477,6 @@ const FILTER_FIELDS_DISPONIBLES: FilterFieldConfig[] = [
   { field: 'nivel_socioeconomico', label: 'NSE', type: 'string' },
   { field: 'ubicacion', label: 'Ubicación', type: 'string' },
   { field: 'tradicional_digital', label: 'Tipo', type: 'string' },
-  { field: 'mundialista', label: 'Mundialista', type: 'string' },
-  { field: 'mueble_chico', label: 'Mueble chico', type: 'string' },
   { field: 'isla_vip', label: 'Isla VIP', type: 'string' },
 ];
 
@@ -6509,47 +6507,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     </button>
                   )}
 
-                  {/* Mundialista + Chico: no aplican a UDC (aeropuerto) → ocultos.
-                      En gran formato dentro de UDC (esUDCBusqueda=false) sí aplican. */}
-                  {!esUDCBusqueda && (<>
-                  {/* Mundialista filter - 3-state toggle: off → SI → NO → off */}
-                  <button
-                    onClick={() => {
-                      const next = mundialistaFilter === 'off' ? 'si' : mundialistaFilter === 'si' ? 'no' : 'off';
-                      setMundialistaFilter(next);
-                      if (next === 'si') { setSortColumn('codigo_unico'); setSortDirection('asc'); }
-                    }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${mundialistaFilter === 'si'
-                      ? 'bg-green-600 text-white shadow'
-                      : mundialistaFilter === 'no'
-                        ? 'bg-red-500/80 text-white shadow'
-                        : `${isDark ? 'bg-zinc-800/80' : 'bg-gray-100/80'} ${isDark ? 'text-zinc-400' : 'text-gray-500'} border ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`
-                      }`}
-                    title={mundialistaFilter === 'off' ? 'Filtrar mundialista' : mundialistaFilter === 'si' ? 'Mostrando mundialistas (click: sin mundialistas)' : 'Sin mundialistas (click: quitar filtro)'}
-                  >
-                    <Trophy className="h-3.5 w-3.5" />
-                    {mundialistaFilter === 'si' ? 'Mundial ✓' : mundialistaFilter === 'no' ? 'Mundial ✗' : 'Mundial'}
-                  </button>
-
-                  {/* Mueble chico filter - 3-state toggle: off → SI → NO → off */}
-                  <button
-                    onClick={() => {
-                      const next = muebleChicoFilter === 'off' ? 'si' : muebleChicoFilter === 'si' ? 'no' : 'off';
-                      setMuebleChicoFilter(next);
-                      if (next === 'si') { setSortColumn('codigo_unico'); setSortDirection('asc'); }
-                    }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${muebleChicoFilter === 'si'
-                      ? 'bg-orange-500 text-white shadow'
-                      : muebleChicoFilter === 'no'
-                        ? 'bg-red-500/80 text-white shadow'
-                        : `${isDark ? 'bg-zinc-800/80' : 'bg-gray-100/80'} ${isDark ? 'text-zinc-400' : 'text-gray-500'} border ${isDark ? 'border-zinc-700/50' : 'border-gray-200/50'} ${isDark ? 'hover:text-white' : 'hover:text-gray-900'}`
-                      }`}
-                    title={muebleChicoFilter === 'off' ? 'Filtrar muebles chicos' : muebleChicoFilter === 'si' ? 'Mostrando muebles chicos (click: sin muebles chicos)' : 'Sin muebles chicos (click: quitar filtro)'}
-                  >
-                    <Package className="h-3.5 w-3.5" />
-                    {muebleChicoFilter === 'si' ? 'Chico ✓' : muebleChicoFilter === 'no' ? 'Chico ✗' : 'Chico'}
-                  </button>
-                  </>)}
+                  {/* Demo: sin filtros "Mundial" ni "Chico" (atributos propios del inventario del sistema base). */}
 
                   {/* Filtros avanzados (embudo) */}
                   <div className="relative">

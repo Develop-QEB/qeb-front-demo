@@ -1471,7 +1471,6 @@ export function InventariosPage() {
               <div className={`flex flex-wrap items-center gap-2 pt-3 border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-200'} relative z-50`}>
                 <FilterChip label="Tipo" options={tipos || []} value={tipo} onChange={v => { setTipo(v); setPage(1); }} onClear={() => { setTipo(''); setPage(1); }} />
                 <FilterChip label="Trad / Digital" options={['Tradicional', 'Digital']} value={tradicional} onChange={v => { setTradicional(v); setPage(1); }} onClear={() => { setTradicional(''); setPage(1); }} />
-                <FilterChip label="Mi Macro" options={['Excluir Mi Macro', 'Solo Mi Macro']} value={micromacro} onChange={v => { setMicromacro(v); setPage(1); }} onClear={() => { setMicromacro(''); setPage(1); }} />
                 <FilterChip label="Plaza" options={plazas || []} value={plaza} onChange={v => { setPlaza(v); setPage(1); }} onClear={() => { setPlaza(''); setPage(1); }} />
                 <FilterChip label="CTO" options={ctos || []} value={cto} onChange={v => { setCto(v); setPage(1); }} onClear={() => { setCto(''); setPage(1); }} />
                 <FilterChip label="Estatus" options={estatusList || []} value={estatus} onChange={v => { setEstatus(v); setPage(1); }} onClear={() => { setEstatus(''); setPage(1); }} />

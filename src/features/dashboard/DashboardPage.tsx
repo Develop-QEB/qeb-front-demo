@@ -2281,18 +2281,6 @@ export function DashboardPage() {
                   options={filterOptions?.tipos || []}
                 />
                 <MultiSelectFilter
-                  label="Mi Macro (circuito)"
-                  values={filters.micromacro ? [filters.micromacro === 'solo' ? 'Solo Mi Macro' : 'Excluir Mi Macro'] : []}
-                  onChange={(v) => {
-                    // Selección única: toma la última opción marcada
-                    const last = v[v.length - 1];
-                    const mm = last === 'Solo Mi Macro' ? 'solo' : last === 'Excluir Mi Macro' ? 'excluir' : undefined;
-                    setFilters(p => ({ ...p, micromacro: mm }));
-                    setInventoryPage(1);
-                  }}
-                  options={['Excluir Mi Macro', 'Solo Mi Macro']}
-                />
-                <MultiSelectFilter
                   label="NSE"
                   values={filters.nse || []}
                   onChange={(v) => {
