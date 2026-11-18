@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { useThemeStore } from '../../store/themeStore';
 import { analisisOcupacionService, AnalisisOcupacion } from '../../services/analisisOcupacion.service';
+import { etiquetaPeriodo } from '../../lib/analisisPeriodos';
 
 interface Props {
   open: boolean;
@@ -115,10 +116,23 @@ export function AnalisisOcupacionListModal({ open, onClose, onOpenAnalisis, onCr
                         className="flex-1 text-left"
                       >
                         <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>{a.nombre}</h3>
-                        <div className={`flex items-center gap-3 mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+                        <div className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
                           <span>{a.inventarios.length} inventarios</span>
                           <span>·</span>
-                          <span>{a.catorcenas.length} periodos</span>
+                          {a.periodos.length > 0 ? (
+                            <span>{etiquetaPeriodo(a.periodos[0])}</span>
+                          ) : (
+                            <span
+                              className={isDark ? 'text-amber-400' : 'text-amber-600'}
+                              title={a.catorcenasLegado.length > 0
+                                ? 'Se guardó por catorcenas, que ya no se usan. Al abrirlo podrás elegir un rango de fechas y volver a guardarlo.'
+                                : 'No tiene periodo guardado. Al abrirlo podrás elegir un rango de fechas y volver a guardarlo.'}
+                            >
+                              {a.catorcenasLegado.length > 0
+                                ? `Formato anterior (${a.catorcenasLegado.length} ${a.catorcenasLegado.length === 1 ? 'catorcena' : 'catorcenas'})`
+                                : 'Sin periodo guardado'}
+                            </span>
+                          )}
                           {a.codigosNoEncontrados.length > 0 && (
                             <>
                               <span>·</span>

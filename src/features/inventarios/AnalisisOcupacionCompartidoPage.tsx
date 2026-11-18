@@ -12,6 +12,10 @@ import { AnalisisOcupacionModal } from './AnalisisOcupacionModal';
  * sistema puede abrir el enlace y ver la matriz, pero no editarla ni liberar
  * reservas. Los usuarios CON acceso a inventario abren el mismo enlace dentro de
  * InventariosPage, con todas las acciones de edición.
+ *
+ * El servicio ya entrega el análisis normalizado al formato por fechas
+ * (`periodos`). Si el enlace es de un análisis viejo guardado por catorcenas,
+ * el modal lo abre con un periodo por defecto y avisa que es formato anterior.
  */
 export function AnalisisOcupacionCompartidoPage() {
   const isDark = useThemeStore((s) => s.theme) === 'dark';

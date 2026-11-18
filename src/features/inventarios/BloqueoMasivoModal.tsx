@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   X, Upload, Trash2, Loader2, AlertCircle, CheckCircle2,
-  ArrowLeft, ArrowRight, Ban, Calendar, ChevronDown,
+  ArrowLeft, ArrowRight, Ban, ChevronDown,
   ExternalLink, Download, Filter, Search,
 } from 'lucide-react';
 import { useThemeStore } from '../../store/themeStore';
@@ -14,11 +14,24 @@ import { campanasService } from '../../services/campanas.service';
 import {
   analisisOcupacionService,
   CampanaEnCelda,
-  CatorcenaRef,
   InventarioResumen,
   MatrizOcupacion,
-  cellKeyOf,
+  reservasDeInventario,
 } from '../../services/analisisOcupacion.service';
+import {
+  ColumnaPeriodo,
+  Granularidad,
+  PeriodoAnalisis,
+  GRANULARIDAD_UNIDAD,
+  agruparColumnas,
+  columnaIncluye,
+  etiquetaPeriodo,
+  hoyISO,
+  periodoProximosDias,
+  rangoCorto,
+  rangoLegible,
+  validarPeriodo,
+} from '../../lib/analisisPeriodos';
 import {
   TIPO_BLOQUEO_DEFAULT,
   TIPO_BLOQUEO_TEXTOS,
@@ -30,8 +43,16 @@ import {
 } from '../../lib/bloqueoInventario';
 import { TipoBloqueoSelector } from './TipoBloqueoSelector';
 import { VigenciaBloqueoFields } from './VigenciaBloqueoFields';
+import { PeriodoSelector } from './AnalisisOcupacionModal';
 
 type Step = 'select' | 'periodos' | 'matriz';
+
+/**
+ * Periodo con el que arranca el bloqueo: los próximos 90 días. Es más amplio que
+ * el del análisis porque el bloqueo libera TODAS las reservas vigentes del
+ * inventario, y conviene ver de entrada cuántas tarjetas se van a afectar.
+ */
+const DIAS_PERIODO_BLOQUEO = 90;
 
 interface BloqueoMasivoModalProps {
   open: boolean;
@@ -43,7 +64,8 @@ interface SkippedPropuesta {
   reserva_id: number;
   propuesta_id: number;
   inventario_codigo: string | null;
-  catorcena: string;
+  /** Fechas de la reserva, ya formateadas. */
+  periodo: string;
 }
 
 interface BloqueoResultado {
@@ -89,17 +111,6 @@ const isTrafico = (u: UserOption) =>
   u.area?.toLowerCase().includes('tráfico') || u.area?.toLowerCase().includes('trafico') ||
   u.puesto?.toLowerCase().includes('tráfico') || u.puesto?.toLowerCase().includes('trafico');
 
-const fmtFecha = (d: string) => new Date(d).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
-
-// Fecha de hoy como 'YYYY-MM-DD' (local). Se compara contra el date-part del
-// `fin_periodo` para decidir si una tarjeta ya está en el pasado.
-const hoyISO = (): string => {
-  const d = new Date();
-  const mes = String(d.getMonth() + 1).padStart(2, '0');
-  const dia = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mes}-${dia}`;
-};
-
 // Una tarjeta es "pasada" si su período ya terminó (fin_periodo < hoy). Alinea
 // con el filtro `sc.fin_periodo >= CURDATE()` del backend (toggleBlock): esas
 // reservas NO se liberan, así que tampoco deben contar ni generar tareas.
@@ -127,15 +138,16 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
   const [step, setStep] = useState<Step>('select');
   const [inventarios, setInventarios] = useState<InventarioResumen[]>([]);
   const [codigosNoEncontrados, setCodigosNoEncontrados] = useState<string[]>([]);
-  const [catorcenasSelected, setCatorcenasSelected] = useState<CatorcenaRef[]>([]);
+  // Periodo a revisar: rango libre de fechas + cómo partirlo en columnas.
+  const [periodo, setPeriodo] = useState<PeriodoAnalisis>(() => periodoProximosDias(DIAS_PERIODO_BLOQUEO));
   const [matriz, setMatriz] = useState<MatrizOcupacion | null>(null);
   const [building, setBuilding] = useState(false);
+  // Identifica la última matriz pedida: si llega la respuesta de una anterior, se descarta.
+  const buildIdRef = useRef(0);
 
   const [csvProcessing, setCsvProcessing] = useState(false);
   const [csvFeedback, setCsvFeedback] = useState<{ encontrados: number; noEncontrados: number } | null>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
-
-  const [yearSelected, setYearSelected] = useState<number>(new Date().getFullYear());
 
   const [selectedInventarios, setSelectedInventarios] = useState<Set<number>>(new Set());
   const [selectedReservas, setSelectedReservas] = useState<Set<number>>(new Set());
@@ -160,10 +172,13 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
 
   useEffect(() => {
     if (!open) return;
+    // Descarta cualquier matriz que siguiera construyéndose de una apertura anterior.
+    buildIdRef.current += 1;
+    setBuilding(false);
     setStep('select');
     setInventarios(initialInventarios || []);
     setCodigosNoEncontrados([]);
-    setCatorcenasSelected([]);
+    setPeriodo(periodoProximosDias(DIAS_PERIODO_BLOQUEO));
     setMatriz(null);
     setSelectedInventarios(new Set());
     setSelectedReservas(new Set());
@@ -272,32 +287,16 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
     setCodigosNoEncontrados(prev => prev.filter(c => c !== codigo));
   };
 
-  const { data: catorcenasYear, isLoading: loadingCatorcenas } = useQuery({
-    queryKey: ['catorcenas', yearSelected],
-    queryFn: () => solicitudesService.getCatorcenas(yearSelected),
-    enabled: open && step === 'periodos',
-  });
-
-  const toggleCatorcena = (c: CatorcenaRef) => {
-    setCatorcenasSelected(prev => {
-      const exists = prev.some(p => p.numero === c.numero && p.anio === c.anio);
-      if (exists) return prev.filter(p => !(p.numero === c.numero && p.anio === c.anio));
-      return [...prev, c].sort((a, b) => a.anio - b.anio || a.numero - b.numero);
-    });
-  };
-
-  const isSelectedCatorcena = (numero: number, anio: number) =>
-    catorcenasSelected.some(c => c.numero === numero && c.anio === anio);
-
-  const buildMatrizFor = useCallback(async (invs: InventarioResumen[], cats: CatorcenaRef[]) => {
+  const buildMatrizFor = useCallback(async (invs: InventarioResumen[], p: PeriodoAnalisis) => {
+    const buildId = ++buildIdRef.current;
     setBuilding(true);
     try {
-      const m = await analisisOcupacionService.buildMatriz(invs, cats);
-      setMatriz(m);
+      const m = await analisisOcupacionService.buildMatriz(invs, p);
+      if (buildId === buildIdRef.current) setMatriz(m);
     } catch (err) {
       console.error('Error construyendo matriz:', err);
     } finally {
-      setBuilding(false);
+      if (buildId === buildIdRef.current) setBuilding(false);
     }
   }, []);
 
@@ -306,14 +305,14 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
     setSelectedInventarios(new Set());
     setSelectedReservas(new Set());
     setBloqueadosLocal(new Set());
-    void buildMatrizFor(inventarios, catorcenasSelected);
+    void buildMatrizFor(inventarios, periodo);
   };
 
   const refreshMatrix = async () => {
     setSelectedInventarios(new Set());
     setSelectedReservas(new Set());
     setBloqueadosLocal(new Set());
-    await buildMatrizFor(inventarios, catorcenasSelected);
+    await buildMatrizFor(inventarios, periodo);
   };
 
   // === Inventarios a bloquear = union de filas seleccionadas + filas dueñas de tarjetas seleccionadas ===
@@ -339,23 +338,19 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
     return out;
   }, [matriz, selectedInventarios, selectedReservas, bloqueadosLocal]);
 
-  // === Tarjetas afectadas: cards ACTUALES/FUTURAS en los inventarios objetivo ===
-  // Se excluyen las de período ya vencido: el backend (toggleBlock) no las
-  // libera, así que no deben contar ni generar tareas "Sustituir Inventario".
+  // === Tarjetas afectadas: reservas ACTUALES/FUTURAS en los inventarios objetivo ===
+  // Una reserva ocupa varias columnas (días/semanas/meses) pero cuenta UNA vez:
+  // de lo contrario se crearían tareas duplicadas. Se excluyen las de período ya
+  // vencido: el backend (toggleBlock) no las libera, así que no deben contar ni
+  // generar tareas "Sustituir Inventario".
   const tarjetasAfectadas = useMemo(() => {
-    if (!matriz) return [] as { card: CampanaEnCelda; inv: InventarioResumen; cat: CatorcenaRef }[];
-    const out: { card: CampanaEnCelda; inv: InventarioResumen; cat: CatorcenaRef }[] = [];
+    if (!matriz) return [] as { card: CampanaEnCelda; inv: InventarioResumen }[];
+    const out: { card: CampanaEnCelda; inv: InventarioResumen }[] = [];
     for (const inv of matriz.inventarios) {
       if (!inventariosObjetivo.has(inv.id)) continue;
-      const invCeldas = matriz.celdas[inv.id];
-      if (!invCeldas) continue;
-      for (const cat of matriz.catorcenas) {
-        const celda = invCeldas[cellKeyOf(cat)];
-        if (!celda) continue;
-        for (const card of celda.campanas) {
-          if (esPeriodoPasado(card.fin_periodo)) continue;
-          out.push({ card, inv, cat });
-        }
+      for (const card of reservasDeInventario(matriz, inv.id)) {
+        if (esPeriodoPasado(card.fin_periodo)) continue;
+        out.push({ card, inv });
       }
     }
     return out;
@@ -389,32 +384,29 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
       }
     }
 
-    // 2) Crear tareas "Sustituir Inventario" — una por cada tarjeta de cada
+    // 2) Crear tareas "Sustituir Inventario" — una por cada reserva de cada
     //    inventario que sí pudo bloquearse. Tarjetas solo-propuesta se reportan.
     const traficoIds = traficoUsers.map(u => u.id);
     const traficoNombres = traficoUsers.map(u => u.nombre);
 
     const tareasJobs: Promise<void>[] = [];
-    for (const { card, inv, cat } of tarjetasAfectadas) {
+    for (const { card, inv } of tarjetasAfectadas) {
       if (!bloqueadosOk.has(inv.id)) continue;
-      const catLabel = `C${cat.numero}-${cat.anio}`;
+      const periodoReserva = rangoLegible(card.inicio_periodo, card.fin_periodo) || 'sin fechas';
       if (!card.campana_id) {
         resultado.skippedPropuestas.push({
           reserva_id: card.reserva_id,
           propuesta_id: card.propuesta_id,
           inventario_codigo: inv.codigo_unico,
-          catorcena: catLabel,
+          periodo: periodoReserva,
         });
         continue;
       }
-      const rango = card.inicio_periodo && card.fin_periodo
-        ? `${fmtFecha(card.inicio_periodo)} – ${fmtFecha(card.fin_periodo)}`
-        : '';
       const descripcion = [
         `Inventario: #${inv.id}${inv.codigo_unico ? ` — ${inv.codigo_unico}` : ''}`,
         inv.ubicacion ? `Ubicación: ${inv.ubicacion}` : null,
         inv.plaza ? `Plaza: ${inv.plaza}` : null,
-        `Catorcena: ${catLabel}${rango ? ` (${rango})` : ''}`,
+        `Periodo: ${periodoReserva}`,
         `Cliente: ${card.cliente_nombre || 'Sin cliente'}`,
         `Reserva #${card.reserva_id}`,
         '',
@@ -467,40 +459,40 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
   };
 
   // === Descarga CSV de la matriz ===
+  // Una fila por reserva (con sus fechas). Los inventarios sin reservas en el
+  // periodo salen en una sola fila "Disponible" con las fechas del periodo.
   const handleDownloadMatrizCsv = () => {
     if (!matriz) return;
     const rows: string[][] = [[
       'Inventario ID', 'Código Único', 'Mueble', 'Plaza', 'Ubicación',
-      'Catorcena', 'Estatus', 'Tipo', 'Campaña ID', 'Campaña', 'Cliente',
+      'Estatus', 'Tipo', 'Campaña ID', 'Campaña', 'Cliente',
       'Propuesta ID', 'Artículo', 'Reserva ID', 'APS', 'Inicio', 'Fin',
     ]];
     for (const inv of matriz.inventarios) {
-      const invCeldas = matriz.celdas[inv.id];
-      if (!invCeldas) continue;
-      for (const cat of matriz.catorcenas) {
-        const celda = invCeldas[cellKeyOf(cat)];
-        const catLabel = `C${cat.numero}-${cat.anio}`;
-        if (!celda || !celda.ocupado || celda.campanas.length === 0) {
-          rows.push([
-            String(inv.id), inv.codigo_unico || '', inv.mueble || '', inv.plaza || '', inv.ubicacion || '',
-            catLabel, bloqueadosLocal.has(inv.id) ? textos.participio : 'Disponible', '', '', '', '', '', '', '', '', '', '',
-          ]);
-          continue;
-        }
-        for (const c of celda.campanas) {
-          const esPropuesta = !c.campana_id;
-          const estatus = bloqueadosLocal.has(inv.id)
-            ? `${textos.participio} (recién)`
-            : esPropuesta ? 'Reservado' : 'Ocupado';
-          rows.push([
-            String(inv.id), inv.codigo_unico || '', inv.mueble || '', inv.plaza || '', inv.ubicacion || '',
-            catLabel, estatus, esPropuesta ? 'Propuesta' : 'Campaña',
-            c.campana_id ? String(c.campana_id) : '', c.campana_nombre || '', c.cliente_nombre || '',
-            c.propuesta_id ? String(c.propuesta_id) : '', c.articulo || '',
-            String(c.reserva_id), c.aps != null ? String(c.aps) : '',
-            c.inicio_periodo || '', c.fin_periodo || '',
-          ]);
-        }
+      const base = [String(inv.id), inv.codigo_unico || '', inv.mueble || '', inv.plaza || '', inv.ubicacion || ''];
+      const reservas = reservasDeInventario(matriz, inv.id);
+      if (reservas.length === 0) {
+        rows.push([
+          ...base,
+          bloqueadosLocal.has(inv.id) ? textos.participio : 'Disponible',
+          '', '', '', '', '', '', '', '',
+          matriz.periodo.inicio, matriz.periodo.fin,
+        ]);
+        continue;
+      }
+      for (const c of reservas) {
+        const esPropuesta = !c.campana_id;
+        const estatus = bloqueadosLocal.has(inv.id)
+          ? `${textos.participio} (recién)`
+          : esPropuesta ? 'Reservado' : 'Ocupado';
+        rows.push([
+          ...base,
+          estatus, esPropuesta ? 'Propuesta' : 'Campaña',
+          c.campana_id ? String(c.campana_id) : '', c.campana_nombre || '', c.cliente_nombre || '',
+          c.propuesta_id ? String(c.propuesta_id) : '', c.articulo || '',
+          String(c.reserva_id), c.aps != null ? String(c.aps) : '',
+          c.inicio_periodo || '', c.fin_periodo || '',
+        ]);
       }
     }
     const escape = (s: string) => /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -509,7 +501,7 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `matriz-bloqueo-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `matriz-bloqueo-${matriz.periodo.inicio}_a_${matriz.periodo.fin}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -517,7 +509,7 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
   };
 
   const canContinueFromSelect = inventarios.length > 0;
-  const canContinueFromPeriodos = catorcenasSelected.length > 0;
+  const canContinueFromPeriodos = validarPeriodo(periodo) === null;
 
   if (!open) return null;
 
@@ -539,7 +531,7 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
               <div>
                 <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Bloqueo Masivo de Inventario</h2>
                 <p className={`text-xs ${isDark ? 'text-rose-300/50' : 'text-rose-400'}`}>
-                  Paso {stepIndex} de 3 · {step === 'select' ? 'Inventarios' : step === 'periodos' ? 'Periodos' : 'Matriz'}
+                  Paso {stepIndex} de 3 · {step === 'select' ? 'Inventarios' : step === 'periodos' ? 'Periodo' : 'Matriz'}
                 </p>
               </div>
             </div>
@@ -565,7 +557,7 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
                     {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : idx + 1}
                   </div>
                   <span className={active ? (isDark ? 'text-rose-300 font-medium' : 'text-rose-700 font-medium') : isDark ? 'text-zinc-500' : 'text-gray-400'}>
-                    {s === 'select' ? 'Inventarios' : s === 'periodos' ? 'Periodos' : 'Resultado'}
+                    {s === 'select' ? 'Inventarios' : s === 'periodos' ? 'Periodo' : 'Resultado'}
                   </span>
                   {idx < 2 && <ChevronDown className={`h-3 w-3 -rotate-90 ${isDark ? 'text-zinc-700' : 'text-gray-300'}`} />}
                 </div>
@@ -696,68 +688,12 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
             )}
 
             {step === 'periodos' && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <Calendar className={`h-4 w-4 ${isDark ? 'text-rose-400' : 'text-rose-600'}`} />
-                  <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Año:</span>
-                  <select
-                    value={yearSelected}
-                    onChange={e => setYearSelected(parseInt(e.target.value))}
-                    className={`px-3 py-1.5 rounded-lg border text-sm ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-gray-200 text-gray-900'} focus:outline-none focus:ring-1 focus:ring-rose-500/50`}
-                  >
-                    {Array.from({ length: 6 }).map((_, i) => {
-                      const y = new Date().getFullYear() - 2 + i;
-                      return <option key={y} value={y}>{y}</option>;
-                    })}
-                  </select>
-                  <span className={`ml-auto text-xs ${isDark ? 'text-rose-300' : 'text-rose-600'}`}>
-                    {catorcenasSelected.length} seleccionadas
-                  </span>
-                </div>
-
-                {loadingCatorcenas ? (
-                  <div className="flex justify-center py-12">
-                    <Loader2 className="h-6 w-6 animate-spin text-rose-500" />
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                    {(catorcenasYear?.data || []).map(c => {
-                      const selected = isSelectedCatorcena(c.numero_catorcena, c.a_o);
-                      return (
-                        <button
-                          key={c.id}
-                          onClick={() => toggleCatorcena({ numero: c.numero_catorcena, anio: c.a_o })}
-                          className={`px-3 py-2 rounded-lg border text-xs text-left transition-all ${
-                            selected
-                              ? isDark ? 'bg-rose-500/20 border-rose-500 text-rose-200' : 'bg-rose-50 border-rose-500 text-rose-800'
-                              : isDark ? 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:border-zinc-500' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
-                          }`}
-                        >
-                          <div className="font-semibold">C{c.numero_catorcena}</div>
-                          <div className={`text-[10px] mt-0.5 ${selected ? (isDark ? 'text-rose-300' : 'text-rose-600') : isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                            {new Date(c.fecha_inicio).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} – {new Date(c.fecha_fin).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {catorcenasSelected.length > 0 && (
-                  <div className={`rounded-lg border ${isDark ? 'border-rose-500/30 bg-rose-500/5' : 'border-rose-200 bg-rose-50/50'} p-3`}>
-                    <div className={`text-xs font-medium mb-1.5 ${isDark ? 'text-rose-300' : 'text-rose-700'}`}>Periodos seleccionados</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {catorcenasSelected.map(c => (
-                        <span key={`${c.anio}-${c.numero}`} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] ${isDark ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-white text-rose-700 border border-rose-200'}`}>
-                          C{c.numero}-{c.anio}
-                          <button onClick={() => toggleCatorcena(c)} className="hover:text-red-500">
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
+              <div className="space-y-3">
+                <PeriodoSelector value={periodo} onChange={setPeriodo} isDark={isDark} acento="rose" />
+                <p className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                  El periodo solo define qué reservas se ven y cuentan en la matriz. Al bloquear un inventario se
+                  liberan todas sus reservas vigentes, aunque caigan fuera de este rango.
+                </p>
               </div>
             )}
 
@@ -807,7 +743,7 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm ${isDark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-gray-600 hover:bg-gray-100'}`}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
-                  Cambiar periodos
+                  Cambiar periodo
                 </button>
               )}
               {step === 'select' && (
@@ -984,7 +920,7 @@ export function BloqueoMasivoModal({ open, onClose, initialInventarios }: Bloque
                           <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>·</span>
                           <span className="font-mono">{s.inventario_codigo || 'sin código'}</span>
                           <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>·</span>
-                          <span>{s.catorcena}</span>
+                          <span>{s.periodo}</span>
                           <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>· res#{s.reserva_id}</span>
                         </li>
                       ))}
@@ -1024,6 +960,45 @@ function ResultStat({ isDark, label, value, tone }: { isDark: boolean; label: st
 }
 
 // ====== Matriz View ======
+/** Ancho de las celdas compactas según la granularidad (más columnas → más angostas). */
+const ANCHO_CELDA: Record<Granularidad, string> = { dia: 'w-7', semana: 'w-12', mes: 'w-14' };
+
+/** Colores de las celdas compactas (los mismos tonos de las tarjetas); también se usan en la leyenda. */
+const clasesCeldaBloqueo = (isDark: boolean) => ({
+  disponible: isDark ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200',
+  noDisponible: isDark ? 'bg-zinc-800/40 border-zinc-700' : 'bg-gray-100 border-gray-300',
+  reservado: isDark
+    ? 'bg-amber-500/20 border-amber-500/50 text-amber-200 hover:bg-amber-500/35'
+    : 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200',
+  ocupado: isDark
+    ? 'bg-red-500/25 border-red-500/50 text-red-200 hover:bg-red-500/40'
+    : 'bg-red-100 border-red-300 text-red-800 hover:bg-red-200',
+  bloqueado: isDark
+    ? 'bg-zinc-800/60 border-zinc-600 text-zinc-300 hover:bg-zinc-800'
+    : 'bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200',
+});
+
+/** Tooltip de una celda ocupada: el detalle de sus reservas en texto corto. */
+function tooltipCeldaBloqueo(
+  codigo: string,
+  col: ColumnaPeriodo,
+  visibles: CampanaEnCelda[],
+  total: number,
+  bloqueado: boolean,
+): string {
+  const MAX_LINEAS = 6;
+  const lineas = [`${codigo} · ${col.titulo}`];
+  if (bloqueado) lineas.push('Inventario marcado No Disponible en esta sesión');
+  for (const c of visibles.slice(0, MAX_LINEAS)) {
+    const rango = rangoCorto(c.inicio_periodo, c.fin_periodo);
+    lineas.push(`${c.campana_id ? 'Ocupado' : 'Reservado'}: ${labelForCampana(c)} · ${c.cliente_nombre || 'Sin cliente'}${rango ? ` (${rango})` : ''}`);
+  }
+  if (visibles.length > MAX_LINEAS) lineas.push(`… y ${visibles.length - MAX_LINEAS} más`);
+  if (total > visibles.length) lineas.push(`${total - visibles.length} oculta(s) por el filtro`);
+  lineas.push('Clic para ver el detalle');
+  return lineas.join('\n');
+}
+
 interface MatrizBloqueoViewProps {
   matriz: MatrizOcupacion | null;
   building: boolean;
@@ -1070,10 +1045,12 @@ function MatrizBloqueoView({
   const [filterSearch, setFilterSearch] = useState('');
   const filterRef = useRef<HTMLDivElement>(null);
 
+  // Celda abierta en la ventana de detalle (inventario × columna).
+  const [celdaAbierta, setCeldaAbierta] = useState<{ invId: number; colKey: string } | null>(null);
+
   const [confirmRelease, setConfirmRelease] = useState<{
     card: CampanaEnCelda;
     inventario: InventarioResumen;
-    catorcena: CatorcenaRef;
   } | null>(null);
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
@@ -1131,10 +1108,10 @@ function MatrizBloqueoView({
       return next;
     });
 
-  const cardPasaFiltros = (c: CampanaEnCelda) => {
-    if (isFiltered && !campanaFilter.has(labelForCampana(c))) return false;
-    return true;
-  };
+  const cardPasaFiltros = useCallback(
+    (c: CampanaEnCelda) => !isFiltered || campanaFilter.has(labelForCampana(c)),
+    [isFiltered, campanaFilter]
+  );
 
   const inventariosFiltrados = useMemo(() => {
     if (!matriz) return [] as InventarioResumen[];
@@ -1151,13 +1128,29 @@ function MatrizBloqueoView({
     });
   }, [matriz, campanaFilter, isFiltered]);
 
-  const toggleInventarioRow = (id: number) => {
+  // Datos de la celda abierta en la ventana de detalle (con el filtro aplicado).
+  const celdaDetalle = useMemo(() => {
+    if (!celdaAbierta || !matriz) return null;
+    const inv = matriz.inventarios.find(i => i.id === celdaAbierta.invId);
+    const col = matriz.columnas.find(c => c.key === celdaAbierta.colKey);
+    if (!inv || !col) return null;
+    const todas = matriz.celdas[inv.id]?.[col.key]?.campanas || [];
+    return { inv, col, todas, visibles: todas.filter(cardPasaFiltros) };
+  }, [celdaAbierta, matriz, cardPasaFiltros]);
+
+  // Si la celda abierta se queda sin reservas visibles (p.ej. tras liberar), se cierra.
+  useEffect(() => {
+    if (!celdaAbierta || building) return;
+    if (!celdaDetalle || celdaDetalle.visibles.length === 0) setCeldaAbierta(null);
+  }, [celdaAbierta, celdaDetalle, building]);
+
+  const toggleInventarioRow = useCallback((id: number) => {
     if (bloqueadosLocal.has(id)) return;
     const next = new Set(selectedInventarios);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelectedInventarios(next);
-  };
+  }, [bloqueadosLocal, selectedInventarios, setSelectedInventarios]);
 
   const toggleReserva = (id: number) => {
     const next = new Set(selectedReservas);
@@ -1170,6 +1163,112 @@ function MatrizBloqueoView({
     () => inventariosFiltrados.filter(i => !bloqueadosLocal.has(i.id)).map(i => i.id),
     [inventariosFiltrados, bloqueadosLocal]
   );
+  // Filas de la matriz. Se memorizan para que abrir la ventana de detalle o el
+  // menú de filtros no vuelva a pintar miles de celdas (vista por día).
+  const filasMatriz = useMemo(() => {
+    if (!matriz) return null;
+    const clases = clasesCeldaBloqueo(isDark);
+    const base = `${ANCHO_CELDA[matriz.periodo.granularidad]} h-7 mx-auto rounded flex items-center justify-center text-[10px] font-semibold border`;
+
+    // Celda compacta: color por estado + número de reservas. El detalle va en el
+    // tooltip y en la ventana que se abre al hacer clic.
+    const renderCelda = (inv: InventarioResumen, col: ColumnaPeriodo, isBloqueadoLocal: boolean) => {
+      const codigo = inv.codigo_unico || `#${inv.id}`;
+      const todas = matriz.celdas[inv.id]?.[col.key]?.campanas || [];
+
+      if (todas.length === 0) {
+        return (
+          <td key={col.key} className="p-0.5">
+            <div
+              className={`${base} ${isBloqueadoLocal ? clases.noDisponible : clases.disponible}`}
+              title={`${codigo} · ${col.titulo}\n${isBloqueadoLocal ? 'No Disponible' : 'Disponible'}`}
+            />
+          </td>
+        );
+      }
+
+      const visibles = todas.filter(cardPasaFiltros);
+      if (visibles.length === 0) {
+        return (
+          <td key={col.key} className="p-0.5">
+            <div
+              className={`${base} border-dashed font-medium ${isDark ? 'border-zinc-700 text-zinc-600' : 'border-gray-300 text-gray-400'}`}
+              title={`${codigo} · ${col.titulo}\n${todas.length} reserva(s) oculta(s) por el filtro`}
+            >
+              {todas.length}
+            </div>
+          </td>
+        );
+      }
+
+      // Mismo criterio que las tarjetas de esta vista: con campaña = Ocupado (rojo),
+      // solo propuesta = Reservado (ámbar), inventario recién bloqueado = gris.
+      const colorClass = isBloqueadoLocal
+        ? clases.bloqueado
+        : visibles.some(c => c.campana_id) ? clases.ocupado : clases.reservado;
+      const seleccionada = visibles.some(c => selectedReservas.has(c.reserva_id));
+      return (
+        <td key={col.key} className="p-0.5">
+          <button
+            type="button"
+            onClick={() => setCeldaAbierta({ invId: inv.id, colKey: col.key })}
+            title={tooltipCeldaBloqueo(codigo, col, visibles, todas.length, isBloqueadoLocal)}
+            className={`${base} cursor-pointer transition-colors ${colorClass} ${
+              seleccionada ? (isDark ? 'outline outline-2 outline-offset-1 outline-rose-400' : 'outline outline-2 outline-offset-1 outline-rose-500') : ''
+            }`}
+          >
+            {visibles.length}
+          </button>
+        </td>
+      );
+    };
+
+    return inventariosFiltrados.map(inv => {
+      const isBloqueadoLocal = bloqueadosLocal.has(inv.id);
+      const isRowSelected = selectedInventarios.has(inv.id);
+      const rowBg = isBloqueadoLocal
+        ? isDark ? 'bg-zinc-800/40' : 'bg-gray-100/60'
+        : isRowSelected
+          ? isDark ? 'bg-rose-500/10' : 'bg-rose-50/60'
+          : isDark ? 'bg-zinc-900' : 'bg-white';
+      return (
+        <tr key={inv.id} className={`border-b ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+          <td className={`sticky left-0 z-10 px-3 py-1.5 ${rowBg} border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+            <div className="flex items-center gap-2">
+              {canBlock && (
+                <input
+                  type="checkbox"
+                  checked={isRowSelected}
+                  onChange={() => toggleInventarioRow(inv.id)}
+                  disabled={isBloqueadoLocal}
+                  className="accent-rose-500 h-3.5 w-3.5 shrink-0"
+                  title={isBloqueadoLocal ? 'Inventario ya marcado No Disponible en esta sesión' : 'Seleccionar inventario para bloqueo'}
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className={`font-mono text-xs font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{inv.codigo_unico}</span>
+                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${inv.tradicional_digital === 'Digital' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') : (isDark ? 'bg-pink-500/20 text-pink-300 border-pink-500/30' : 'bg-pink-50 text-pink-700 border-pink-200')}`}>
+                    {inv.tradicional_digital || 'Tradicional'}
+                  </span>
+                  {isBloqueadoLocal && (
+                    <span className={`shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${isDark ? 'bg-zinc-700/60 text-zinc-300 border-zinc-600' : 'bg-gray-200 text-gray-700 border-gray-300'}`}>
+                      <Ban className="h-2.5 w-2.5" /> No Disponible
+                    </span>
+                  )}
+                </div>
+                <div className={`text-[10px] mt-0.5 ${isDark ? 'text-zinc-500' : 'text-gray-500'} truncate max-w-[200px]`} title={inv.ubicacion || undefined}>
+                  {inv.plaza || '-'} · {inv.mueble || '-'}
+                </div>
+              </div>
+            </div>
+          </td>
+          {matriz.columnas.map(col => renderCelda(inv, col, isBloqueadoLocal))}
+        </tr>
+      );
+    });
+  }, [matriz, inventariosFiltrados, cardPasaFiltros, bloqueadosLocal, selectedInventarios, selectedReservas, canBlock, toggleInventarioRow, isDark]);
+
   const allRowsSelected = seleccionablesIds.length > 0 && seleccionablesIds.every(id => selectedInventarios.has(id));
   const toggleAllRows = () => {
     if (allRowsSelected) {
@@ -1218,6 +1317,118 @@ function MatrizBloqueoView({
     );
   }
 
+  const hoy = hoyISO();
+  const grupos = agruparColumnas(matriz.columnas);
+  const anchoCelda = ANCHO_CELDA[matriz.periodo.granularidad];
+  const unidad = GRANULARIDAD_UNIDAD[matriz.periodo.granularidad];
+  const clases = clasesCeldaBloqueo(isDark);
+
+  // Tarjeta de una reserva en la ventana de detalle.
+  const renderTarjeta = (c: CampanaEnCelda, inv: InventarioResumen, isBloqueadoLocal: boolean) => {
+    const esPropuesta = !c.campana_id;
+    // Color base
+    let cardClass: string;
+    let statusLabel: string;
+    let statusTextClass: string;
+    if (isBloqueadoLocal) {
+      cardClass = isDark
+        ? 'bg-zinc-800/60 border-zinc-600 hover:bg-zinc-800'
+        : 'bg-gray-100 border-gray-300 hover:bg-gray-200';
+      statusLabel = 'No Disponible';
+      statusTextClass = isDark ? 'text-zinc-300' : 'text-gray-600';
+    } else if (esPropuesta) {
+      cardClass = isDark
+        ? 'bg-amber-500/10 border-amber-500/40 hover:bg-amber-500/20'
+        : 'bg-amber-50 border-amber-200 hover:bg-amber-100';
+      statusLabel = 'Reservado';
+      statusTextClass = isDark ? 'text-amber-300' : 'text-amber-700';
+    } else {
+      cardClass = isDark
+        ? 'bg-red-500/10 border-red-500/40 hover:bg-red-500/20'
+        : 'bg-red-50 border-red-200 hover:bg-red-100';
+      statusLabel = 'Ocupado';
+      statusTextClass = isDark ? 'text-red-300' : 'text-red-700';
+    }
+    const href = esPropuesta ? `/propuestas?viewId=${c.propuesta_id}` : `/campanas/detail/${c.campana_id}`;
+    const label = esPropuesta ? `Propuesta #${c.propuesta_id}` : c.campana_nombre || `Campaña #${c.campana_id}`;
+    const clienteLabel = c.cliente_nombre || 'Sin cliente';
+    const rangoLabel = rangoCorto(c.inicio_periodo, c.fin_periodo);
+    const tieneAPSLocal = !!(c.aps && c.aps > 0);
+    const isCardSelected = selectedReservas.has(c.reserva_id);
+    const selectionRing = isCardSelected
+      ? (isDark ? 'ring-2 ring-rose-400 ring-offset-1 ring-offset-zinc-900' : 'ring-2 ring-rose-500 ring-offset-1 ring-offset-white')
+      : '';
+    const padLeft = canBlock && !isBloqueadoLocal ? 'pl-7' : '';
+    const padRight = canRelease ? 'pr-7' : '';
+    return (
+      <div key={c.reserva_id} className={`relative group/card rounded-md ${selectionRing} ${isBloqueadoLocal ? 'opacity-90' : ''}`}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={esPropuesta ? `Editar propuesta #${c.propuesta_id}` : `Abrir campaña: ${label}`}
+          className={`block w-full text-left rounded-md p-2 ${padLeft} ${padRight} border transition-all cursor-pointer ${cardClass}`}
+        >
+          <div className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide ${statusTextClass}`}>
+            {statusLabel}
+            {isBloqueadoLocal && <Ban className="h-2.5 w-2.5" />}
+            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+          </div>
+          <div className={`text-[11px] mt-1 truncate underline underline-offset-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`} title={label}>
+            {label}
+          </div>
+          <div className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`} title={clienteLabel}>
+            {clienteLabel}
+          </div>
+          {c.articulo && (
+            <div className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-rose-300' : 'text-rose-700'}`} title={`Artículo: ${c.articulo}`}>
+              {c.articulo}
+            </div>
+          )}
+          {rangoLabel && (
+            <div className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-zinc-400' : 'text-gray-600'}`} title={`Reserva #${c.reserva_id} · ${rangoLabel}`}>
+              {rangoLabel} · #{c.reserva_id}
+            </div>
+          )}
+        </a>
+        {canBlock && !isBloqueadoLocal && (
+          <input
+            type="checkbox"
+            checked={isCardSelected}
+            onChange={() => toggleReserva(c.reserva_id)}
+            onClick={e => e.stopPropagation()}
+            title="Marcar para forzar bloqueo del inventario asociado"
+            className="absolute top-1.5 left-1.5 h-3.5 w-3.5 cursor-pointer accent-rose-500"
+          />
+        )}
+        {canRelease && !isBloqueadoLocal && (() => {
+          const tooltipBloqueo = c.posted ? 'Tiene POST, no se puede eliminar' : 'Tiene APS asignado, no se puede eliminar';
+          return (
+            <button
+              type="button"
+              disabled={tieneAPSLocal}
+              onClick={e => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (tieneAPSLocal) return;
+                setReleaseError(null);
+                setConfirmRelease({ card: c, inventario: inv });
+              }}
+              title={tieneAPSLocal ? tooltipBloqueo : 'Liberar reserva (eliminar de la BD)'}
+              className={`absolute top-1 right-1 p-1 rounded transition-all ${
+                tieneAPSLocal
+                  ? `opacity-100 cursor-not-allowed ${isDark ? 'text-zinc-600' : 'text-gray-300'}`
+                  : `opacity-0 group-hover/card:opacity-100 focus:opacity-100 ${isDark ? 'text-zinc-400 hover:text-red-300 hover:bg-red-500/20' : 'text-gray-500 hover:text-red-600 hover:bg-red-100'}`
+              }`}
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          );
+        })()}
+      </div>
+    );
+  };
+
   return (
     <div className="flex-1 flex flex-col min-h-0 gap-2">
       <div className="flex items-center gap-2 flex-wrap">
@@ -1248,7 +1459,7 @@ function MatrizBloqueoView({
             <ChevronDown className={`h-3.5 w-3.5 transition-transform ${filterOpen ? 'rotate-180' : ''}`} />
           </button>
           {filterOpen && (
-            <div className={`absolute z-30 mt-1 left-0 w-80 rounded-lg border shadow-xl ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'}`}>
+            <div className={`absolute z-40 mt-1 left-0 w-80 rounded-lg border shadow-xl ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'}`}>
               <div className={`p-2 border-b ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
                 <div className={`flex items-center gap-2 px-2 py-1 rounded-md border ${isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-gray-50 border-gray-200'}`}>
                   <Search className={`h-3.5 w-3.5 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
@@ -1318,7 +1529,7 @@ function MatrizBloqueoView({
 
         <button
           onClick={onDownloadCsv}
-          title="Descargar la matriz como CSV"
+          title="Descargar la matriz como CSV (una fila por reserva)"
           className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border ${isDark ? 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'}`}
         >
           <Download className="h-3.5 w-3.5" />
@@ -1361,6 +1572,33 @@ function MatrizBloqueoView({
         )}
       </div>
 
+      {/* Periodo y leyenda de colores */}
+      <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+        <span className={`font-medium ${isDark ? 'text-rose-300' : 'text-rose-700'}`}>
+          {etiquetaPeriodo(matriz.periodo)} · {matriz.columnas.length} {matriz.columnas.length === 1 ? unidad.uno : unidad.varios}
+        </span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.disponible}`} />Disponible</span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.reservado}`} />Reservado</span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.ocupado}`} />Ocupado</span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.noDisponible}`} />No Disponible</span>
+        <span>El número es la cantidad de reservas; haz clic en la celda para ver, marcar o liberar.</span>
+      </div>
+
+      {matriz.inventariosConError.length > 0 && (
+        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${isDark ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            No se pudo cargar el historial de {matriz.inventariosConError.length} {matriz.inventariosConError.length === 1 ? 'inventario' : 'inventarios'}; aparecen sin reservas.
+          </span>
+          <button
+            onClick={() => void onRefresh()}
+            className={`ml-auto px-2 py-0.5 rounded font-medium ${isDark ? 'hover:bg-amber-500/20' : 'hover:bg-amber-100'}`}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
       {bloqueadosLocal.size > 0 && (
         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${isDark ? 'border-zinc-700 bg-zinc-800/60 text-zinc-300' : 'border-gray-200 bg-gray-50 text-gray-700'}`}>
           <Ban className={`h-3.5 w-3.5 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`} />
@@ -1378,10 +1616,13 @@ function MatrizBloqueoView({
       )}
 
       <div className="flex-1 overflow-auto min-h-0">
-        <table className="w-full border-collapse text-xs">
+        <table className="border-collapse text-xs">
           <thead>
             <tr>
-              <th className={`sticky left-0 top-0 z-20 px-3 py-2 text-left text-xs font-semibold border-b ${isDark ? 'border-rose-500/30 bg-zinc-900 text-rose-300' : 'border-rose-200 bg-white text-rose-700'} min-w-[220px]`}>
+              <th
+                rowSpan={2}
+                className={`sticky left-0 top-0 z-30 px-3 py-2 text-left align-bottom text-xs font-semibold border-b ${isDark ? 'border-rose-500/30 bg-zinc-900 text-rose-300' : 'border-rose-200 bg-white text-rose-700'} min-w-[220px]`}
+              >
                 <div className="flex items-center gap-2">
                   {canBlock && (
                     <input
@@ -1396,216 +1637,106 @@ function MatrizBloqueoView({
                   Inventario
                 </div>
               </th>
-              {matriz.catorcenas.map(c => (
-                <th key={cellKeyOf(c)} className={`sticky top-0 z-10 px-3 py-2 text-center text-xs font-semibold border-b ${isDark ? 'border-rose-500/30 bg-zinc-900 text-rose-300' : 'border-rose-200 bg-white text-rose-700'} min-w-[120px]`}>
-                  C{c.numero}-{c.anio}
+              {grupos.map(g => (
+                <th
+                  key={g.key}
+                  colSpan={g.span}
+                  title={g.etiqueta}
+                  className={`sticky top-0 z-20 h-6 p-0 border-l ${isDark ? 'border-zinc-800 bg-zinc-900 text-rose-300' : 'border-gray-200 bg-white text-rose-700'}`}
+                >
+                  <span className="absolute inset-x-1 top-1 truncate text-left text-[10px] font-semibold">{g.etiqueta}</span>
                 </th>
               ))}
+            </tr>
+            <tr>
+              {matriz.columnas.map(col => {
+                const esHoy = columnaIncluye(col, hoy);
+                const textoClass = esHoy
+                  ? isDark ? 'bg-rose-500/25 text-rose-100' : 'bg-rose-100 text-rose-800'
+                  : col.finDeSemana
+                    ? isDark ? 'text-zinc-500' : 'text-gray-400'
+                    : isDark ? 'text-zinc-300' : 'text-gray-600';
+                return (
+                  <th
+                    key={col.key}
+                    title={esHoy ? `${col.titulo} (hoy)` : col.titulo}
+                    className={`sticky top-6 z-20 px-0.5 py-1 text-center border-b ${isDark ? 'border-rose-500/30 bg-zinc-900' : 'border-rose-200 bg-white'}`}
+                  >
+                    <div className={`${anchoCelda} mx-auto rounded leading-tight ${textoClass}`}>
+                      <div className="text-[10px] font-semibold whitespace-nowrap">{col.etiqueta}</div>
+                      {col.detalle && <div className="text-[9px] font-normal whitespace-nowrap opacity-80">{col.detalle}</div>}
+                    </div>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
             {inventariosFiltrados.length === 0 && (
               <tr>
-                <td colSpan={matriz.catorcenas.length + 1} className={`px-3 py-8 text-center text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                <td colSpan={matriz.columnas.length + 1} className={`px-3 py-8 text-center text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                   Ningún inventario tiene las campañas seleccionadas.
                 </td>
               </tr>
             )}
-            {inventariosFiltrados.map(inv => {
-              const isBloqueadoLocal = bloqueadosLocal.has(inv.id);
-              const isRowSelected = selectedInventarios.has(inv.id);
-              const rowBg = isBloqueadoLocal
-                ? isDark ? 'bg-zinc-800/40' : 'bg-gray-100/60'
-                : isRowSelected
-                  ? isDark ? 'bg-rose-500/10' : 'bg-rose-50/60'
-                  : isDark ? 'bg-zinc-900' : 'bg-white';
-              return (
-                <tr key={inv.id} className={`border-b ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                  <td className={`sticky left-0 z-10 px-3 py-2 ${rowBg} border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
-                    <div className="flex items-center gap-2">
-                      {canBlock && (
-                        <input
-                          type="checkbox"
-                          checked={isRowSelected}
-                          onChange={() => toggleInventarioRow(inv.id)}
-                          disabled={isBloqueadoLocal}
-                          className="accent-rose-500 h-3.5 w-3.5 shrink-0"
-                          title={isBloqueadoLocal ? 'Inventario ya marcado No Disponible en esta sesión' : 'Seleccionar inventario para bloqueo'}
-                        />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className={`font-mono text-xs font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{inv.codigo_unico}</span>
-                          <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${inv.tradicional_digital === 'Digital' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') : (isDark ? 'bg-pink-500/20 text-pink-300 border-pink-500/30' : 'bg-pink-50 text-pink-700 border-pink-200')}`}>
-                            {inv.tradicional_digital || 'Tradicional'}
-                          </span>
-                          {isBloqueadoLocal && (
-                            <span className={`shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${isDark ? 'bg-zinc-700/60 text-zinc-300 border-zinc-600' : 'bg-gray-200 text-gray-700 border-gray-300'}`}>
-                              <Ban className="h-2.5 w-2.5" /> No Disponible
-                            </span>
-                          )}
-                        </div>
-                        <div className={`text-[10px] mt-0.5 ${isDark ? 'text-zinc-500' : 'text-gray-500'} truncate max-w-[200px]`} title={inv.ubicacion || undefined}>
-                          {inv.plaza || '-'} · {inv.mueble || '-'}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  {matriz.catorcenas.map(cat => {
-                    const celda = matriz.celdas[inv.id]?.[cellKeyOf(cat)];
-                    const ocupado = celda?.ocupado;
-                    const todasCampanas = celda?.campanas || [];
-                    const algunFiltroActivo = isFiltered;
-                    const campanas = algunFiltroActivo ? todasCampanas.filter(cardPasaFiltros) : todasCampanas;
-
-                    if (!ocupado || todasCampanas.length === 0) {
-                      const disponibleClass = isBloqueadoLocal
-                        ? isDark ? 'bg-zinc-800/40 border-zinc-700' : 'bg-gray-100 border-gray-300'
-                        : isDark ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200';
-                      const txtClass = isBloqueadoLocal
-                        ? isDark ? 'text-zinc-400' : 'text-gray-500'
-                        : isDark ? 'text-emerald-300' : 'text-emerald-700';
-                      return (
-                        <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                          <div className={`w-full rounded-md p-2 border ${disponibleClass}`}>
-                            <div className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide ${txtClass}`}>
-                              {isBloqueadoLocal ? 'No Disponible' : 'Disponible'}
-                            </div>
-                          </div>
-                        </td>
-                      );
-                    }
-
-                    if (campanas.length === 0) {
-                      const oculto = todasCampanas.length;
-                      return (
-                        <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                          <div
-                            className={`w-full rounded-md p-2 border border-dashed text-center ${isDark ? 'border-zinc-700 text-zinc-600' : 'border-gray-300 text-gray-400'}`}
-                            title={`${oculto} campaña(s) ocultas por el filtro`}
-                          >
-                            <span className="text-[10px] font-medium">— {oculto} oculto{oculto > 1 ? 's' : ''}</span>
-                          </div>
-                        </td>
-                      );
-                    }
-
-                    return (
-                      <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                        <div className="flex flex-col gap-1.5">
-                          {campanas.map(c => {
-                            const esPropuesta = !c.campana_id;
-                            // Color base
-                            let cardClass: string;
-                            let statusLabel: string;
-                            let statusTextClass: string;
-                            if (isBloqueadoLocal) {
-                              cardClass = isDark
-                                ? 'bg-zinc-800/60 border-zinc-600 hover:bg-zinc-800'
-                                : 'bg-gray-100 border-gray-300 hover:bg-gray-200';
-                              statusLabel = 'No Disponible';
-                              statusTextClass = isDark ? 'text-zinc-300' : 'text-gray-600';
-                            } else if (esPropuesta) {
-                              cardClass = isDark
-                                ? 'bg-amber-500/10 border-amber-500/40 hover:bg-amber-500/20'
-                                : 'bg-amber-50 border-amber-200 hover:bg-amber-100';
-                              statusLabel = 'Reservado';
-                              statusTextClass = isDark ? 'text-amber-300' : 'text-amber-700';
-                            } else {
-                              cardClass = isDark
-                                ? 'bg-red-500/10 border-red-500/40 hover:bg-red-500/20'
-                                : 'bg-red-50 border-red-200 hover:bg-red-100';
-                              statusLabel = 'Ocupado';
-                              statusTextClass = isDark ? 'text-red-300' : 'text-red-700';
-                            }
-                            const href = esPropuesta ? `/propuestas?viewId=${c.propuesta_id}` : `/campanas/detail/${c.campana_id}`;
-                            const label = esPropuesta ? `Propuesta #${c.propuesta_id}` : c.campana_nombre || `Campaña #${c.campana_id}`;
-                            const clienteLabel = c.cliente_nombre || 'Sin cliente';
-                            const rangoLabel = c.inicio_periodo && c.fin_periodo ? `${fmtFecha(c.inicio_periodo)} – ${fmtFecha(c.fin_periodo)}` : '';
-                            const tieneAPSLocal = !!(c.aps && c.aps > 0);
-                            const isCardSelected = selectedReservas.has(c.reserva_id);
-                            const selectionRing = isCardSelected
-                              ? (isDark ? 'ring-2 ring-rose-400 ring-offset-1 ring-offset-zinc-900' : 'ring-2 ring-rose-500 ring-offset-1 ring-offset-white')
-                              : '';
-                            const padLeft = canBlock && !isBloqueadoLocal ? 'pl-7' : '';
-                            const padRight = canRelease ? 'pr-7' : '';
-                            return (
-                              <div key={c.reserva_id} className={`relative group/card rounded-md ${selectionRing} ${isBloqueadoLocal ? 'opacity-90' : ''}`}>
-                                <a
-                                  href={href}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  title={esPropuesta ? `Editar propuesta #${c.propuesta_id}` : `Abrir campaña: ${label}`}
-                                  className={`block w-full text-left rounded-md p-2 ${padLeft} ${padRight} border transition-all cursor-pointer ${cardClass}`}
-                                >
-                                  <div className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide ${statusTextClass}`}>
-                                    {statusLabel}
-                                    {isBloqueadoLocal && <Ban className="h-2.5 w-2.5" />}
-                                    <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-                                  </div>
-                                  <div className={`text-[10px] mt-1 truncate underline underline-offset-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`} title={label}>
-                                    {label}
-                                  </div>
-                                  <div className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`} title={clienteLabel}>
-                                    {clienteLabel}
-                                  </div>
-                                  {c.articulo && (
-                                    <div className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-rose-300' : 'text-rose-700'}`} title={`Artículo: ${c.articulo}`}>
-                                      {c.articulo}
-                                    </div>
-                                  )}
-                                  {rangoLabel && (
-                                    <div className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-zinc-400' : 'text-gray-600'}`} title={`Reserva #${c.reserva_id} · ${rangoLabel}`}>
-                                      {rangoLabel} · #{c.reserva_id}
-                                    </div>
-                                  )}
-                                </a>
-                                {canBlock && !isBloqueadoLocal && (
-                                  <input
-                                    type="checkbox"
-                                    checked={isCardSelected}
-                                    onChange={() => toggleReserva(c.reserva_id)}
-                                    onClick={e => e.stopPropagation()}
-                                    title="Marcar para forzar bloqueo del inventario asociado"
-                                    className="absolute top-1.5 left-1.5 h-3.5 w-3.5 cursor-pointer accent-rose-500"
-                                  />
-                                )}
-                                {canRelease && !isBloqueadoLocal && (() => {
-                                  const tooltipBloqueo = c.posted ? 'Tiene POST, no se puede eliminar' : 'Tiene APS asignado, no se puede eliminar';
-                                  return (
-                                    <button
-                                      type="button"
-                                      disabled={tieneAPSLocal}
-                                      onClick={e => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        if (tieneAPSLocal) return;
-                                        setConfirmRelease({ card: c, inventario: inv, catorcena: cat });
-                                      }}
-                                      title={tieneAPSLocal ? tooltipBloqueo : 'Liberar reserva (eliminar de la BD)'}
-                                      className={`absolute top-1 right-1 p-1 rounded transition-all ${
-                                        tieneAPSLocal
-                                          ? `opacity-100 cursor-not-allowed ${isDark ? 'text-zinc-600' : 'text-gray-300'}`
-                                          : `opacity-0 group-hover/card:opacity-100 focus:opacity-100 ${isDark ? 'text-zinc-400 hover:text-red-300 hover:bg-red-500/20' : 'text-gray-500 hover:text-red-600 hover:bg-red-100'}`
-                                      }`}
-                                    >
-                                      <Trash2 className="h-3 w-3" />
-                                    </button>
-                                  );
-                                })()}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
+            {filasMatriz}
           </tbody>
         </table>
       </div>
+
+      {/* Detalle de una celda: las reservas que caen en ese día/semana/mes */}
+      {celdaDetalle && celdaDetalle.visibles.length > 0 && (() => {
+        const { inv, col, todas, visibles } = celdaDetalle;
+        const isBloqueadoLocal = bloqueadosLocal.has(inv.id);
+        return (
+          <div
+            className="fixed inset-0 bg-black/60 z-[55] flex items-center justify-center p-4"
+            onClick={() => setCeldaAbierta(null)}
+          >
+            <div
+              className={`rounded-2xl border ${isDark ? 'bg-zinc-900 border-rose-500/30' : 'bg-white border-rose-200'} w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]`}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className={`px-4 py-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex items-start gap-3`}>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`font-mono text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                      {inv.codigo_unico || `#${inv.id}`}
+                    </span>
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${inv.tradicional_digital === 'Digital' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') : (isDark ? 'bg-pink-500/20 text-pink-300 border-pink-500/30' : 'bg-pink-50 text-pink-700 border-pink-200')}`}>
+                      {inv.tradicional_digital || 'Tradicional'}
+                    </span>
+                    {isBloqueadoLocal && (
+                      <span className={`shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${isDark ? 'bg-zinc-700/60 text-zinc-300 border-zinc-600' : 'bg-gray-200 text-gray-700 border-gray-300'}`}>
+                        <Ban className="h-2.5 w-2.5" /> No Disponible
+                      </span>
+                    )}
+                  </div>
+                  <div className={`text-xs mt-0.5 font-medium ${isDark ? 'text-rose-300' : 'text-rose-700'}`}>{col.titulo}</div>
+                  <div className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`} title={inv.ubicacion || undefined}>
+                    {inv.plaza || '-'} · {inv.mueble || '-'}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setCeldaAbierta(null)}
+                  className={`p-1.5 rounded-lg ${isDark ? 'hover:bg-zinc-800 text-zinc-400 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-gray-900'}`}
+                  title="Cerrar"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="p-4 overflow-y-auto space-y-1.5">
+                {visibles.map(c => renderTarjeta(c, inv, isBloqueadoLocal))}
+                {todas.length > visibles.length && (
+                  <div className={`text-[11px] italic ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                    {todas.length - visibles.length} reserva(s) más oculta(s) por el filtro
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {confirmRelease && (
         <div
@@ -1636,8 +1767,8 @@ function MatrizBloqueoView({
                 <span className="font-mono">{confirmRelease.inventario.codigo_unico}</span>
               </div>
               <div className={isDark ? 'text-zinc-300' : 'text-gray-700'}>
-                <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>Catorcena:</span>{' '}
-                C{confirmRelease.catorcena.numero}-{confirmRelease.catorcena.anio}
+                <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>Periodo:</span>{' '}
+                {rangoLegible(confirmRelease.card.inicio_periodo, confirmRelease.card.fin_periodo) || 'Sin fechas'}
               </div>
               <div className={isDark ? 'text-zinc-300' : 'text-gray-700'}>
                 <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>Referencia:</span>{' '}

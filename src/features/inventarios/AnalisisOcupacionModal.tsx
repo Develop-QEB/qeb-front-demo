@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   X, Upload, Trash2, Save, Share2, Loader2, AlertCircle, CheckCircle2,
   ArrowLeft, ArrowRight, BarChart3, Calendar, ChevronDown,
@@ -8,7 +8,6 @@ import {
 import { useThemeStore } from '../../store/themeStore';
 import { useAuthStore } from '../../store/authStore';
 import { inventariosService } from '../../services/inventarios.service';
-import { solicitudesService } from '../../services/solicitudes.service';
 import { propuestasService } from '../../services/propuestas.service';
 import { campanasService } from '../../services/campanas.service';
 import {
@@ -18,10 +17,37 @@ import {
   CatorcenaRef,
   InventarioResumen,
   MatrizOcupacion,
-  cellKeyOf,
 } from '../../services/analisisOcupacion.service';
+import {
+  ColumnaPeriodo,
+  Granularidad,
+  PeriodoAnalisis,
+  GRANULARIDADES,
+  GRANULARIDAD_LABEL,
+  GRANULARIDAD_UNIDAD,
+  MAX_COLUMNAS,
+  agruparColumnas,
+  atajosPeriodo,
+  columnaIncluye,
+  contarColumnas,
+  diasDelRango,
+  esFechaISO,
+  etiquetaPeriodo,
+  granularidadAutomatica,
+  granularidadPermitida,
+  hoyISO,
+  periodoConRango,
+  periodoProximosDias,
+  rangoCorto,
+  rangoEnOrden,
+  rangoLegible,
+  validarPeriodo,
+} from '../../lib/analisisPeriodos';
 
 type Step = 'select' | 'periodos' | 'matriz';
+
+/** Un análisis nuevo arranca con los próximos 30 días (vista por día). */
+const DIAS_PERIODO_INICIAL = 30;
 
 interface AnalisisOcupacionModalProps {
   open: boolean;
@@ -95,15 +121,18 @@ export function AnalisisOcupacionModal({
   const [step, setStep] = useState<Step>('select');
   const [inventarios, setInventarios] = useState<InventarioResumen[]>([]);
   const [codigosNoEncontrados, setCodigosNoEncontrados] = useState<string[]>([]);
-  const [catorcenasSelected, setCatorcenasSelected] = useState<CatorcenaRef[]>([]);
+  // Periodo del análisis: rango libre de fechas + cómo partirlo en columnas.
+  const [periodo, setPeriodo] = useState<PeriodoAnalisis>(() => periodoProximosDias(DIAS_PERIODO_INICIAL));
+  // Se llena al abrir un análisis guardado sin periodo por fechas (formato anterior, por catorcenas).
+  const [avisoFormatoAnterior, setAvisoFormatoAnterior] = useState<{ catorcenas: CatorcenaRef[] } | null>(null);
   const [matriz, setMatriz] = useState<MatrizOcupacion | null>(null);
   const [building, setBuilding] = useState(false);
+  // Identifica la última matriz pedida: si llega la respuesta de una anterior, se descarta.
+  const buildIdRef = useRef(0);
 
   const [csvProcessing, setCsvProcessing] = useState(false);
   const [csvFeedback, setCsvFeedback] = useState<{ encontrados: number; noEncontrados: number } | null>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
-
-  const [yearSelected, setYearSelected] = useState<number>(new Date().getFullYear());
 
   const [analisisId, setAnalisisId] = useState<number | null>(null);
   const [analisisNombre, setAnalisisNombre] = useState('');
@@ -118,20 +147,29 @@ export function AnalisisOcupacionModal({
     if (!open) return;
     if (initialAnalisis) {
       const owner = initialAnalisis.is_owner !== false;
+      // Un análisis viejo (por catorcenas) no trae periodo por fechas: se abre
+      // con el periodo inicial y un aviso para que elijan un rango nuevo.
+      const guardado = initialAnalisis.periodos[0] ?? null;
+      const p = guardado ?? periodoProximosDias(DIAS_PERIODO_INICIAL);
       setStep('matriz');
       setInventarios(initialAnalisis.inventarios);
       setCodigosNoEncontrados(initialAnalisis.codigosNoEncontrados);
-      setCatorcenasSelected(initialAnalisis.catorcenas);
+      setPeriodo(p);
+      setAvisoFormatoAnterior(guardado ? null : { catorcenas: initialAnalisis.catorcenasLegado });
       setAnalisisId(initialAnalisis.id);
       setAnalisisNombre(owner || readOnly ? initialAnalisis.nombre : `Copia de ${initialAnalisis.nombre}`);
       setIsOwner(owner);
       // Construir matriz al abrir
-      void buildMatrizFor(initialAnalisis.inventarios, initialAnalisis.catorcenas);
+      void buildMatrizFor(initialAnalisis.inventarios, p);
     } else {
+      // Descarta cualquier matriz que siguiera construyéndose de una apertura anterior.
+      buildIdRef.current += 1;
+      setBuilding(false);
       setStep('select');
       setInventarios(initialInventarios || []);
       setCodigosNoEncontrados([]);
-      setCatorcenasSelected([]);
+      setPeriodo(periodoProximosDias(DIAS_PERIODO_INICIAL));
+      setAvisoFormatoAnterior(null);
       setMatriz(null);
       setAnalisisId(null);
       setAnalisisNombre('');
@@ -246,38 +284,22 @@ export function AnalisisOcupacionModal({
     setCodigosNoEncontrados(prev => prev.filter(c => c !== codigo));
   };
 
-  const { data: catorcenasYear, isLoading: loadingCatorcenas } = useQuery({
-    queryKey: ['catorcenas', yearSelected],
-    queryFn: () => solicitudesService.getCatorcenas(yearSelected),
-    enabled: open && step === 'periodos',
-  });
-
-  const toggleCatorcena = (c: CatorcenaRef) => {
-    setCatorcenasSelected(prev => {
-      const exists = prev.some(p => p.numero === c.numero && p.anio === c.anio);
-      if (exists) return prev.filter(p => !(p.numero === c.numero && p.anio === c.anio));
-      return [...prev, c].sort((a, b) => a.anio - b.anio || a.numero - b.numero);
-    });
-  };
-
-  const isSelectedCatorcena = (numero: number, anio: number) =>
-    catorcenasSelected.some(c => c.numero === numero && c.anio === anio);
-
-  const buildMatrizFor = useCallback(async (invs: InventarioResumen[], cats: CatorcenaRef[]) => {
+  const buildMatrizFor = useCallback(async (invs: InventarioResumen[], p: PeriodoAnalisis) => {
+    const buildId = ++buildIdRef.current;
     setBuilding(true);
     try {
-      const m = await analisisOcupacionService.buildMatriz(invs, cats);
-      setMatriz(m);
+      const m = await analisisOcupacionService.buildMatriz(invs, p);
+      if (buildId === buildIdRef.current) setMatriz(m);
     } catch (err) {
       console.error('Error construyendo matriz:', err);
     } finally {
-      setBuilding(false);
+      if (buildId === buildIdRef.current) setBuilding(false);
     }
   }, []);
 
   const goToMatriz = () => {
     setStep('matriz');
-    void buildMatrizFor(inventarios, catorcenasSelected);
+    void buildMatrizFor(inventarios, periodo);
   };
 
   const handleSave = async () => {
@@ -291,7 +313,8 @@ export function AnalisisOcupacionModal({
       const payload = {
         nombre: analisisNombre.trim(),
         inventarios,
-        catorcenas: catorcenasSelected,
+        // Se guarda en `catorcenas_data` como [{ inicio, fin, granularidad }].
+        periodos: [periodo],
         codigosNoEncontrados,
       };
       const saved = analisisId && isOwner
@@ -299,6 +322,8 @@ export function AnalisisOcupacionModal({
         : await analisisOcupacionService.create(payload);
       setAnalisisId(saved.id);
       setIsOwner(true);
+      // Ya quedó guardado con periodo por fechas: el aviso de formato anterior sobra.
+      setAvisoFormatoAnterior(null);
       // Invalidar cache de la lista para que aparezca al instante en "Guardados"
       queryClient.invalidateQueries({ queryKey: ['analisis-ocupacion'] });
       onSaved?.(saved);
@@ -325,11 +350,27 @@ export function AnalisisOcupacionModal({
   };
 
   const canContinueFromSelect = inventarios.length > 0;
-  const canContinueFromPeriodos = catorcenasSelected.length > 0;
+  const canContinueFromPeriodos = validarPeriodo(periodo) === null;
 
   if (!open) return null;
 
   const stepIndex = step === 'select' ? 1 : step === 'periodos' ? 2 : 3;
+
+  // Texto del aviso para análisis guardados con el formato anterior (catorcenas).
+  const textoAvisoFormato = (() => {
+    if (!avisoFormatoAnterior) return '';
+    const cats = avisoFormatoAnterior.catorcenas;
+    const lista = cats.slice(0, 6).map(c => `C${c.numero}-${c.anio}`).join(', ') + (cats.length > 6 ? '…' : '');
+    const origen = cats.length > 0
+      ? `Este análisis se guardó por catorcenas (${lista}), un formato que ya no se usa.`
+      : 'Este análisis no tenía un periodo por fechas guardado.';
+    const accion = readOnly
+      ? ''
+      : isOwner
+        ? ' Usa “Cambiar periodo” para elegir otro rango y guarda para actualizarlo.'
+        : ' Usa “Cambiar periodo” para elegir otro rango y guarda una copia con el formato nuevo.';
+    return `${origen} Se muestra la ocupación del ${rangoLegible(periodo.inicio, periodo.fin)}.${accion}`;
+  })();
 
   return (
     <>
@@ -353,7 +394,7 @@ export function AnalisisOcupacionModal({
               <div>
                 <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Análisis de Ocupación</h2>
                 <p className={`text-xs ${isDark ? 'text-purple-300/50' : 'text-purple-400'}`}>
-                  Paso {stepIndex} de 3 · {step === 'select' ? 'Inventarios' : step === 'periodos' ? 'Periodos' : 'Matriz'}
+                  Paso {stepIndex} de 3 · {step === 'select' ? 'Inventarios' : step === 'periodos' ? 'Periodo' : 'Matriz'}
                 </p>
               </div>
             </div>
@@ -379,7 +420,7 @@ export function AnalisisOcupacionModal({
                     {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : idx + 1}
                   </div>
                   <span className={active ? (isDark ? 'text-purple-300 font-medium' : 'text-purple-700 font-medium') : isDark ? 'text-zinc-500' : 'text-gray-400'}>
-                    {s === 'select' ? 'Inventarios' : s === 'periodos' ? 'Periodos' : 'Resultado'}
+                    {s === 'select' ? 'Inventarios' : s === 'periodos' ? 'Periodo' : 'Resultado'}
                   </span>
                   {idx < 2 && <ChevronDown className={`h-3 w-3 -rotate-90 ${isDark ? 'text-zinc-700' : 'text-gray-300'}`} />}
                 </div>
@@ -453,7 +494,6 @@ export function AnalisisOcupacionModal({
                       Aún no hay inventarios. Selecciona en la tabla o sube un CSV.
                     </div>
                   ) : (
-                    
                     <div className={`rounded-lg border ${isDark ? 'border-zinc-700' : 'border-gray-200'} overflow-hidden max-h-72 overflow-y-auto`}>
                       <table className="w-full text-xs">
                         <thead className={`${isDark ? 'bg-zinc-800/80 text-zinc-400' : 'bg-gray-50 text-gray-500'} sticky top-0`}>
@@ -514,81 +554,27 @@ export function AnalisisOcupacionModal({
             )}
 
             {step === 'periodos' && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <Calendar className={`h-4 w-4 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
-                  <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Año:</span>
-                  <select
-                    value={yearSelected}
-                    onChange={e => setYearSelected(parseInt(e.target.value))}
-                    className={`px-3 py-1.5 rounded-lg border text-sm ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-gray-200 text-gray-900'} focus:outline-none focus:ring-1 focus:ring-purple-500/50`}
-                  >
-                    {Array.from({ length: 6 }).map((_, i) => {
-                      const y = new Date().getFullYear() - 2 + i;
-                      return <option key={y} value={y}>{y}</option>;
-                    })}
-                  </select>
-                  <span className={`ml-auto text-xs ${isDark ? 'text-purple-300' : 'text-purple-600'}`}>
-                    {catorcenasSelected.length} seleccionadas
-                  </span>
-                </div>
-
-                {loadingCatorcenas ? (
-                  <div className="flex justify-center py-12">
-                    <Loader2 className="h-6 w-6 animate-spin text-purple-500" />
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                    {(catorcenasYear?.data || []).map(c => {
-                      const selected = isSelectedCatorcena(c.numero_catorcena, c.a_o);
-                      return (
-                        <button
-                          key={c.id}
-                          onClick={() => toggleCatorcena({ numero: c.numero_catorcena, anio: c.a_o })}
-                          className={`px-3 py-2 rounded-lg border text-xs text-left transition-all ${
-                            selected
-                              ? isDark ? 'bg-purple-500/20 border-purple-500 text-purple-200' : 'bg-purple-50 border-purple-500 text-purple-800'
-                              : isDark ? 'bg-zinc-800/50 border-zinc-700 text-zinc-400 hover:border-zinc-500' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
-                          }`}
-                        >
-                          <div className="font-semibold">C{c.numero_catorcena}</div>
-                          <div className={`text-[10px] mt-0.5 ${selected ? (isDark ? 'text-purple-300' : 'text-purple-600') : isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                            {new Date(c.fecha_inicio).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })} – {new Date(c.fecha_fin).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {catorcenasSelected.length > 0 && (
-                  <div className={`rounded-lg border ${isDark ? 'border-purple-500/30 bg-purple-500/5' : 'border-purple-200 bg-purple-50/50'} p-3`}>
-                    <div className={`text-xs font-medium mb-1.5 ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>Periodos seleccionados</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {catorcenasSelected.map(c => (
-                        <span key={`${c.anio}-${c.numero}`} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] ${isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-white text-purple-700 border border-purple-200'}`}>
-                          C{c.numero}-{c.anio}
-                          <button onClick={() => toggleCatorcena(c)} className="hover:text-red-500">
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <PeriodoSelector value={periodo} onChange={setPeriodo} isDark={isDark} acento="purple" />
             )}
 
             {step === 'matriz' && (
-              <MatrizView
-                matriz={matriz}
-                building={building}
-                isDark={isDark}
-                onRefresh={() => buildMatrizFor(inventarios, catorcenasSelected)}
-                selectionMode={selectionMode}
-                readOnly={readOnly}
-                nombreAnalisis={analisisNombre}
-              />
+              <>
+                {avisoFormatoAnterior && (
+                  <div className={`mb-2 shrink-0 flex items-start gap-2 px-3 py-2 rounded-lg border text-xs ${isDark ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>{textoAvisoFormato}</span>
+                  </div>
+                )}
+                <MatrizView
+                  matriz={matriz}
+                  building={building}
+                  isDark={isDark}
+                  onRefresh={() => buildMatrizFor(inventarios, periodo)}
+                  selectionMode={selectionMode}
+                  readOnly={readOnly}
+                  nombreAnalisis={analisisNombre}
+                />
+              </>
             )}
           </div>
 
@@ -656,7 +642,7 @@ export function AnalisisOcupacionModal({
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm ${isDark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-gray-600 hover:bg-gray-100'}`}
                   >
                     <ArrowLeft className="h-3.5 w-3.5" />
-                    Cambiar periodos
+                    Cambiar periodo
                   </button>
                 </div>
               </div>
@@ -709,6 +695,168 @@ export function AnalisisOcupacionModal({
   );
 }
 
+// ===== Selector de periodo (rango de fechas + granularidad) =====
+// Lo usan el análisis de ocupación (morado) y el bloqueo masivo (rosa). No
+// depende de la tabla de catorcenas: el rango es libre.
+
+const ACENTOS_PERIODO = {
+  purple: {
+    icono: { dark: 'text-purple-400', light: 'text-purple-600' },
+    ring: 'focus:ring-purple-500/50',
+    atajoActivo: { dark: 'bg-purple-500/20 border-purple-500 text-purple-200', light: 'bg-purple-50 border-purple-500 text-purple-800' },
+    segmentoActivo: { dark: 'bg-purple-500/25 text-purple-200', light: 'bg-purple-100 text-purple-800' },
+    resumen: { dark: 'border-purple-500/30 bg-purple-500/5', light: 'border-purple-200 bg-purple-50/50' },
+    resumenTexto: { dark: 'text-purple-300', light: 'text-purple-700' },
+  },
+  rose: {
+    icono: { dark: 'text-rose-400', light: 'text-rose-600' },
+    ring: 'focus:ring-rose-500/50',
+    atajoActivo: { dark: 'bg-rose-500/20 border-rose-500 text-rose-200', light: 'bg-rose-50 border-rose-500 text-rose-800' },
+    segmentoActivo: { dark: 'bg-rose-500/25 text-rose-200', light: 'bg-rose-100 text-rose-800' },
+    resumen: { dark: 'border-rose-500/30 bg-rose-500/5', light: 'border-rose-200 bg-rose-50/50' },
+    resumenTexto: { dark: 'text-rose-300', light: 'text-rose-700' },
+  },
+} as const;
+
+export function PeriodoSelector({
+  value,
+  onChange,
+  isDark,
+  acento = 'purple',
+}: {
+  value: PeriodoAnalisis;
+  onChange: (p: PeriodoAnalisis) => void;
+  isDark: boolean;
+  acento?: keyof typeof ACENTOS_PERIODO;
+}) {
+  const a = ACENTOS_PERIODO[acento];
+  const tono = (par: { dark: string; light: string }) => (isDark ? par.dark : par.light);
+  const muted = isDark ? 'text-zinc-500' : 'text-gray-500';
+  const atajos = useMemo(() => atajosPeriodo(), []);
+  const error = validarPeriodo(value);
+  const rangoOk = rangoEnOrden(value.inicio, value.fin);
+  const auto = rangoOk ? granularidadAutomatica(value.inicio, value.fin) : null;
+
+  // Último periodo válido. Sirve de referencia para saber si la granularidad la
+  // eligió el usuario: mientras se teclea un año el input emite fechas
+  // intermedias (0202-11-18...) que no deben borrar esa elección.
+  const ultimoValidoRef = useRef<PeriodoAnalisis | null>(null);
+  useEffect(() => {
+    if (!validarPeriodo(value)) ultimoValidoRef.current = value;
+  }, [value]);
+  const referencia = (): PeriodoAnalisis => (error ? ultimoValidoRef.current ?? value : value);
+
+  // Si el rango queda al revés o incompleto, solo se muestra el error de validación.
+  const cambiarRango = (inicio: string, fin: string) => onChange(periodoConRango(inicio, fin, referencia()));
+
+  const inputClass = `px-3 py-1.5 rounded-lg border text-sm ${isDark ? 'bg-zinc-800 border-zinc-700 text-white [color-scheme:dark]' : 'bg-white border-gray-200 text-gray-900'} focus:outline-none focus:ring-1 ${a.ring}`;
+  const botonInactivo = isDark
+    ? 'bg-zinc-800/50 border-zinc-700 text-zinc-300 hover:border-zinc-500'
+    : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400';
+
+  const dias = rangoOk ? diasDelRango(value.inicio, value.fin) : 0;
+  const columnas = rangoOk ? contarColumnas(value.inicio, value.fin, value.granularidad) : 0;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <Calendar className={`h-4 w-4 ${tono(a.icono)}`} />
+          <span className={`text-sm font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>Rango de fechas</span>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1">
+            <span className={`text-[11px] ${muted}`}>Desde</span>
+            <input
+              type="date"
+              value={value.inicio}
+              onChange={e => cambiarRango(e.target.value, value.fin)}
+              className={inputClass}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className={`text-[11px] ${muted}`}>Hasta</span>
+            <input
+              type="date"
+              value={value.fin}
+              min={esFechaISO(value.inicio) ? value.inicio : undefined}
+              onChange={e => cambiarRango(value.inicio, e.target.value)}
+              className={inputClass}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`text-xs ${muted}`}>Atajos:</span>
+        {atajos.map(at => {
+          const activo = at.inicio === value.inicio && at.fin === value.fin;
+          return (
+            <button
+              key={at.id}
+              type="button"
+              onClick={() => cambiarRango(at.inicio, at.fin)}
+              className={`px-3 py-1.5 rounded-lg border text-xs transition-all ${activo ? tono(a.atajoActivo) : botonInactivo}`}
+            >
+              {at.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`text-xs ${muted}`}>Ver por:</span>
+        <div className={`flex items-center rounded-lg border overflow-hidden text-xs ${isDark ? 'border-zinc-700' : 'border-gray-300'}`}>
+          {GRANULARIDADES.map((g, idx) => {
+            const n = rangoOk ? contarColumnas(value.inicio, value.fin, g) : 0;
+            const permitida = rangoOk && granularidadPermitida(value.inicio, value.fin, g);
+            const activa = value.granularidad === g;
+            return (
+              <button
+                key={g}
+                type="button"
+                disabled={!permitida}
+                onClick={() => onChange({ ...value, granularidad: g })}
+                title={!rangoOk
+                  ? 'Elige primero el rango de fechas'
+                  : permitida
+                    ? `${n} ${n === 1 ? 'columna' : 'columnas'}`
+                    : `Serían ${n} columnas; el máximo es ${MAX_COLUMNAS}`}
+                className={`px-3 py-1.5 font-medium transition-colors ${idx > 0 ? (isDark ? 'border-l border-zinc-700' : 'border-l border-gray-300') : ''} ${
+                  activa
+                    ? tono(a.segmentoActivo)
+                    : isDark ? 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700' : 'bg-white text-gray-600 hover:bg-gray-50'
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                {GRANULARIDAD_LABEL[g]}
+                {auto === g && <span className="ml-1 text-[9px] font-normal opacity-70">(auto)</span>}
+              </button>
+            );
+          })}
+        </div>
+        <span className={`text-[11px] ${muted}`}>
+          Se ajusta solo al largo del rango: hasta 90 días por día, hasta un año por semana y más largo por mes.
+        </span>
+      </div>
+
+      {error ? (
+        <div className={`flex items-start gap-2 px-3 py-2 rounded-lg border text-xs ${isDark ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      ) : (
+        <div className={`rounded-lg border p-3 ${tono(a.resumen)}`}>
+          <div className={`text-sm font-medium ${tono(a.resumenTexto)}`}>{rangoLegible(value.inicio, value.fin)}</div>
+          <div className={`text-[11px] mt-0.5 ${muted}`}>
+            {dias} {dias === 1 ? 'día' : 'días'} · {columnas} {columnas === 1 ? 'columna' : 'columnas'} por {GRANULARIDAD_UNIDAD[value.granularidad].uno}
+            {auto === value.granularidad ? ' (automático)' : ''}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ===== Matrix View =====
 const labelForCampana = (c: CampanaEnCelda): string => {
   if (c.campana_id) return c.campana_nombre || `Campaña #${c.campana_id}`;
@@ -727,13 +875,14 @@ const labelForCampana = (c: CampanaEnCelda): string => {
 const ESTATUS_VENDIDO = new Set(['Vendido', 'Vendido bonificado', 'Con Arte', 'Sin Arte']);
 const esVendida = (c: CampanaEnCelda): boolean => ESTATUS_VENDIDO.has(c.reserva_estatus);
 
-// Un inventario Tradicional solo admite 1 VENTA por catorcena; los Digitales admiten varias.
+// Un inventario Tradicional solo admite 1 VENTA por fecha (por columna); los Digitales admiten varias.
 const esDigital = (inv?: InventarioResumen): boolean => inv?.tradicional_digital === 'Digital';
 const conflictoKey = (invId: number, cellKey: string): string => `${invId}|${cellKey}`;
 
-// Regla de conflicto (multireservas): varias reservas sobre la misma cara y
-// catorcena son válidas y esperadas — el equipo reserva de más y luego define.
-// Lo que no puede convivir es una venta con cualquier otra cosa:
+// Regla de conflicto (multireservas), evaluada en cada columna (día/semana/mes):
+// varias reservas sobre la misma cara y fechas son válidas y esperadas — el
+// equipo reserva de más y luego define. Lo que no puede convivir es una venta
+// con cualquier otra cosa:
 //   reserva + reserva   -> OK, no es conflicto
 //   campaña + reserva   -> conflicto
 //   campaña + campaña   -> conflicto
@@ -753,6 +902,54 @@ const labelTarjeta = (c: CampanaEnCelda): string => {
   if (esVendida(c)) return nombreCampana;
   return c.propuesta_id ? `Propuesta #${c.propuesta_id}` : nombreCampana;
 };
+
+/** Ancho de las celdas compactas según la granularidad (más columnas → más angostas). */
+const ANCHO_CELDA: Record<Granularidad, string> = { dia: 'w-7', semana: 'w-12', mes: 'w-14' };
+
+/** Colores de las celdas compactas (los mismos tonos de las tarjetas); también se usan en la leyenda. */
+const clasesCelda = (isDark: boolean) => ({
+  disponible: isDark ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200',
+  reservado: isDark
+    ? 'bg-amber-500/20 border-amber-500/50 text-amber-200 hover:bg-amber-500/35'
+    : 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200',
+  vendido: isDark
+    ? 'bg-red-500/25 border-red-500/50 text-red-200 hover:bg-red-500/40'
+    : 'bg-red-100 border-red-300 text-red-800 hover:bg-red-200',
+});
+
+/** Tooltip de una celda ocupada: el detalle de sus reservas en texto corto. */
+function tooltipCelda(
+  codigo: string,
+  col: ColumnaPeriodo,
+  visibles: CampanaEnCelda[],
+  total: number,
+  conflicto: boolean,
+): string {
+  const MAX_LINEAS = 6;
+  const lineas = [`${codigo} · ${col.titulo}`];
+  if (conflicto) lineas.push('CONFLICTO: una venta convive con otra venta o reserva');
+  for (const c of visibles.slice(0, MAX_LINEAS)) {
+    const rango = rangoCorto(c.inicio_periodo, c.fin_periodo);
+    lineas.push(`${esVendida(c) ? 'Vendido' : 'Reservado'}: ${labelTarjeta(c)} · ${c.cliente_nombre || 'Sin cliente'}${rango ? ` (${rango})` : ''}`);
+  }
+  if (visibles.length > MAX_LINEAS) lineas.push(`… y ${visibles.length - MAX_LINEAS} más`);
+  if (total > visibles.length) lineas.push(`${total - visibles.length} oculta(s) por los filtros`);
+  lineas.push('Clic para ver el detalle');
+  return lineas.join('\n');
+}
+
+/** Conflicto del panel: columnas seguidas de un sitio con las mismas reservas en conflicto. */
+interface ConflictoRango {
+  key: string;
+  inv: InventarioResumen;
+  desde: ColumnaPeriodo;
+  hasta: ColumnaPeriodo;
+  celdas: number;
+  vendidas: number;
+  reservadas: number;
+  /** reserva_ids de la celda, para saber si la siguiente columna es el mismo conflicto. */
+  firma: string;
+}
 
 function MatrizView({
   matriz,
@@ -790,10 +987,12 @@ function MatrizView({
   const [filterSearch, setFilterSearch] = useState('');
   const filterRef = useRef<HTMLDivElement>(null);
 
+  // Celda abierta en la ventana de detalle (inventario × columna).
+  const [celdaAbierta, setCeldaAbierta] = useState<{ invId: number; colKey: string } | null>(null);
+
   const [confirmRelease, setConfirmRelease] = useState<{
     card: CampanaEnCelda;
     inventario: InventarioResumen;
-    catorcena: CatorcenaRef;
   } | null>(null);
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
@@ -844,16 +1043,18 @@ function MatrizView({
     }
   };
 
-  // Lookup de las cards actualmente seleccionadas (resolviendo reserva_id contra la matriz)
+  // Lookup de las cards seleccionadas (resolviendo reserva_id contra la matriz).
+  // Una reserva aparece en todas las columnas que cubre: se toma una sola vez.
   const selectedCards = useMemo(() => {
-    if (!matriz || selectedReservas.size === 0) return [] as { card: CampanaEnCelda; inventarioId: number }[];
     const out: { card: CampanaEnCelda; inventarioId: number }[] = [];
+    if (!matriz || selectedReservas.size === 0) return out;
+    const vistas = new Set<number>();
     for (const [invIdStr, invCeldas] of Object.entries(matriz.celdas)) {
       for (const celda of Object.values(invCeldas)) {
         for (const c of celda.campanas) {
-          if (selectedReservas.has(c.reserva_id)) {
-            out.push({ card: c, inventarioId: Number(invIdStr) });
-          }
+          if (!selectedReservas.has(c.reserva_id) || vistas.has(c.reserva_id)) continue;
+          vistas.add(c.reserva_id);
+          out.push({ card: c, inventarioId: Number(invIdStr) });
         }
       }
     }
@@ -980,8 +1181,8 @@ function MatrizView({
     return m;
   }, [matriz]);
 
-  // Conflictos: celdas de inventarios Tradicionales con 2+ tarjetas.
-  // Un Tradicional solo puede tener una campaña por catorcena; los Digitales se excluyen.
+  // Conflictos por celda (inventario × columna) de inventarios Tradicionales.
+  // Los Digitales admiten varias ventas a la vez y se excluyen.
   const conflictoCeldas = useMemo(() => {
     const set = new Set<string>();
     if (!matriz) return set;
@@ -994,20 +1195,41 @@ function MatrizView({
     return set;
   }, [matriz, invById]);
 
-  // Lista de conflictos (sitio × catorcena) para el panel informativo.
+  // Lista de conflictos para el panel informativo. Las columnas seguidas de un
+  // mismo sitio con las mismas reservas en conflicto se juntan en un renglón con
+  // su rango de fechas (si no, una venta duplicada de 20 días serían 20 renglones).
   const conflictos = useMemo(() => {
-    if (!matriz) return [] as { inv: InventarioResumen; cat: CatorcenaRef; vendidas: number; reservadas: number }[];
-    const out: { inv: InventarioResumen; cat: CatorcenaRef; vendidas: number; reservadas: number }[] = [];
+    const out: ConflictoRango[] = [];
+    if (!matriz) return out;
     for (const inv of matriz.inventarios) {
       if (esDigital(inv)) continue;
       const invCeldas = matriz.celdas[inv.id];
       if (!invCeldas) continue;
-      for (const cat of matriz.catorcenas) {
-        const celda = invCeldas[cellKeyOf(cat)];
-        if (celda && hayConflicto(celda.campanas)) {
-          const vendidas = contarVendidas(celda.campanas);
-          out.push({ inv, cat, vendidas, reservadas: celda.campanas.length - vendidas });
+      let actual: ConflictoRango | null = null;
+      for (const col of matriz.columnas) {
+        const celda = invCeldas[col.key];
+        if (!celda || !hayConflicto(celda.campanas)) {
+          actual = null;
+          continue;
         }
+        const firma = celda.campanas.map(c => c.reserva_id).sort((x, y) => x - y).join(',');
+        if (actual && actual.firma === firma) {
+          actual.hasta = col;
+          actual.celdas += 1;
+          continue;
+        }
+        const vendidas = contarVendidas(celda.campanas);
+        actual = {
+          key: conflictoKey(inv.id, col.key),
+          inv,
+          desde: col,
+          hasta: col,
+          celdas: 1,
+          vendidas,
+          reservadas: celda.campanas.length - vendidas,
+          firma,
+        };
+        out.push(actual);
       }
     }
     return out;
@@ -1049,9 +1271,8 @@ function MatrizView({
     return matriz.inventarios.filter(inv => {
       const invCeldas = matriz.celdas[inv.id];
       if (!invCeldas) return false;
-      for (const cat of matriz.catorcenas) {
-        const cellKey = cellKeyOf(cat);
-        const celda = invCeldas[cellKey];
+      for (const col of matriz.columnas) {
+        const celda = invCeldas[col.key];
         if (!celda) continue;
         if (celda.campanas.length === 0) {
           // Celda disponible: solo cuenta si el filtro de estado la incluye y no hay
@@ -1059,25 +1280,27 @@ function MatrizView({
           if (!isFiltered && !soloDuplicados && isEstadoFiltered && disponibleVisible) return true;
           continue;
         }
-        if (tarjetasVisibles(inv.id, cellKey, celda.campanas).length > 0) return true;
+        if (tarjetasVisibles(inv.id, col.key, celda.campanas).length > 0) return true;
       }
       return false;
     });
   }, [matriz, hayFiltros, isFiltered, soloDuplicados, isEstadoFiltered, disponibleVisible, tarjetasVisibles]);
 
-  // Cards visibles y liberables (sin APS, dentro de los filtros activos)
+  // Reservas visibles y liberables (sin APS, dentro de los filtros activos), una vez cada una.
   const selectableCards = useMemo(() => {
     if (!matriz) return [] as CampanaEnCelda[];
     const out: CampanaEnCelda[] = [];
+    const vistas = new Set<number>();
     for (const inv of inventariosFiltrados) {
       const invCeldas = matriz.celdas[inv.id];
       if (!invCeldas) continue;
-      for (const cat of matriz.catorcenas) {
-        const cellKey = cellKeyOf(cat);
-        const celda = invCeldas[cellKey];
+      for (const col of matriz.columnas) {
+        const celda = invCeldas[col.key];
         if (!celda) continue;
-        for (const c of tarjetasVisibles(inv.id, cellKey, celda.campanas)) {
+        for (const c of tarjetasVisibles(inv.id, col.key, celda.campanas)) {
           if (c.aps && c.aps > 0) continue;
+          if (vistas.has(c.reserva_id)) continue;
+          vistas.add(c.reserva_id);
           out.push(c);
         }
       }
@@ -1085,13 +1308,120 @@ function MatrizView({
     return out;
   }, [matriz, inventariosFiltrados, tarjetasVisibles]);
 
+  // Datos de la celda abierta en la ventana de detalle (con los filtros aplicados).
+  const celdaDetalle = useMemo(() => {
+    if (!celdaAbierta || !matriz) return null;
+    const inv = invById.get(celdaAbierta.invId);
+    const col = matriz.columnas.find(c => c.key === celdaAbierta.colKey);
+    if (!inv || !col) return null;
+    const todas = matriz.celdas[inv.id]?.[col.key]?.campanas || [];
+    return {
+      inv,
+      col,
+      todas,
+      visibles: tarjetasVisibles(inv.id, col.key, todas),
+      esConflicto: conflictoCeldas.has(conflictoKey(inv.id, col.key)),
+    };
+  }, [celdaAbierta, matriz, invById, tarjetasVisibles, conflictoCeldas]);
+
+  // Si la celda abierta se queda sin reservas visibles (p.ej. tras liberar), se cierra.
+  useEffect(() => {
+    if (!celdaAbierta || building) return;
+    if (!celdaDetalle || celdaDetalle.visibles.length === 0) setCeldaAbierta(null);
+  }, [celdaAbierta, celdaDetalle, building]);
+
+  // Filas de la matriz. Se memorizan para que abrir la ventana de detalle o el
+  // menú de filtros no vuelva a pintar miles de celdas (vista por día).
+  const filasMatriz = useMemo(() => {
+    if (!matriz) return null;
+    const clases = clasesCelda(isDark);
+    const base = `${ANCHO_CELDA[matriz.periodo.granularidad]} h-7 mx-auto rounded flex items-center justify-center text-[10px] font-semibold border`;
+
+    // Celda compacta: color por estado + número de reservas. El detalle va en el
+    // tooltip y en la ventana que se abre al hacer clic.
+    const renderCelda = (inv: InventarioResumen, col: ColumnaPeriodo) => {
+      const codigo = inv.codigo_unico || `#${inv.id}`;
+      const todas = matriz.celdas[inv.id]?.[col.key]?.campanas || [];
+
+      if (todas.length === 0) {
+        if (!disponibleVisible) {
+          return (
+            <td key={col.key} className="p-0.5">
+              <div
+                className={`${base} border-dashed ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}
+                title={`${codigo} · ${col.titulo}\nDisponible (oculto por el filtro de estado)`}
+              />
+            </td>
+          );
+        }
+        return (
+          <td key={col.key} className="p-0.5">
+            <div className={`${base} ${clases.disponible}`} title={`${codigo} · ${col.titulo}\nDisponible`} />
+          </td>
+        );
+      }
+
+      const visibles = tarjetasVisibles(inv.id, col.key, todas);
+      if (visibles.length === 0) {
+        return (
+          <td key={col.key} className="p-0.5">
+            <div
+              className={`${base} border-dashed font-medium ${isDark ? 'border-zinc-700 text-zinc-600' : 'border-gray-300 text-gray-400'}`}
+              title={`${codigo} · ${col.titulo}\n${todas.length} reserva(s) oculta(s) por los filtros`}
+            >
+              {todas.length}
+            </div>
+          </td>
+        );
+      }
+
+      const esConflicto = conflictoCeldas.has(conflictoKey(inv.id, col.key));
+      const colorClass = visibles.some(esVendida) ? clases.vendido : clases.reservado;
+      const seleccionada = selectionMode && visibles.some(c => selectedReservas.has(c.reserva_id));
+      return (
+        <td key={col.key} className="p-0.5">
+          <button
+            type="button"
+            onClick={() => setCeldaAbierta({ invId: inv.id, colKey: col.key })}
+            title={tooltipCelda(codigo, col, visibles, todas.length, esConflicto)}
+            className={`${base} relative cursor-pointer transition-colors ${colorClass} ${esConflicto ? 'ring-2 ring-inset ring-amber-500' : ''} ${
+              seleccionada ? (isDark ? 'outline outline-2 outline-offset-1 outline-purple-400' : 'outline outline-2 outline-offset-1 outline-purple-500') : ''
+            }`}
+          >
+            {visibles.length}
+            {esConflicto && (
+              <AlertCircle className={`absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ${isDark ? 'text-amber-400 bg-zinc-900' : 'text-amber-600 bg-white'}`} />
+            )}
+          </button>
+        </td>
+      );
+    };
+
+    return inventariosFiltrados.map(inv => (
+      <tr key={inv.id} className={`border-b ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
+        <td className={`sticky left-0 z-10 px-3 py-1.5 ${isDark ? 'bg-zinc-900' : 'bg-white'} border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
+          <div className="flex items-center gap-1.5">
+            <span className={`font-mono text-xs font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{inv.codigo_unico}</span>
+            <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${inv.tradicional_digital === 'Digital' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') : (isDark ? 'bg-pink-500/20 text-pink-300 border-pink-500/30' : 'bg-pink-50 text-pink-700 border-pink-200')}`}>
+              {inv.tradicional_digital || 'Tradicional'}
+            </span>
+          </div>
+          <div className={`text-[10px] mt-0.5 ${isDark ? 'text-zinc-500' : 'text-gray-500'} truncate max-w-[200px]`} title={inv.ubicacion || undefined}>
+            {inv.plaza || '-'} · {inv.mueble || '-'}
+          </div>
+        </td>
+        {matriz.columnas.map(col => renderCelda(inv, col))}
+      </tr>
+    ));
+  }, [matriz, inventariosFiltrados, tarjetasVisibles, conflictoCeldas, disponibleVisible, selectionMode, selectedReservas, isDark]);
+
   // Exporta la matriz tal como se ve (respeta filtros de campaña, estado y conflictos).
   const handleDownloadCsv = () => {
     if (!matriz) return;
     const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const header = [
       'Código', 'Tipo', 'Plaza', 'Mueble', 'Ubicación',
-      ...matriz.catorcenas.map(c => `C${c.numero}-${c.anio}`),
+      ...matriz.columnas.map(c => c.titulo),
     ];
     const rows = inventariosFiltrados.map(inv => {
       const base = [
@@ -1101,16 +1431,16 @@ function MatrizView({
         inv.mueble || '',
         inv.ubicacion || '',
       ];
-      const cols = matriz.catorcenas.map(cat => {
-        const cellKey = cellKeyOf(cat);
-        const todas = matriz.celdas[inv.id]?.[cellKey]?.campanas || [];
+      const cols = matriz.columnas.map(col => {
+        const todas = matriz.celdas[inv.id]?.[col.key]?.campanas || [];
         if (todas.length === 0) return disponibleVisible && !soloDuplicados ? 'Disponible' : '';
-        const vis = tarjetasVisibles(inv.id, cellKey, todas);
+        const vis = tarjetasVisibles(inv.id, col.key, todas);
         if (vis.length === 0) return '';
-        const partes = vis.map(c =>
-          `${esVendida(c) ? 'Vendido' : 'Reservado'}: ${labelTarjeta(c)} (${c.cliente_nombre || 'Sin cliente'})`
-        );
-        const prefijo = conflictoCeldas.has(conflictoKey(inv.id, cellKey)) ? 'CONFLICTO · ' : '';
+        const partes = vis.map(c => {
+          const rango = rangoCorto(c.inicio_periodo, c.fin_periodo);
+          return `${esVendida(c) ? 'Vendido' : 'Reservado'}: ${labelTarjeta(c)} (${c.cliente_nombre || 'Sin cliente'})${rango ? ` [${rango}]` : ''}`;
+        });
+        const prefijo = conflictoCeldas.has(conflictoKey(inv.id, col.key)) ? 'CONFLICTO · ' : '';
         return prefijo + partes.join(' | ');
       });
       return [...base, ...cols].map(esc).join(',');
@@ -1121,7 +1451,7 @@ function MatrizView({
     const a = document.createElement('a');
     const nombre = (nombreAnalisis || 'matriz').trim().replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, '').replace(/\s+/g, '-') || 'matriz';
     a.href = url;
-    a.download = `analisis-ocupacion-${nombre}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `analisis-ocupacion-${nombre}-${matriz.periodo.inicio}_a_${matriz.periodo.fin}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1147,6 +1477,132 @@ function MatrizView({
       </div>
     );
   }
+
+  const hoy = hoyISO();
+  const grupos = agruparColumnas(matriz.columnas);
+  const anchoCelda = ANCHO_CELDA[matriz.periodo.granularidad];
+  const unidad = GRANULARIDAD_UNIDAD[matriz.periodo.granularidad];
+  const clases = clasesCelda(isDark);
+
+  // Tarjeta de una reserva en la ventana de detalle.
+  const renderTarjeta = (c: CampanaEnCelda, inv: InventarioResumen) => {
+    // Reservado -> amarillo y enlaza a la propuesta.
+    // Vendido   -> rojo y enlaza a la campaña.
+    // El fallback cruzado cubre el caso raro de que falte el id
+    // del lado que corresponde (dato huerfano).
+    const vendida = esVendida(c);
+    const cardClass = vendida
+      ? isDark
+        ? 'bg-red-500/10 border-red-500/40 hover:bg-red-500/20'
+        : 'bg-red-50 border-red-200 hover:bg-red-100'
+      : isDark
+        ? 'bg-amber-500/10 border-amber-500/40 hover:bg-amber-500/20'
+        : 'bg-amber-50 border-amber-200 hover:bg-amber-100';
+    const statusLabel = vendida ? 'Vendido' : 'Reservado';
+    const statusTextClass = vendida
+      ? isDark ? 'text-red-300' : 'text-red-700'
+      : isDark ? 'text-amber-300' : 'text-amber-700';
+    const hrefCampana = `/campanas/detail/${c.campana_id}`;
+    const hrefPropuesta = `/propuestas?viewId=${c.propuesta_id}`;
+    const href = vendida
+      ? (c.campana_id ? hrefCampana : hrefPropuesta)
+      : (c.propuesta_id ? hrefPropuesta : hrefCampana);
+    const label = labelTarjeta(c);
+    const clienteLabel = c.cliente_nombre || 'Sin cliente';
+    const rangoLabel = rangoCorto(c.inicio_periodo, c.fin_periodo);
+    const bloqueadoLocal = !!(c.aps && c.aps > 0);
+    const seleccionable = canRelease && !bloqueadoLocal;
+    const isSelected = selectionMode && selectedReservas.has(c.reserva_id);
+    const selectionRing = isSelected
+      ? (isDark ? 'ring-2 ring-purple-400 ring-offset-1 ring-offset-zinc-900' : 'ring-2 ring-purple-500 ring-offset-1 ring-offset-white')
+      : '';
+    const padLeft = selectionMode && seleccionable ? 'pl-7' : '';
+    const padRight = canRelease ? 'pr-7' : '';
+    return (
+      <div key={c.reserva_id} className={`relative group/card rounded-md ${selectionRing}`}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={vendida ? `Abrir campaña: ${label}` : `Abrir propuesta #${c.propuesta_id}`}
+          className={`block w-full text-left rounded-md p-2 ${padLeft} ${padRight} border transition-all cursor-pointer ${cardClass}`}
+        >
+          <div className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide ${statusTextClass}`}>
+            {statusLabel}
+            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+          </div>
+          <div
+            className={`text-[11px] mt-1 truncate underline underline-offset-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}
+            title={label}
+          >
+            {label}
+          </div>
+          <div
+            className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}
+            title={clienteLabel}
+          >
+            {clienteLabel}
+          </div>
+          {c.articulo && (
+            <div
+              className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-purple-300' : 'text-purple-700'}`}
+              title={`Artículo: ${c.articulo}`}
+            >
+              {c.articulo}
+            </div>
+          )}
+          {rangoLabel && (
+            <div
+              className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}
+              title={`Reserva #${c.reserva_id} · ${rangoLabel}`}
+            >
+              {rangoLabel} · #{c.reserva_id}
+            </div>
+          )}
+        </a>
+        {seleccionable && selectionMode && (
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => toggleReservaSelected(c.reserva_id)}
+            onClick={e => e.stopPropagation()}
+            title="Seleccionar para liberación en lote"
+            className="absolute top-1.5 left-1.5 h-3.5 w-3.5 cursor-pointer accent-purple-500"
+          />
+        )}
+        {canRelease && (() => {
+          const tooltipBloqueo = c.posted
+            ? 'Tiene POST, no se puede eliminar'
+            : 'Tiene APS asignado, no se puede eliminar';
+          return (
+            <button
+              type="button"
+              disabled={bloqueadoLocal}
+              onClick={e => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (bloqueadoLocal) return;
+                setReleaseError(null);
+                setConfirmRelease({ card: c, inventario: inv });
+              }}
+              title={bloqueadoLocal ? tooltipBloqueo : 'Liberar reserva (eliminar de la BD)'}
+              className={`absolute top-1 right-1 p-1 rounded transition-all ${
+                bloqueadoLocal
+                  ? `opacity-100 cursor-not-allowed ${isDark ? 'text-zinc-600' : 'text-gray-300'}`
+                  : `opacity-0 group-hover/card:opacity-100 focus:opacity-100 ${
+                      isDark
+                        ? 'text-zinc-400 hover:text-red-300 hover:bg-red-500/20'
+                        : 'text-gray-500 hover:text-red-600 hover:bg-red-100'
+                    }`
+              }`}
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          );
+        })()}
+      </div>
+    );
+  };
 
   return (
     <div className="flex-1 flex flex-col min-h-0 gap-2">
@@ -1185,7 +1641,7 @@ function MatrizView({
           </button>
           {filterOpen && (
             <div
-              className={`absolute z-30 mt-1 left-0 w-80 rounded-lg border shadow-xl ${
+              className={`absolute z-40 mt-1 left-0 w-80 rounded-lg border shadow-xl ${
                 isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'
               }`}
             >
@@ -1353,20 +1809,49 @@ function MatrizView({
           </div>
         )}
       </div>
+
+      {/* Periodo y leyenda de colores */}
+      <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
+        <span className={`font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>
+          {etiquetaPeriodo(matriz.periodo)} · {matriz.columnas.length} {matriz.columnas.length === 1 ? unidad.uno : unidad.varios}
+        </span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.disponible}`} />Disponible</span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.reservado}`} />Reservado</span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ${clases.vendido}`} />Vendido</span>
+        <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded border ring-2 ring-inset ring-amber-500 ${clases.vendido}`} />Conflicto</span>
+        <span>El número es la cantidad de reservas; pasa el cursor o haz clic para ver el detalle.</span>
+      </div>
+
+      {matriz.inventariosConError.length > 0 && (
+        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs ${isDark ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            No se pudo cargar el historial de {matriz.inventariosConError.length} {matriz.inventariosConError.length === 1 ? 'inventario' : 'inventarios'}; aparecen sin reservas.
+          </span>
+          <button
+            onClick={() => void onRefresh()}
+            className={`ml-auto px-2 py-0.5 rounded font-medium ${isDark ? 'hover:bg-amber-500/20' : 'hover:bg-amber-100'}`}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
       {conflictos.length > 0 && (
         <div className={`rounded-lg border ${isDark ? 'border-amber-500/30 bg-amber-500/5' : 'border-amber-200 bg-amber-50'} text-xs`}>
           <div className="flex items-stretch">
             <button
               onClick={() => setShowDuplicados(s => !s)}
               className={`flex-1 flex items-center gap-2 px-3 py-2 ${isDark ? 'text-amber-300 hover:bg-amber-500/10' : 'text-amber-700 hover:bg-amber-100/50'} rounded-l-lg transition-colors`}
-              title="Inventarios Tradicionales con una venta que convive con otra venta o con reservas en la misma catorcena"
+              title="Inventarios Tradicionales con una venta que convive con otra venta o con reservas en las mismas fechas"
             >
               <AlertCircle className="h-3.5 w-3.5" />
               <span className="font-semibold">
-                {conflictos.length} {conflictos.length === 1 ? 'celda con conflicto' : 'celdas con conflicto'}
+                {conflictos.length} {conflictos.length === 1 ? 'conflicto' : 'conflictos'}
+                {' '}· {conflictoCeldas.size} {conflictoCeldas.size === 1 ? 'celda' : 'celdas'}
               </span>
               <span className={`${isDark ? 'text-amber-400/70' : 'text-amber-600/80'}`}>
-                (Tradicional vendido que comparte catorcena con otra venta o reserva)
+                (Tradicional vendido que comparte fechas con otra venta o reserva)
               </span>
               <ChevronDown className={`h-3.5 w-3.5 ml-auto transition-transform ${showDuplicados ? 'rotate-180' : ''}`} />
             </button>
@@ -1389,19 +1874,29 @@ function MatrizView({
           </div>
           {showDuplicados && (
             <div className={`px-3 pb-2 pt-1 max-h-44 overflow-y-auto border-t ${isDark ? 'border-amber-500/20' : 'border-amber-200/60'}`}>
-              <ul className="space-y-1">
-                {conflictos.map(({ inv, cat, vendidas, reservadas }) => (
-                  <li key={`${inv.id}-${cellKeyOf(cat)}`} className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
-                    <span className="font-mono font-medium">{inv.codigo_unico || `#${inv.id}`}</span>
-                    <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>· C{cat.numero}-{cat.anio}</span>
-                    <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>· {inv.plaza || '-'}</span>
-                    <span
-                      title="Ventas y reservas que conviven en esta celda (un Tradicional solo debería tener una venta y nada más)"
-                      className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${isDark ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-white text-amber-700 border-amber-200'}`}
+              <ul className="space-y-0.5">
+                {conflictos.map(cf => (
+                  <li key={cf.key}>
+                    <button
+                      type="button"
+                      onClick={() => setCeldaAbierta({ invId: cf.inv.id, colKey: cf.desde.key })}
+                      title="Ver el detalle de la celda"
+                      className={`w-full text-left flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded px-1 py-0.5 ${isDark ? 'text-zinc-300 hover:bg-amber-500/10' : 'text-gray-700 hover:bg-amber-100/60'}`}
                     >
-                      {vendidas} vendida{vendidas === 1 ? '' : 's'}
-                      {reservadas > 0 ? ` + ${reservadas} reservada${reservadas === 1 ? '' : 's'}` : ''}
-                    </span>
+                      <span className="font-mono font-medium">{cf.inv.codigo_unico || `#${cf.inv.id}`}</span>
+                      <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>
+                        · {rangoLegible(cf.desde.inicio, cf.hasta.fin)}
+                        {cf.celdas > 1 ? ` (${cf.celdas} ${unidad.varios})` : ''}
+                      </span>
+                      <span className={isDark ? 'text-zinc-500' : 'text-gray-500'}>· {cf.inv.plaza || '-'}</span>
+                      <span
+                        title="Ventas y reservas que conviven en estas fechas (un Tradicional solo debería tener una venta y nada más)"
+                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${isDark ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-white text-amber-700 border-amber-200'}`}
+                      >
+                        {cf.vendidas} vendida{cf.vendidas === 1 ? '' : 's'}
+                        {cf.reservadas > 0 ? ` + ${cf.reservadas} reservada${cf.reservadas === 1 ? '' : 's'}` : ''}
+                      </span>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -1410,234 +1905,118 @@ function MatrizView({
         </div>
       )}
       <div className="flex-1 overflow-auto min-h-0">
-        <table className="w-full border-collapse text-xs">
+        <table className="border-collapse text-xs">
         <thead>
           <tr>
-            <th className={`sticky left-0 top-0 z-20 px-3 py-2 text-left text-xs font-semibold border-b ${isDark ? 'border-purple-500/30 bg-zinc-900 text-purple-300' : 'border-purple-200 bg-white text-purple-700'} min-w-[200px]`}>
+            <th
+              rowSpan={2}
+              className={`sticky left-0 top-0 z-30 px-3 py-2 text-left align-bottom text-xs font-semibold border-b ${isDark ? 'border-purple-500/30 bg-zinc-900 text-purple-300' : 'border-purple-200 bg-white text-purple-700'} min-w-[200px]`}
+            >
               Inventario
             </th>
-            {matriz.catorcenas.map(c => (
-              <th key={cellKeyOf(c)} className={`sticky top-0 z-10 px-3 py-2 text-center text-xs font-semibold border-b ${isDark ? 'border-purple-500/30 bg-zinc-900 text-purple-300' : 'border-purple-200 bg-white text-purple-700'} min-w-[120px]`}>
-                C{c.numero}-{c.anio}
+            {grupos.map(g => (
+              <th
+                key={g.key}
+                colSpan={g.span}
+                title={g.etiqueta}
+                className={`sticky top-0 z-20 h-6 p-0 border-l ${isDark ? 'border-zinc-800 bg-zinc-900 text-purple-300' : 'border-gray-200 bg-white text-purple-700'}`}
+              >
+                <span className="absolute inset-x-1 top-1 truncate text-left text-[10px] font-semibold">{g.etiqueta}</span>
               </th>
             ))}
+          </tr>
+          <tr>
+            {matriz.columnas.map(col => {
+              const esHoy = columnaIncluye(col, hoy);
+              const textoClass = esHoy
+                ? isDark ? 'bg-purple-500/25 text-purple-100' : 'bg-purple-100 text-purple-800'
+                : col.finDeSemana
+                  ? isDark ? 'text-zinc-500' : 'text-gray-400'
+                  : isDark ? 'text-zinc-300' : 'text-gray-600';
+              return (
+                <th
+                  key={col.key}
+                  title={esHoy ? `${col.titulo} (hoy)` : col.titulo}
+                  className={`sticky top-6 z-20 px-0.5 py-1 text-center border-b ${isDark ? 'border-purple-500/30 bg-zinc-900' : 'border-purple-200 bg-white'}`}
+                >
+                  <div className={`${anchoCelda} mx-auto rounded leading-tight ${textoClass}`}>
+                    <div className="text-[10px] font-semibold whitespace-nowrap">{col.etiqueta}</div>
+                    {col.detalle && <div className="text-[9px] font-normal whitespace-nowrap opacity-80">{col.detalle}</div>}
+                  </div>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
           {inventariosFiltrados.length === 0 && (
             <tr>
               <td
-                colSpan={matriz.catorcenas.length + 1}
+                colSpan={matriz.columnas.length + 1}
                 className={`px-3 py-8 text-center text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}
               >
                 Ningún inventario coincide con los filtros activos.
               </td>
             </tr>
           )}
-          {inventariosFiltrados.map(inv => (
-            <tr key={inv.id} className={`border-b ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-              <td className={`sticky left-0 z-10 px-3 py-2 ${isDark ? 'bg-zinc-900' : 'bg-white'} border-r ${isDark ? 'border-zinc-800' : 'border-gray-200'}`}>
-                <div className="flex items-center gap-1.5">
-                  <span className={`font-mono text-xs font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{inv.codigo_unico}</span>
-                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${inv.tradicional_digital === 'Digital' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') : (isDark ? 'bg-pink-500/20 text-pink-300 border-pink-500/30' : 'bg-pink-50 text-pink-700 border-pink-200')}`}>
-                    {inv.tradicional_digital || 'Tradicional'}
-                  </span>
-                </div>
-                <div className={`text-[10px] mt-0.5 ${isDark ? 'text-zinc-500' : 'text-gray-500'} truncate max-w-[200px]`} title={inv.ubicacion || undefined}>
-                  {inv.plaza || '-'} · {inv.mueble || '-'}
-                </div>
-              </td>
-              {matriz.catorcenas.map(cat => {
-                const cellKey = cellKeyOf(cat);
-                const celda = matriz.celdas[inv.id]?.[cellKey];
-                const ocupado = celda?.ocupado;
-                const todasCampanas = celda?.campanas || [];
-                const esConflicto = conflictoCeldas.has(conflictoKey(inv.id, cellKey));
-                const campanas = tarjetasVisibles(inv.id, cellKey, todasCampanas);
-
-                if (!ocupado || todasCampanas.length === 0) {
-                  if (!disponibleVisible) {
-                    return (
-                      <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                        <div
-                          className={`w-full rounded-md p-2 border border-dashed text-center ${isDark ? 'border-zinc-800 text-zinc-700' : 'border-gray-200 text-gray-300'}`}
-                          title="Disponible (oculto por el filtro de estado)"
-                        >
-                          <span className="text-[10px] font-medium">—</span>
-                        </div>
-                      </td>
-                    );
-                  }
-                  const disponibleClass = isDark
-                    ? 'bg-emerald-500/10 border-emerald-500/30'
-                    : 'bg-emerald-50 border-emerald-200';
-                  return (
-                    <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                      <div className={`w-full rounded-md p-2 border ${disponibleClass}`}>
-                        <div className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>
-                          Disponible
-                        </div>
-                      </div>
-                    </td>
-                  );
-                }
-
-                if (campanas.length === 0) {
-                  const oculto = todasCampanas.length;
-                  return (
-                    <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                      <div
-                        className={`w-full rounded-md p-2 border border-dashed text-center ${isDark ? 'border-zinc-700 text-zinc-600' : 'border-gray-300 text-gray-400'}`}
-                        title={`${oculto} campaña(s) ocultas por el filtro`}
-                      >
-                        <span className="text-[10px] font-medium">— {oculto} oculto{oculto > 1 ? 's' : ''}</span>
-                      </div>
-                    </td>
-                  );
-                }
-
-                return (
-                  <td key={cellKeyOf(cat)} className="px-1.5 py-1.5 align-top">
-                    <div className="flex flex-col gap-1.5">
-                      {esConflicto && (
-                        <div
-                          className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide ${isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700'}`}
-                          title="Inventario Tradicional vendido que comparte esta catorcena con otra venta o con reservas"
-                        >
-                          <AlertCircle className="h-2.5 w-2.5" />
-                          Conflicto · {todasCampanas.length}
-                        </div>
-                      )}
-                      {campanas.map(c => {
-                        // Reservado -> amarillo y enlaza a la propuesta.
-                        // Vendido   -> rojo y enlaza a la campaña.
-                        // El fallback cruzado cubre el caso raro de que falte el id
-                        // del lado que corresponde (dato huerfano).
-                        const vendida = esVendida(c);
-                        const cardClass = vendida
-                          ? isDark
-                            ? 'bg-red-500/10 border-red-500/40 hover:bg-red-500/20'
-                            : 'bg-red-50 border-red-200 hover:bg-red-100'
-                          : isDark
-                            ? 'bg-amber-500/10 border-amber-500/40 hover:bg-amber-500/20'
-                            : 'bg-amber-50 border-amber-200 hover:bg-amber-100';
-                        const statusLabel = vendida ? 'Vendido' : 'Reservado';
-                        const statusTextClass = vendida
-                          ? isDark ? 'text-red-300' : 'text-red-700'
-                          : isDark ? 'text-amber-300' : 'text-amber-700';
-                        const hrefCampana = `/campanas/detail/${c.campana_id}`;
-                        const hrefPropuesta = `/propuestas?viewId=${c.propuesta_id}`;
-                        const href = vendida
-                          ? (c.campana_id ? hrefCampana : hrefPropuesta)
-                          : (c.propuesta_id ? hrefPropuesta : hrefCampana);
-                        const label = labelTarjeta(c);
-                        const clienteLabel = c.cliente_nombre || 'Sin cliente';
-                        const fmt = (d: string) => new Date(d).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' });
-                        const rangoLabel = c.inicio_periodo && c.fin_periodo
-                          ? `${fmt(c.inicio_periodo)} – ${fmt(c.fin_periodo)}`
-                          : '';
-                        const tieneAPSLocal = !!(c.aps && c.aps > 0);
-                        const bloqueadoLocal = tieneAPSLocal;
-                        const seleccionable = canRelease && !bloqueadoLocal;
-                        const isSelected = selectionMode && selectedReservas.has(c.reserva_id);
-                        const selectionRing = isSelected
-                          ? (isDark ? 'ring-2 ring-purple-400 ring-offset-1 ring-offset-zinc-900' : 'ring-2 ring-purple-500 ring-offset-1 ring-offset-white')
-                          : '';
-                        const padLeft = selectionMode && seleccionable ? 'pl-7' : '';
-                        const padRight = canRelease ? 'pr-7' : '';
-                        return (
-                          <div key={c.reserva_id} className={`relative group/card rounded-md ${selectionRing}`}>
-                            <a
-                              href={href}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title={vendida ? `Abrir campaña: ${label}` : `Abrir propuesta #${c.propuesta_id}`}
-                              className={`block w-full text-left rounded-md p-2 ${padLeft} ${padRight} border transition-all cursor-pointer ${cardClass}`}
-                            >
-                              <div className={`flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide ${statusTextClass}`}>
-                                {statusLabel}
-                                <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-                              </div>
-                              <div
-                                className={`text-[10px] mt-1 truncate underline underline-offset-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}
-                                title={label}
-                              >
-                                {label}
-                              </div>
-                              <div
-                                className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}
-                                title={clienteLabel}
-                              >
-                                {clienteLabel}
-                              </div>
-                              {c.articulo && (
-                                <div
-                                  className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-purple-300' : 'text-purple-700'}`}
-                                  title={`Artículo: ${c.articulo}`}
-                                >
-                                  {c.articulo}
-                                </div>
-                              )}
-                              {rangoLabel && (
-                                <div
-                                  className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-zinc-400' : 'text-gray-600'}`}
-                                  title={`Reserva #${c.reserva_id} · ${rangoLabel}`}
-                                >
-                                  {rangoLabel} · #{c.reserva_id}
-                                </div>
-                              )}
-                            </a>
-                            {seleccionable && selectionMode && (
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => toggleReservaSelected(c.reserva_id)}
-                                onClick={e => e.stopPropagation()}
-                                title="Seleccionar para liberación en lote"
-                                className="absolute top-1.5 left-1.5 h-3.5 w-3.5 cursor-pointer accent-purple-500"
-                              />
-                            )}
-                            {canRelease && (() => {
-                              const tooltipBloqueo = c.posted
-                                ? 'Tiene POST, no se puede eliminar'
-                                : 'Tiene APS asignado, no se puede eliminar';
-                              return (
-                                <button
-                                  type="button"
-                                  disabled={bloqueadoLocal}
-                                  onClick={e => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    if (bloqueadoLocal) return;
-                                    setConfirmRelease({ card: c, inventario: inv, catorcena: cat });
-                                  }}
-                                  title={bloqueadoLocal ? tooltipBloqueo : 'Liberar reserva (eliminar de la BD)'}
-                                  className={`absolute top-1 right-1 p-1 rounded transition-all ${
-                                    bloqueadoLocal
-                                      ? `opacity-100 cursor-not-allowed ${isDark ? 'text-zinc-600' : 'text-gray-300'}`
-                                      : `opacity-0 group-hover/card:opacity-100 focus:opacity-100 ${
-                                          isDark
-                                            ? 'text-zinc-400 hover:text-red-300 hover:bg-red-500/20'
-                                            : 'text-gray-500 hover:text-red-600 hover:bg-red-100'
-                                        }`
-                                  }`}
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              );
-                            })()}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+          {filasMatriz}
         </tbody>
       </table>
       </div>
+
+      {/* Detalle de una celda: las reservas que caen en ese día/semana/mes */}
+      {celdaDetalle && celdaDetalle.visibles.length > 0 && (
+        <div
+          className="fixed inset-0 bg-black/60 z-[55] flex items-center justify-center p-4"
+          onClick={() => setCeldaAbierta(null)}
+        >
+          <div
+            className={`rounded-2xl border ${isDark ? 'bg-zinc-900 border-purple-500/30' : 'bg-white border-purple-200'} w-full max-w-md shadow-2xl flex flex-col max-h-[80vh]`}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className={`px-4 py-3 border-b ${isDark ? 'border-zinc-800' : 'border-gray-200'} flex items-start gap-3`}>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className={`font-mono text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>
+                    {celdaDetalle.inv.codigo_unico || `#${celdaDetalle.inv.id}`}
+                  </span>
+                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full text-[9px] font-medium border ${celdaDetalle.inv.tradicional_digital === 'Digital' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') : (isDark ? 'bg-pink-500/20 text-pink-300 border-pink-500/30' : 'bg-pink-50 text-pink-700 border-pink-200')}`}>
+                    {celdaDetalle.inv.tradicional_digital || 'Tradicional'}
+                  </span>
+                </div>
+                <div className={`text-xs mt-0.5 font-medium ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{celdaDetalle.col.titulo}</div>
+                <div className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`} title={celdaDetalle.inv.ubicacion || undefined}>
+                  {celdaDetalle.inv.plaza || '-'} · {celdaDetalle.inv.mueble || '-'}
+                </div>
+              </div>
+              <button
+                onClick={() => setCeldaAbierta(null)}
+                className={`p-1.5 rounded-lg ${isDark ? 'hover:bg-zinc-800 text-zinc-400 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-gray-900'}`}
+                title="Cerrar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-1.5">
+              {celdaDetalle.esConflicto && (
+                <div
+                  className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700'}`}
+                  title="Inventario Tradicional vendido que comparte estas fechas con otra venta o con reservas"
+                >
+                  <AlertCircle className="h-3 w-3" />
+                  Conflicto · {celdaDetalle.todas.length}
+                </div>
+              )}
+              {celdaDetalle.visibles.map(c => renderTarjeta(c, celdaDetalle.inv))}
+              {celdaDetalle.todas.length > celdaDetalle.visibles.length && (
+                <div className={`text-[11px] italic ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
+                  {celdaDetalle.todas.length - celdaDetalle.visibles.length} reserva(s) más oculta(s) por los filtros
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmRelease && (
         <div
@@ -1665,20 +2044,16 @@ function MatrizView({
             </div>
             <div className={`p-5 space-y-2 text-xs ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
               {(() => {
-                const { card, inventario, catorcena } = confirmRelease;
+                const { card, inventario } = confirmRelease;
                 // Mismo criterio que la tarjeta: el estatus de la reserva decide
                 // si esto es una venta o una reserva, no la presencia de campana_id.
                 const vendida = esVendida(card);
-                const fmt = (d: string) => new Date(d).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
-                const rango = card.inicio_periodo && card.fin_periodo
-                  ? `${fmt(card.inicio_periodo)} – ${fmt(card.fin_periodo)}`
-                  : '';
+                const rango = rangoLegible(card.inicio_periodo, card.fin_periodo);
                 const rows: { k: string; v: string }[] = [
                   { k: 'Estatus', v: card.reserva_estatus || (vendida ? 'Vendido' : 'Reservado') },
                   { k: vendida ? 'Campaña' : 'Propuesta', v: vendida ? (card.campana_nombre || `#${card.campana_id}`) : `#${card.propuesta_id}` },
                   { k: 'Cliente', v: card.cliente_nombre || 'Sin cliente' },
                   { k: 'Inventario', v: inventario.codigo_unico || `#${inventario.id}` },
-                  { k: 'Catorcena', v: `C${catorcena.numero}-${catorcena.anio}` },
                 ];
                 if (rango) rows.push({ k: 'Periodo', v: rango });
                 if (card.articulo) rows.push({ k: 'Artículo', v: card.articulo });
@@ -1746,13 +2121,14 @@ function MatrizView({
                 {selectedCards.slice(0, 15).map(({ card }) => {
                   const esP = !card.campana_id;
                   const nombre = esP ? `Propuesta #${card.propuesta_id}` : (card.campana_nombre || `Campaña #${card.campana_id}`);
+                  const rango = rangoCorto(card.inicio_periodo, card.fin_periodo);
                   return (
                     <li key={card.reserva_id} className="flex items-start gap-2">
                       <span className={`shrink-0 inline-block w-1.5 h-1.5 mt-1.5 rounded-full ${esP ? 'bg-amber-400' : 'bg-red-400'}`} />
                       <div className="flex-1 min-w-0">
                         <div className="truncate font-medium">{nombre}</div>
                         <div className={`text-[10px] truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                          {card.cliente_nombre || 'Sin cliente'} · C{card.numero_catorcena}-{card.anio_catorcena} · #{card.reserva_id}
+                          {card.cliente_nombre || 'Sin cliente'}{rango ? ` · ${rango}` : ''} · #{card.reserva_id}
                         </div>
                       </div>
                     </li>
@@ -1793,4 +2169,3 @@ function MatrizView({
     </div>
   );
 }
-
