@@ -1565,8 +1565,8 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
       const ws = XLSX.utils.json_to_sheet(wsData);
       const wb = XLSX.utils.book_new();
       const esUnmas = activeTab === 'invian-unmas';
-      XLSX.utils.book_append_sheet(wb, ws, esUnmas ? 'Orden Montaje INVIAN UN+' : 'Orden Montaje INVIAN');
-      XLSX.writeFile(wb, `orden_montaje_invian${esUnmas ? '_unmas' : ''}_${new Date().toISOString().split('T')[0]}.xlsx`);
+      XLSX.utils.book_append_sheet(wb, ws, esUnmas ? 'Inventario UN+' : 'Inventario VP');
+      XLSX.writeFile(wb, `orden_montaje_inventario${esUnmas ? '_unmas' : '_vp'}_${new Date().toISOString().split('T')[0]}.xlsx`);
     } else if (activeTab === 'invian-digital' && filteredINVIANDigitalData.length > 0) {
       const wsData = filteredINVIANDigitalData.map(item => {
         const plazaDerivada = extractCiudadFromCodigoUnico(item.Unidad) || item.Ciudad || '';
@@ -1601,8 +1601,8 @@ export function OrdenesMontajeModal({ isOpen, onClose, canExport = true }: Orden
 
       const ws = XLSX.utils.json_to_sheet(wsData);
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Orden Montaje INVIAN Digital');
-      XLSX.writeFile(wb, `orden_montaje_invian_digital_${new Date().toISOString().split('T')[0]}.xlsx`);
+      XLSX.utils.book_append_sheet(wb, ws, 'Inventario Digital');
+      XLSX.writeFile(wb, `orden_montaje_inventario_digital_${new Date().toISOString().split('T')[0]}.xlsx`);
     }
   };
 

@@ -44,7 +44,7 @@ export function validarClave(clave: string): string | null {
   if (!clave) return 'Captura la clave del artículo';
   if (/^DIG-\d+-[A-Z]+$/.test(clave)) return 'Esa forma de clave está reservada; usa otra';
   const tokens = clave.split('-');
-  if (tokens.includes('UDC') || tokens.includes('AICM')) return 'La clave no puede contener UDC ni AICM';
+  if (tokens.includes('UDC') || tokens.includes('AICM')) return 'La clave contiene una palabra reservada; usa otra';
   if (clave.endsWith('-QR')) return 'La clave no puede terminar en -QR';
   return null;
 }

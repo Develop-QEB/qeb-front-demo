@@ -1100,7 +1100,7 @@ async getUsuarios(): Promise<{ id: number; nombre: string }[]> {
   } = {}): Promise<OrdenMontajeINVIAN[]> {
     const response = await api.get<ApiResponse<OrdenMontajeINVIAN[]>>('/campanas/ordenes-montaje/invian', { params });
     if (!response.data.success || !response.data.data) {
-      throw new Error(response.data.error || 'Error al obtener orden de montaje INVIAN');
+      throw new Error(response.data.error || 'Error al obtener la orden de montaje de inventario');
     }
     return response.data.data;
   },

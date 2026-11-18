@@ -150,7 +150,6 @@ interface CaraItem {
 interface SAPArticulo {
   ItemCode: string;
   ItemName: string;
-  U_IMU_PublicPrice?: number | null;
   ItemPrices?: { PriceList: number; Price: number }[];
 }
 
@@ -235,8 +234,6 @@ const isBonifSplitArticle = (articulo?: string | null): boolean => {
 // (intersectarMultiPeriodo, estados) queda intacta; con el flag en true el toggle
 // aparece y filtra la disponibilidad por intersección de periodos. Ver commit 576a7bc.
 const SHOW_DISPONIBILIDAD_MULTIPERIODO = true;
-
-// Tarifa publica now comes from SAP (U_IMU_PublicPrice field on each article)
 
 // Ciudad -> Estado mapping for auto-selection
 const CIUDAD_ESTADO_MAP: Record<string, string> = {
@@ -328,20 +325,6 @@ const getTipoFromName = (itemName: string, itemCode?: string): 'Tradicional' | '
   const name = itemName.toUpperCase();
   if (name.includes('DIGITAL') || name.includes('DIG')) return 'Digital';
   return 'Tradicional';
-};
-
-// Get tarifa from ItemCode
-// Tarifa pública = U_IMU_PublicPrice
-const getTarifaPublicaFromArticulo = (articulo: SAPArticulo): number => {
-  if (!articulo) return 0;
-  return articulo.U_IMU_PublicPrice || 0;
-};
-
-// Tarifa piso = PriceList 11
-const getTarifaPisoFromArticulo = (articulo: SAPArticulo): number => {
-  if (!articulo?.ItemPrices) return 0;
-  const pl11 = articulo.ItemPrices.find(p => p.PriceList === 11);
-  return pl11?.Price || 0;
 };
 
 // Multi-city auto-fill rules for specific article patterns

@@ -714,7 +714,7 @@ function renderReservadoCell(item: InventarioReservado, col: TableColumn, p = 'p
         <div className="flex flex-col">
           <span>{item.articulo !== null && item.articulo !== undefined ? String(item.articulo) : '-'}</span>
           {ctr && (
-            <span className={`text-[9px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} title="Contrato con el AICM">
+            <span className={`text-[9px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} title="Contrato">
               Contrato {ctr.contrato}
             </span>
           )}

@@ -150,7 +150,6 @@ interface CaraItem {
 interface SAPArticulo {
   ItemCode: string;
   ItemName: string;
-  U_IMU_PublicPrice?: number | null;
   ItemPrices?: { PriceList: number; Price: number }[];
 }
 
@@ -228,8 +227,6 @@ const isBonifSplitArticle = (articulo?: string | null): boolean => {
   if (isServicioCFArticle(a)) return false; // CF-#### = servicio, no bonif
   return a.startsWith('BF') || a.startsWith('CF') || a.startsWith('CT');
 };
-
-// Tarifas from SAP (U_IMU_PublicPrice = tarifa publica, PriceList 11 = tarifa piso)
 
 // Ciudad -> Estado mapping for auto-selection
 const CIUDAD_ESTADO_MAP: Record<string, string> = {
@@ -321,19 +318,6 @@ const getTipoFromName = (itemName: string, itemCode?: string): 'Tradicional' | '
   const name = itemName.toUpperCase();
   if (name.includes('DIGITAL') || name.includes('DIG')) return 'Digital';
   return 'Tradicional';
-};
-
-// Get tarifa publica from SAP article
-const getTarifaPublicaFromArticulo = (articulo: SAPArticulo): number => {
-  if (!articulo) return 0;
-  return articulo.U_IMU_PublicPrice || 0;
-};
-
-// Get tarifa piso from PriceList 11
-const getTarifaPisoFromArticulo = (articulo: SAPArticulo): number => {
-  if (!articulo?.ItemPrices) return 0;
-  const pl11 = articulo.ItemPrices.find(p => p.PriceList === 11);
-  return pl11?.Price || 0;
 };
 
 // Multi-city auto-fill rules for specific article patterns

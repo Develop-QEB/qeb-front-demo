@@ -28,8 +28,6 @@ import { notasDireccionService } from '../../services/notasDireccion.service';
 import { esArticuloGranFormato } from '../../lib/periodos';
 import { TimeInput } from '../../components/ui/TimeInput';
 
-// Tarifas now come from SAP (U_IMU_PublicPrice = tarifa publica, PriceList 11 = tarifa piso)
-
 // Formato auto-detection from article name
 const CODE_FORMATO_MAP: Record<string, string> = {
   pb: 'PARABUS', cl: 'COLUMNA', bol: 'BOLERO', kco: 'Kiosco',
@@ -205,16 +203,6 @@ const getTipoFromName = (itemName: string, itemCode?: string): 'Tradicional' | '
   return 'Tradicional';
 };
 
-// Get tarifa publica and costo (tarifa piso) from SAP article data
-const getTarifaFromArticulo = (articulo: SAPArticulo): { costo: number; tarifa_publica: number } => {
-  if (!articulo) return { costo: 0, tarifa_publica: 0 };
-  // SAP a veces devuelve U_IMU_PublicPrice como string ("30000.50") — parseFloat preserva decimales
-  const tarifa_publica = parseFloat(String(articulo.U_IMU_PublicPrice ?? 0)) || 0;
-  const pl11 = articulo.ItemPrices?.find(p => p.PriceList === 11);
-  const costo = parseFloat(String(pl11?.Price ?? 0)) || 0;
-  return { costo, tarifa_publica };
-};
-
 // Multi-city auto-fill rules for specific article patterns
 // Order matters: more specific patterns BEFORE generic ones (e.g. PUERTO VALLARTA before GD)
 // All estado/ciudad values MUST match DB inventarios exactly (with accents, municipios in UPPERCASE)
@@ -320,7 +308,6 @@ interface SAPCuicItem {
 interface SAPArticulo {
   ItemCode: string;
   ItemName: string;
-  U_IMU_PublicPrice?: number | null;
   ItemPrices?: { PriceList: number; Price: number }[];
 }
 
@@ -2131,7 +2118,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
     }
     isSubmittingRef.current = true;
     if (invalidCaras.length > 0) {
-      showToast('Hay circuitos con catorcenas fuera del rango de campaña. Corrígelos antes de guardar.', 'error');
+      showToast('Hay circuitos con fechas fuera del rango de campaña. Corrígelos antes de guardar.', 'error');
       return;
     }
 
@@ -2871,7 +2858,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                 <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
                   <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                   <span>
-                    <strong>{invalidCaras.length} circuito{invalidCaras.length > 1 ? 's' : ''}</strong> asignado{invalidCaras.length > 1 ? 's' : ''} ya no pertenece{invalidCaras.length > 1 ? 'n' : ''} al rango de catorcenas actual. Ve a "Asignar Circuito" y elimínalos o ajusta el rango.
+                    <strong>{invalidCaras.length} circuito{invalidCaras.length > 1 ? 's' : ''}</strong> asignado{invalidCaras.length > 1 ? 's' : ''} ya no pertenece{invalidCaras.length > 1 ? 'n' : ''} al rango de fechas actual. Ve a "Asignar Circuito" y elimínalos o ajusta el rango.
                   </span>
                 </div>
               )}
@@ -3990,7 +3977,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                 <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
                   <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
                   <span>
-                    <strong>{invalidCaras.length} circuito{invalidCaras.length > 1 ? 's' : ''}</strong> tienen catorcenas fuera del rango de campaña. Regresa a "Campaña" o "Asignar Circuito" para corregirlo.
+                    <strong>{invalidCaras.length} circuito{invalidCaras.length > 1 ? 's' : ''}</strong> tienen fechas fuera del rango de campaña. Regresa a "Campaña" o "Asignar Circuito" para corregirlo.
                   </span>
                 </div>
               )}

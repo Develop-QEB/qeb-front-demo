@@ -77,7 +77,7 @@ export const clientesService = {
       params: { cuic, ...(sapDatabase ? { sap_database: sapDatabase } : {}) },
     });
     if (!response.data.success || !response.data.data) {
-      throw new Error(response.data.error || 'No se pudo resolver cliente por CUIC');
+      throw new Error(response.data.error || 'No se pudo encontrar el cliente');
     }
     return response.data.data;
   },
