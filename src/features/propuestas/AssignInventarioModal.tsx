@@ -52,7 +52,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { SaveChangesConfirmModal, type ModifiedCircuito } from '../../components/SaveChangesConfirmModal';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
 import { CircuitCheckbox } from '../../components/ui/CircuitCheckbox';
-import { BULK_DELETE_ENABLED } from '../../config/featureFlags';
+import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
@@ -3571,7 +3571,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
         (c as any)._originalDg === 'pendiente'
       );
       const dcmPending = caras.some(c => c.autorizacion_dcm === 'pendiente' || (c as any)._originalDcm === 'pendiente');
-      if (dgPending || dcmPending) {
+      if (AUTORIZACIONES_DIRECCION_ENABLED && (dgPending || dcmPending)) {
         // Blindaje: la Nota de Dirección es OBLIGATORIA al mandar a autorización.
         // Si falta solicitud_id, NO guardar en silencio — avisar (así no se pierde la nota).
         if (!propuesta.solicitud_id) {
@@ -10991,7 +10991,7 @@ export function AssignInventarioModal({ isOpen, onClose, propuesta, readOnly = f
                     // Ajuste 2026-08-31: mismo cambio que el gate de más arriba
                     // — se elimina _originalDg==='correccion' que daba falso
                     // positivo tras resolver la correccion.
-                    if (propuesta.solicitud_id) {
+                    if (AUTORIZACIONES_DIRECCION_ENABLED && propuesta.solicitud_id) {
                       const dgPending = caras.some(c =>
                         c.autorizacion_dg === 'pendiente' ||
                         c.autorizacion_dg === 'correccion' ||

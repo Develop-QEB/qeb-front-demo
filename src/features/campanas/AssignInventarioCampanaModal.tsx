@@ -52,7 +52,7 @@ import { useThemeStore } from '../../store/themeStore';
 import { SaveChangesConfirmModal, type ModifiedCircuito } from '../../components/SaveChangesConfirmModal';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
 import { CircuitCheckbox } from '../../components/ui/CircuitCheckbox';
-import { BULK_DELETE_ENABLED } from '../../config/featureFlags';
+import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED, AUTORIZACION_ELIMINACION_ENABLED } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
@@ -2717,10 +2717,18 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
         }
 
         if (conIdOriginal.length > 0) {
-          // Ya guardadas: eliminar en campaña requiere autorización (Gerente) con
-          // MOTIVO. Se abre el modal de motivo y, al confirmarlo, se manda 1 sola
-          // solicitud (con la pareja RT/BF incluida). El motivo viaja en la tarea.
-          setDeleteNota({ open: true, caraIds: conIdOriginal.map(c => c.id) });
+          if (!AUTORIZACION_ELIMINACION_ENABLED) {
+            // Demo: sin autorización de eliminación no se pide motivo. Se encola y
+            // el circuito se elimina al "Guardar Cambios".
+            const ids = conIdOriginal.map(c => c.id);
+            setPendingEliminaciones(prev => [...prev, { caraIds: ids, motivo: '' }]);
+            setCaras(prev => prev.map(c => (c.id && ids.includes(c.id)) ? { ...c, pendiente_eliminacion: true } : c));
+          } else {
+            // Ya guardadas: eliminar en campaña requiere autorización (Gerente) con
+            // MOTIVO. Se abre el modal de motivo y, al confirmarlo, se manda 1 sola
+            // solicitud (con la pareja RT/BF incluida). El motivo viaja en la tarea.
+            setDeleteNota({ open: true, caraIds: conIdOriginal.map(c => c.id) });
+          }
         }
       }
     });
@@ -2829,9 +2837,16 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
         setDeleteCircuitoModal(prev => ({ ...prev, isOpen: false, isDeleting: false }));
 
         if (conId.length > 0) {
-          // Igual que el bote individual: se captura el MOTIVO de eliminación
-          // (obligatorio) y al confirmarlo se manda UNA sola solicitud con toda la selección.
-          setDeleteNota({ open: true, caraIds: conId.map(c => c.id) });
+          if (!AUTORIZACION_ELIMINACION_ENABLED) {
+            // Demo: sin autorización de eliminación — se encola sin motivo.
+            const ids = conId.map(c => c.id);
+            setPendingEliminaciones(prev => [...prev, { caraIds: ids, motivo: '' }]);
+            setCaras(prev => prev.map(c => (c.id && ids.includes(c.id)) ? { ...c, pendiente_eliminacion: true } : c));
+          } else {
+            // Igual que el bote individual: se captura el MOTIVO de eliminación
+            // (obligatorio) y al confirmarlo se manda UNA sola solicitud con toda la selección.
+            setDeleteNota({ open: true, caraIds: conId.map(c => c.id) });
+          }
         }
       },
     });
@@ -3698,7 +3713,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
     // como 'aprobado' pero seguiamos pidiendo la nota.
     // Ajuste 2026-09-21: solo aplica cuando hay cambios de campana/caras. La
     // bitacora sola no reenvia autorizacion.
-    if (!skipNotaGate && campanaDetails?.solicitud_id && (hasCampanaChanges || hasCaraChanges)) {
+    if (AUTORIZACIONES_DIRECCION_ENABLED && !skipNotaGate && campanaDetails?.solicitud_id && (hasCampanaChanges || hasCaraChanges)) {
       const dgPending = caras.some(c =>
         c.autorizacion_dg === 'pendiente' ||
         c.autorizacion_dg === 'correccion' ||
@@ -3815,7 +3830,9 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
           elimCount += caraIds.length;
         }
         setPendingEliminaciones([]);
-        messages.push(`${elimCount} circuito(s) enviados a autorización de eliminación`);
+        messages.push(AUTORIZACION_ELIMINACION_ENABLED
+          ? `${elimCount} circuito(s) enviados a autorización de eliminación`
+          : `${elimCount} circuito(s) eliminados`);
       }
 
       // 4. Nota de Dirección ENCOLADA (autorización DG/DCM). Aditiva.
@@ -10040,7 +10057,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                                         {/* Eliminación pendiente de autorización de Gerencia — la cara sigue
                                             viva hasta que el Gerente apruebe el borrado. */}
                                         {cara.pendiente_eliminacion && (
-                                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700'}`} title="Eliminación pendiente de autorización de Gerencia">Pend. Ger. (elim.)</span>
+                                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700'}`} title={AUTORIZACION_ELIMINACION_ENABLED ? 'Eliminación pendiente de autorización de Gerencia' : 'Se eliminará al guardar cambios'}>{AUTORIZACION_ELIMINACION_ENABLED ? 'Pend. Ger. (elim.)' : 'Por eliminar'}</span>
                                         )}
                                       </div>
                                         );
@@ -10880,7 +10897,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                       (c as any)._originalDg === 'pendiente'
                     );
                     const dcmPending = caras.some(c => c.autorizacion_dcm === 'pendiente' || (c as any)._originalDcm === 'pendiente');
-                    if (dgPending || dcmPending) {
+                    if (AUTORIZACIONES_DIRECCION_ENABLED && (dgPending || dcmPending)) {
                       // Blindaje: la Nota de Dirección es OBLIGATORIA al mandar a autorización.
                       // Antes, si faltaba campanaDetails.solicitud_id (fetch aún cargando o fallido)
                       // se saltaba el mini-modal y se guardaba SIN nota → autorización sin nota

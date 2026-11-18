@@ -3,6 +3,7 @@ import { Bell, Monitor, Mail, Loader2 } from 'lucide-react';
 import { useThemeStore } from '../../store/themeStore';
 import { useAuthStore } from '../../store/authStore';
 import { getPermissions, RolePermissions } from '../../lib/permissions';
+import { AUTORIZACIONES_DIRECCION_ENABLED } from '../../config/featureFlags';
 import {
   notificacionesService,
   PreferenciasNotif,
@@ -14,6 +15,11 @@ import {
 // (getPermissions). Si el rol no puede recibir/abrir ese tipo, no se muestra el
 // toggle. Las notificaciones (categorías) son universales y no se filtran aquí.
 function tipoTareaVisible(clave: string, p: RolePermissions, rol?: string | null): boolean {
+  // Demo: sin autorizaciones de Dirección no hay tareas de autorización.
+  if (!AUTORIZACIONES_DIRECCION_ENABLED
+      && (clave === 'Autorización DG' || clave === 'Autorización DCM' || clave === 'Resultado de autorización')) {
+    return false;
+  }
   if (rol === 'Administrador' || rol === 'DEV') return true;
   switch (clave) {
     case 'Autorización DG': return rol === 'Director General';

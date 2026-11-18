@@ -1,4 +1,5 @@
 import type { AutorizacionResumen } from '../types';
+import { AUTORIZACIONES_DIRECCION_ENABLED } from '../config/featureFlags';
 
 // Filtro por AUTORIZACIÓN DE CIRCUITOS en los listados de Solicitudes,
 // Propuestas y Campañas. Espejo de back/utils/autorizacionFiltro.ts.
@@ -22,13 +23,17 @@ export interface AutorizacionFiltroOpcion {
   hint: string;
 }
 
-export const AUTORIZACION_OPCIONES: AutorizacionFiltroOpcion[] = [
+const AUTORIZACION_OPCIONES_BASE: AutorizacionFiltroOpcion[] = [
   { key: 'aprobado', label: 'Aut. Aprobado', hint: 'Circuitos aprobados por DG y DCM' },
   { key: 'pend_dg', label: 'Aut. Pend. DG', hint: 'Circuitos pendientes de Dirección General' },
   { key: 'pend_dcm', label: 'Aut. Pend. DCM', hint: 'Circuitos pendientes de Dirección Comercial' },
   { key: 'correccion', label: 'Aut. Corrección', hint: 'Circuitos devueltos a corrección por el Gerente Comercial' },
   { key: 'rechazado', label: 'Aut. Rechazo', hint: 'Circuitos rechazados por DG o DCM' },
 ];
+
+// Demo: sin autorizaciones de Dirección no se ofrecen los filtros "Aut. …".
+export const AUTORIZACION_OPCIONES: AutorizacionFiltroOpcion[] =
+  AUTORIZACIONES_DIRECCION_ENABLED ? AUTORIZACION_OPCIONES_BASE : [];
 
 export const AUTORIZACION_LABELS: string[] = AUTORIZACION_OPCIONES.map(o => o.label);
 

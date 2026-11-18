@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { FileText, ChevronDown, ChevronUp, Loader2, Clock } from 'lucide-react';
 import { notasDireccionService, NotaDireccion } from '../../services/notasDireccion.service';
 import { formatDate } from '../../lib/utils';
+import { AUTORIZACIONES_DIRECCION_ENABLED } from '../../config/featureFlags';
 
 interface Props {
   idSolicitud: number;
@@ -47,7 +48,7 @@ export function NotasDireccionBitacora({ idSolicitud, isDark, bitacoraCount, var
     <div className={wrapperClass}>
       <h3 className={`text-xs font-medium ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wider mb-2 flex items-center gap-2`}>
         <FileText className="h-3.5 w-3.5 text-orange-400" />
-        Notas Dirección
+        {AUTORIZACIONES_DIRECCION_ENABLED ? 'Notas Dirección' : 'Notas'}
       </h3>
 
       {notasQuery.isLoading && (

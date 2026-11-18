@@ -23,7 +23,7 @@ import { parseCircuitoDigital, type CircuitoInfo } from '../../lib/circuitos';
 import { circuitosService } from '../../services/circuitos.service';
 import { CircuitCheckbox } from '../../components/ui/CircuitCheckbox';
 import { DeleteCircuitoConfirmModal } from '../../components/DeleteCircuitoConfirmModal';
-import { BULK_DELETE_ENABLED } from '../../config/featureFlags';
+import { BULK_DELETE_ENABLED, AUTORIZACIONES_DIRECCION_ENABLED } from '../../config/featureFlags';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
 import { NuevaNotaDireccionModal } from '../notificaciones/NuevaNotaDireccionModal';
 import { notasDireccionService } from '../../services/notasDireccion.service';
@@ -2359,7 +2359,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         (c as any)._originalDg === 'pendiente'
       );
       const dcmPending = caras.some(c => c.autorizacion_dcm === 'pendiente' || (c as any)._originalDcm === 'pendiente');
-      if (dgPending || dcmPending) {
+      if (AUTORIZACIONES_DIRECCION_ENABLED && (dgPending || dcmPending)) {
         setPendingUpdateData(data);
         setPendingAuthTipo(dgPending && dcmPending ? 'ambas' : dgPending ? 'dg' : 'dcm');
         setShowNotaDireccionModal(true);
