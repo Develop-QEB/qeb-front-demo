@@ -7,6 +7,7 @@ import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
 import { UserAvatar } from './ui/user-avatar';
 import { formatDate } from '../lib/utils';
+import { etiquetaEstatusPropuesta } from '../lib/estatusLabels';
 
 // Bitacora inline: se monta ARRIBA del modal de edicion de propuesta o campana.
 // Permite al usuario cambiar estatus y agregar comentarios como parte del mismo
@@ -273,7 +274,7 @@ export const BitacoraEstatusInline = forwardRef<BitacoraEstatusInlineHandle, Pro
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <span className={`text-[10px] px-2 py-0.5 rounded-full border ${isDark ? 'bg-zinc-800/60 text-zinc-300 border-zinc-700' : 'bg-gray-100 text-gray-700 border-gray-200'}`}>
-            {currentStatus || 'Sin estatus'}
+            {etiquetaEstatusPropuesta(currentStatus) || 'Sin estatus'}
           </span>
           {hasPending && (
             <span className="text-[10px] px-2 py-0.5 rounded-full border bg-amber-500/15 text-amber-400 border-amber-500/30 flex items-center gap-1">
@@ -303,14 +304,14 @@ export const BitacoraEstatusInline = forwardRef<BitacoraEstatusInlineHandle, Pro
                   className={`flex-1 px-3 py-2 rounded-lg ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-white border-gray-200 text-gray-900'} border text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50 disabled:opacity-60 disabled:cursor-not-allowed`}
                 >
                   {currentStatus && !statusOptions.includes(currentStatus) && (
-                    <option value={currentStatus} disabled>{currentStatus} (actual)</option>
+                    <option value={currentStatus} disabled>{etiquetaEstatusPropuesta(currentStatus)} (actual)</option>
                   )}
                   {statusOptions.map((s) => {
                     const v = getStatusValidation?.(s) || { disabled: false };
                     const isCurrent = s === currentStatus;
                     return (
                       <option key={s} value={s} disabled={!isCurrent && v.disabled}>
-                        {s}{!isCurrent && v.disabled && v.reason ? ` (${v.reason})` : ''}{isCurrent ? ' (actual)' : ''}
+                        {etiquetaEstatusPropuesta(s)}{!isCurrent && v.disabled && v.reason ? ` (${v.reason})` : ''}{isCurrent ? ' (actual)' : ''}
                       </option>
                     );
                   })}
@@ -329,7 +330,7 @@ export const BitacoraEstatusInline = forwardRef<BitacoraEstatusInlineHandle, Pro
               </div>
               {statusChanged && !pendingStatusBlocked && (
                 <p className={`text-[10px] mt-1 ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
-                  Se cambiará de <strong>{currentStatus}</strong> a <strong>{pendingStatus}</strong> al guardar.
+                  Se cambiará de <strong>{etiquetaEstatusPropuesta(currentStatus)}</strong> a <strong>{etiquetaEstatusPropuesta(pendingStatus)}</strong> al guardar.
                 </p>
               )}
               {statusChanged && pendingStatusBlocked && (

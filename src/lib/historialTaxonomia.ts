@@ -28,11 +28,11 @@ const accionEs = (...vs: string[]) => conVariantes('accion', 'equals', vs);
 // Mismo ORDEN DE PRIORIDAD que el back (gana la primera regla que matchea).
 export const CATEGORIAS: Regla[] = [
   { value: 'desposteo', label: 'Desposteo', patrones: accionContiene('desposteo') },
-  { value: 'posteo', label: 'Posteo a SAP', patrones: accionContiene('post aps', 'post a sap', 'cancelar post') },
+  { value: 'posteo', label: 'Posteo', patrones: accionContiene('post aps', 'post a sap', 'cancelar post') },
   { value: 'solicitud_autorizacion', label: 'Solicitud de autorización', patrones: accionContiene('solicitó autorización', 'solicito autorizacion') },
   { value: 'rechazo', label: 'Rechazo', patrones: accionContiene('echaz', 'devolvió para corrección', 'devolvio para correccion') },
   { value: 'liberacion', label: 'Liberación', patrones: [...accionContiene('iberaci', 'iberadas', 'iberados'), ...accionEs('Liberada')] },
-  { value: 'cambio_estado', label: 'Cambio de estado', patrones: [...accionEs('Cambio de estado', 'Pasó a ventas', 'Vendida', 'Reservada', 'Atendida', 'Activación', 'Finalización'), ...accionContiene('cambió status', 'cambio status')] },
+  { value: 'cambio_estado', label: 'Cambio de estado', patrones: [...accionEs('Cambio de estado', 'Pasó a ventas', 'Venta confirmada', 'Vendida', 'Reservada', 'Atendida', 'Activación', 'Finalización'), ...accionContiene('cambió status', 'cambio status')] },
   { value: 'autorizacion', label: 'Autorización', patrones: accionContiene('probaci', 'probó', 'probo ', 'probada', 'probado', 'escalado') },
   { value: 'eliminacion', label: 'Eliminación', patrones: accionContiene('liminaci', 'liminó', 'limino ', 'emoci', 'emovió') },
   { value: 'creacion', label: 'Creación', patrones: [...accionContiene('reaci', 'creó', 'creo ', 'creada', 'creado', 'agregó', 'agrego ', 'adición', 'adicion'), ...accionEs('Inicio')] },

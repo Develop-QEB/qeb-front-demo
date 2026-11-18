@@ -1550,7 +1550,7 @@ function MatrizBloqueoView({
                                     {clienteLabel}
                                   </div>
                                   {c.articulo && (
-                                    <div className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-rose-300' : 'text-rose-700'}`} title={`Artículo SAP: ${c.articulo}`}>
+                                    <div className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-rose-300' : 'text-rose-700'}`} title={`Artículo: ${c.articulo}`}>
                                       {c.articulo}
                                     </div>
                                   )}

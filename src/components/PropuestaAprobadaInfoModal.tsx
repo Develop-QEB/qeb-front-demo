@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import { useThemeStore } from '../store/themeStore';
+import { etiquetaEstatusPropuesta } from '../lib/estatusLabels';
 
 interface Props {
   isOpen: boolean;
@@ -61,10 +62,10 @@ export function PropuestaAprobadaInfoModal({ isOpen, onClose, propuestaStatus }:
         {/* Body */}
         <div className="p-6">
           <p className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'} mb-2`}>
-            Esta propuesta ya pasó a ventas
+            Esta propuesta ya tiene la venta confirmada
             {propuestaStatus ? (
               <>
-                {' '}(<span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{propuestaStatus}</span>)
+                {' '}(<span className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{etiquetaEstatusPropuesta(propuestaStatus)}</span>)
               </>
             ) : null}
             .

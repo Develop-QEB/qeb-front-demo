@@ -21,10 +21,10 @@ export interface ConOrigen {
   origen_reserva?: OrigenReserva | null;
 }
 
-// Azul y verde IMU (mismos de la marca que ya usan PDF y vista publica).
+// Azul y verde genéricos (la leyenda ORIGEN_LEYENDA dice "Azul"/"Verde").
 export const ORIGEN_COLOR: Record<OrigenReserva, string> = {
-  propuesta: '#0054A6',
-  campana: '#7AB800',
+  propuesta: '#2563EB',
+  campana: '#16A34A',
 };
 
 export const ORIGEN_LABEL: Record<OrigenReserva, string> = {
@@ -33,7 +33,7 @@ export const ORIGEN_LABEL: Record<OrigenReserva, string> = {
 };
 
 export const ORIGEN_LEYENDA =
-  'Azul: inventario que se vino de la propuesta en el pase a ventas. Verde: agregado después, ya dentro de la campaña.';
+  'Azul: inventario que se vino de la propuesta al confirmar la venta. Verde: agregado después, ya dentro de la campaña.';
 
 export function origenDe(item: ConOrigen | null | undefined): OrigenReserva | null {
   const o = item?.origen_reserva;
@@ -76,8 +76,8 @@ export function origenTexto(item: ConOrigen, mostrar: boolean): string {
 // ---------- PDF (jspdf-autotable) ----------
 // Tintes muy claros para no pelear con la lectura del texto.
 export const PDF_ORIGEN_FONDO: Record<OrigenReserva, [number, number, number]> = {
-  propuesta: [222, 236, 250],
-  campana: [232, 244, 214],
+  propuesta: [219, 234, 254],
+  campana: [220, 252, 231],
 };
 
 /**
@@ -104,8 +104,8 @@ export function pdfEstiloCompartir(items: (ConVersion & ConOrigen)[], mostrarOri
 
 // ---------- Excel (ExcelJS, ARGB) ----------
 export const XLS_ORIGEN_FONDO: Record<OrigenReserva, string> = {
-  propuesta: 'FFDEECFA',
-  campana: 'FFE8F4D6',
+  propuesta: 'FFDBEAFE',
+  campana: 'FFDCFCE7',
 };
 
 /** Relleno ARGB para la fila, o undefined si va sin tinte. */

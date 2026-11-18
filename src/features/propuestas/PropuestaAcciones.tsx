@@ -61,7 +61,7 @@ export function PropuestaAcciones({
             ? isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
             : isDark ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 border-emerald-500/20 hover:border-emerald-500/40' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 hover:text-emerald-700 border-emerald-200 hover:border-emerald-300'
             }`}
-          title={isLocked ? 'No disponible en este estatus' : (item.status !== 'Pase a ventas' ? 'Solo disponible con estatus Pase a ventas' : 'Aprobar propuesta')}
+          title={isLocked ? 'No disponible en este estatus' : (item.status !== 'Pase a ventas' ? 'Solo disponible con estatus Confirmar venta' : 'Aprobar propuesta')}
         >
           <CheckCircle className={ico} />
         </button>
@@ -97,7 +97,7 @@ export function PropuestaAcciones({
             ? isDark ? 'bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 hover:text-cyan-300 border-cyan-500/20 hover:border-cyan-500/40' : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100 hover:text-cyan-700 border-cyan-200 hover:border-cyan-300'
             : isDark ? 'bg-zinc-500/10 text-zinc-500 border-zinc-500/20 cursor-not-allowed opacity-50' : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed opacity-50'
             }`}
-          title={isLocked ? 'No disponible en este estatus' : (puedeCompartir ? 'Compartir propuesta' : 'Disponible en Aprobada, Atendido, Pase a ventas, Ajuste Inventario y Ajuste Cto-Cliente')}
+          title={isLocked ? 'No disponible en este estatus' : (puedeCompartir ? 'Compartir propuesta' : 'Disponible en Aprobada, Atendido, Confirmar venta, Ajuste Inventario y Ajuste Cto-Cliente')}
         >
           <Share2 className={ico} />
         </button>

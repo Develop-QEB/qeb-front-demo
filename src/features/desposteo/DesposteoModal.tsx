@@ -411,7 +411,6 @@ function SnapshotView({ snapshot, isDark }: { snapshot: SnapshotAPS; isDark: boo
       {snapshot.razon_social && kv('Razon social', snapshot.razon_social)}
       {snapshot.cliente_nombre && kv('Cliente', snapshot.cliente_nombre)}
       {kv('Monto estimado', <span className="font-semibold">{fmtMoney(snapshot.monto_estimado || 0)}</span>)}
-      {snapshot.doc_entry && kv('Doc SAP', <>{snapshot.doc_entry}{snapshot.doc_num ? ` / ${snapshot.doc_num}` : ''}</>)}
       {snapshot.posted_at && kv('Posteado', new Date(snapshot.posted_at).toLocaleString('es-MX'))}
     </div>
   );
@@ -435,9 +434,8 @@ function DesgloseView({ desglose, isDark }: { desglose: DesgloseAps; isDark: boo
         {kv('APS', <>{desglose.aps}</>)}
         {desglose.razon_social && kv('Razon social', desglose.razon_social)}
         {desglose.cliente_nombre && kv('Cliente', desglose.cliente_nombre)}
-        {desglose.cuic != null && kv('CUIC', String(desglose.cuic))}
+        {desglose.cuic != null && kv('ID Cliente', String(desglose.cuic))}
         {desglose.marca && kv('Marca', desglose.marca)}
-        {desglose.doc_entry && kv('Doc SAP', <>{desglose.doc_entry}{desglose.doc_num ? ` / ${desglose.doc_num}` : ''}</>)}
         {desglose.posted_at && kv('Posteado', new Date(desglose.posted_at).toLocaleString('es-MX'))}
         {kv('Total caras', <span className="font-semibold">{desglose.caras_total}</span>)}
         {kv('Inversion total', <span className={`font-semibold ${isDark ? 'text-emerald-300' : 'text-emerald-700'}`}>{fmtMoney(desglose.inversion_total)}</span>)}

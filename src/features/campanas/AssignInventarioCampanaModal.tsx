@@ -1786,7 +1786,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
           const resolved = await clientesService.resolveByCuic(selectedClienteCuic.CUIC, (selectedClienteCuic as any).sap_database || null);
           resolvedClienteId = resolved.id;
         } catch (err) {
-          alert(`No se pudo resolver cliente para CUIC ${selectedClienteCuic.CUIC}`);
+          alert(`No se pudo resolver el cliente con ID ${selectedClienteCuic.CUIC}`);
           setIsUpdatingCampana(false);
           return;
         }
@@ -3189,7 +3189,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
           (!!existingBfPair !== wantsPair) ||
           (existingBfPair && articuloBf && existingBfPair.articulo !== articuloBf.ItemCode);
         if (pairStructureChanging && (rtApsBlocked || bfApsBlocked)) {
-          alert('No se puede modificar la pareja RT/BF: el grupo tiene APS asignadas en SAP.');
+          alert('No se puede modificar la pareja RT/BF: el grupo tiene APS asignadas.');
           return;
         }
         void apsOnRt;
@@ -3747,7 +3747,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
             const resolved = await clientesService.resolveByCuic(selectedClienteCuic.CUIC, (selectedClienteCuic as any).sap_database || null);
             resolvedClienteIdBulk = resolved.id;
           } catch (err) {
-            showToast(`No se pudo resolver cliente para CUIC ${selectedClienteCuic.CUIC}`, 'error');
+            showToast(`No se pudo resolver el cliente con ID ${selectedClienteCuic.CUIC}`, 'error');
             setIsSaving(false);
             return;
           }
@@ -8550,7 +8550,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                   {canEditCliente ? (
                     <div className="space-y-3">
                       <div className="relative">
-                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Seleccionar Cliente (CUIC)</label>
+                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'} mb-1 block`}>Seleccionar Cliente</label>
                         <button
                           type="button"
                           onClick={() => setShowClienteDropdown(!showClienteDropdown)}
@@ -8564,10 +8564,10 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                             {selectedClienteCuic ? (
                               <span>
                                 <span className="font-medium">{selectedClienteCuic.T2_U_Marca || 'Sin marca'}</span>
-                                <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} ml-2`}>{selectedClienteCuic.CUIC} | {selectedClienteCuic.T2_U_Producto || ''}</span>
+                                <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} ml-2`}>ID {selectedClienteCuic.CUIC} | {selectedClienteCuic.T2_U_Producto || ''}</span>
                               </span>
                             ) : (
-                              <span>{campanaDetails?.cuic ? `${(campanaDetails as any)?.T2_U_Marca || (campanaDetails as any)?.marca_nombre || ''} (CUIC: ${campanaDetails.cuic})` : 'Seleccionar CUIC'}</span>
+                              <span>{campanaDetails?.cuic ? `${(campanaDetails as any)?.T2_U_Marca || (campanaDetails as any)?.marca_nombre || ''} (ID: ${campanaDetails.cuic})` : 'Seleccionar cliente'}</span>
                             )}
                           </span>
                           {selectedClienteCuic ? (
@@ -8585,7 +8585,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                                   <Search className={`absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`} />
                                   <input
                                     type="text"
-                                    placeholder="Buscar por marca, CUIC, razón social..."
+                                    placeholder="Buscar por marca, ID, razón social..."
                                     value={clienteSearchTerm}
                                     onChange={(e) => setClienteSearchTerm(e.target.value)}
                                     className={`w-full pl-9 pr-3 py-2 text-sm ${isDark ? 'bg-zinc-800' : 'bg-gray-50'} ${isDark ? 'border-zinc-700' : 'border-gray-200'} ${isDark ? 'text-white' : 'text-gray-900'} placeholder:${isDark ? 'text-zinc-500' : 'text-gray-400'} border rounded-lg focus:outline-none focus:ring-1 focus:ring-purple-500/50`}
@@ -8618,17 +8618,8 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                                     >
                                       <div className="flex items-center justify-between">
                                         <div className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.T2_U_Marca || 'Sin marca'}</div>
-                                        {item.sap_database && (
-                                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-lg border ${
-                                            item.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
-                                            item.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
-                                            item.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                            item.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
-                                            isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
-                                          }`}>{item.sap_database}</span>
-                                        )}
                                       </div>
-                                      <div className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{item.CUIC} | {item.T2_U_Producto || 'Sin producto'} | {item.T0_U_RazonSocial || ''}</div>
+                                      <div className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>ID {item.CUIC} | {item.T2_U_Producto || 'Sin producto'} | {item.T0_U_RazonSocial || ''}</div>
                                     </button>
                                   ))
                                 )}
@@ -8639,7 +8630,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                         <div className="space-y-1">
-                          <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>CUIC</label>
+                          <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>ID Cliente</label>
                           <div className={`px-3 py-2 ${isDark ? 'bg-zinc-800/50' : 'bg-gray-50/50'} rounded-lg text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'} border ${isDark ? 'border-zinc-700/30' : 'border-gray-200/30'}`}>
                             {selectedClienteCuic ? selectedClienteCuic.CUIC : (campanaDetails?.cuic || '-')}
                           </div>
@@ -8667,7 +8658,7 @@ export function AssignInventarioCampanaModal({ isOpen, onClose, campana }: Props
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                       <div className="space-y-1">
-                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>CUIC</label>
+                        <label className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>ID Cliente</label>
                         <div className={`px-3 py-2 rounded-lg text-sm border ${isDark ? 'bg-zinc-800/50 text-zinc-300 border-zinc-700/30' : 'bg-gray-100 text-gray-700 border-gray-200'}`}>
                           {campanaDetails?.cuic || '-'}
                         </div>

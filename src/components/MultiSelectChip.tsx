@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
+import { etiquetaEstatusPropuesta } from '../lib/estatusLabels';
 
 // Chip de filtro MULTISELECT con buscador. Misma apariencia que el FilterChip
 // de los listados (Solicitudes / Propuestas / Campañas), pero cada opción se
@@ -25,7 +26,7 @@ export function MultiSelectChip({ label, options, values, onChange, onClear, isD
   const filteredOptions = useMemo(() => {
     if (!searchTerm) return options;
     const q = searchTerm.toLowerCase();
-    return options.filter(opt => opt.toLowerCase().includes(q));
+    return options.filter(opt => opt.toLowerCase().includes(q) || etiquetaEstatusPropuesta(opt).toLowerCase().includes(q));
   }, [options, searchTerm]);
 
   const selected = useMemo(() => new Set(values), [values]);
@@ -38,17 +39,18 @@ export function MultiSelectChip({ label, options, values, onChange, onClear, isD
   };
 
   // Texto del chip: una selección se muestra tal cual; varias, la primera + "+N".
+  // Los valores se muestran con su etiqueta visible (p.ej. 'Pase a ventas' → 'Confirmar venta').
   const chipText = !active
     ? label
     : values.length === 1
-      ? values[0]
-      : `${values[0]} +${values.length - 1}`;
+      ? etiquetaEstatusPropuesta(values[0])
+      : `${etiquetaEstatusPropuesta(values[0])} +${values.length - 1}`;
 
   return (
     <div className="relative">
       <button
         onClick={() => setOpen(!open)}
-        title={active ? values.join(', ') : undefined}
+        title={active ? values.map(etiquetaEstatusPropuesta).join(', ') : undefined}
         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 max-w-[220px] ${active
           ? isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40' : 'bg-purple-50 text-purple-700 border border-purple-200'
           : `${isDark ? 'bg-zinc-800/80 text-zinc-400 border border-zinc-700/50 hover:border-zinc-600' : 'bg-gray-100 text-gray-500 border border-gray-200 hover:border-gray-300'}`
@@ -102,7 +104,7 @@ export function MultiSelectChip({ label, options, values, onChange, onClear, isD
                           : isDark ? 'border-zinc-600' : 'border-gray-300'}`}>
                           {marcado && <Check className="h-2.5 w-2.5" />}
                         </span>
-                        <span className="truncate">{option}</span>
+                        <span className="truncate">{etiquetaEstatusPropuesta(option)}</span>
                       </button>
                     </div>
                   );

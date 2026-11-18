@@ -99,11 +99,10 @@ export function DetalleActividadModal({ tarea, isDark, puedeEditar, moviendo, on
               <Campo isDark={isDark} icon={Building2} label="Cliente" value={cliente} />
               <Campo isDark={isDark} icon={Tag} label="Marca" value={c.marca} />
               <Campo isDark={isDark} icon={Tag} label="Tipo" value={c.subtipo ? (c.ref_id != null ? `${c.subtipo} #${c.ref_id}` : c.subtipo) : null} />
-              <Campo isDark={isDark} icon={Hash} label="CUIC" value={tarea.cuic} />
+              <Campo isDark={isDark} icon={Hash} label="ID Cliente" value={tarea.cuic} />
               <Campo isDark={isDark} icon={User} label="Asesor de la cuenta" value={tarea.asesor} />
               <Campo isDark={isDark} icon={Layers} label="Catorcena / Año" value={[c.catorcena ? `Cat ${c.catorcena}` : null, c.anio].filter(Boolean).join(' / ') || null} />
               <Campo isDark={isDark} icon={Tag} label="Estatus de la actividad" value={c.estatus_actividad} />
-              <Campo isDark={isDark} icon={Tag} label="Base" value={c.base} />
               <Campo isDark={isDark} icon={Hash} label="Campaña" value={tarea.campania_id ? `#${tarea.campania_id}` : null} />
               <Campo isDark={isDark} icon={Hash} label="Propuesta" value={tarea.id_propuesta ? `#${tarea.id_propuesta}` : null} />
             </div>

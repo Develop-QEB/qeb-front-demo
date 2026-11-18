@@ -1721,7 +1721,7 @@ export function CompartirPropuestaPage() {
             })()}
             {mostrarOrigen && hayAgregadasEnCampana(inventario) && (
               <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${isDark ? 'bg-amber-500/15 text-amber-300 border-amber-400/30' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-                Pase a ventas incompleto: se repuso inventario en campaña
+                Venta confirmada incompleta: se repuso inventario en campaña
               </span>
             )}
           </div>
@@ -1796,7 +1796,7 @@ export function CompartirPropuestaPage() {
         {/* Client Info */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
-            { label: 'CUIC', value: details?.solicitud?.cuic },
+            { label: 'ID Cliente', value: details?.solicitud?.cuic },
             { label: 'Cliente', value: details?.solicitud?.cliente },
             { label: 'Razón Social', value: details?.solicitud?.razon_social },
             { label: 'Marca', value: details?.solicitud?.marca_nombre },

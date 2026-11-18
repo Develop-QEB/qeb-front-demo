@@ -3,10 +3,7 @@ import api from '../lib/api';
 // Categorías hardcoded. Todas rutean a TI por default; TI reasigna a QEB
 // desde el dropdown de la fila cuando requiere apoyo del equipo QEB.
 export const TICKET_CATEGORIAS_TI = [
-  'Desposteo SAP',
-  'Posteo SAP',
   'Ajuste de Usuario',
-  'Autorización DG/DCM',
   'Asignación de circuitos/inventario',
   'Edición de propuesta o campaña',
   'Versionario / Reportes',

@@ -1013,17 +1013,6 @@ const CampanaRow = React.memo(function CampanaRow({
           <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-sm max-w-[180px] truncate`} title={item.T2_U_Marca || item.cliente_nombre || item.cliente_razon_social || '-'}>
             {item.T2_U_Marca || item.cliente_nombre || item.cliente_razon_social || '-'}
           </span>
-          {item.sap_database && (
-            <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${
-              item.sap_database === 'CIMU'
-                ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-50 text-blue-700') + ' border-blue-500/30'
-                : item.sap_database === 'TEST'
-                  ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-50 text-amber-700') + ' border-amber-500/30'
-                  : item.sap_database === 'UDC'
-                    ? (isDark ? 'bg-cyan-500/20 text-cyan-300' : 'bg-cyan-50 text-cyan-700') + ' border-cyan-500/30'
-                    : (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-50 text-emerald-700') + ' border-emerald-500/30'
-            }`}>{item.sap_database}</span>
-          )}
         </div>
       </td>
       {/* Status */}
@@ -1169,9 +1158,8 @@ export function CampanasPage() {
   );
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
-  // Filtros rápidos del versionario (estilo Órdenes de Montaje): APS y POST a SAP.
+  // Filtro rápido del versionario (estilo Órdenes de Montaje): APS.
   const [apsFilter, setApsFilter] = useState<'todas' | 'con' | 'sin'>('todas');
-  const [postFilter, setPostFilter] = useState<'todas' | 'con' | 'sin'>('todas');
 
   // Estados para filtros expandibles
   const [showFilters, setShowFilters] = useState(false);
@@ -1419,16 +1407,8 @@ export function CampanasPage() {
   // filters y sort. La búsqueda (search) ya la aplicó el backend sobre todos
   // los campos relevantes (incluye codigo_unico de inventarios via subquery),
   // así que NO se re-filtra cliente-side.
-  // Filtro por BD SAP — aplica a AMBAS vistas (tabla y versionario/catorcena).
-  const [sapDbFilter, setSapDbFilter] = useState<'todas' | 'CIMU' | 'TRADE' | 'TEST' | 'UDC'>('todas');
-
   const filteredData = useMemo(() => {
     let items = data?.data || [];
-
-    // Filter by BD SAP (CIMU/TRADE/UDC/TEST) — versionario y tabla lo respetan.
-    if (sapDbFilter !== 'todas') {
-      items = items.filter(c => (c.sap_database || '').toUpperCase() === sapDbFilter);
-    }
 
     // Filter by catorcena inicio
     if (selectedCatorcenaInicio && items.length > 0) {
@@ -1558,18 +1538,17 @@ export function CampanasPage() {
     }
 
     return items;
-  }, [data?.data, selectedCatorcenaInicio, statusIncompleta, sapDbFilter, advancedFilters, campanaInventarios, soloIncompletos, ordenRapido, needsAllData, cambiosSeleccion]);
+  }, [data?.data, selectedCatorcenaInicio, statusIncompleta, advancedFilters, campanaInventarios, soloIncompletos, ordenRapido, needsAllData, cambiosSeleccion]);
 
   // Recalculate stats from filteredData when client-side filters are active.
   // El search ya viaja al backend y stats lo recibe via queryKey, así que NO
   // forzamos recálculo cliente cuando solo hay búsqueda activa.
   const needsClientFilter = advancedFilters.length > 0 || selectedCatorcenaInicio || statusIncompleta || soloIncompletos;
 
-  // Inversión total + estado de posteo con filtros en CLIENTE: los conteos se
-  // recalculan de filteredData, pero la inversión y el posteo no se pueden
-  // sumar en cliente (el posteo es por circuito). Se piden al back con el
-  // universo exacto de ids que lista la página, con los mismos filtros de
-  // servidor, para que cuadren con la columna Inversión.
+  // Inversión total con filtros en CLIENTE: los conteos se recalculan de
+  // filteredData, pero la inversión no se puede sumar en cliente. Se pide al
+  // back con el universo exacto de ids que lista la página, con los mismos
+  // filtros de servidor, para que cuadre con la columna Inversión.
   const clientFilterIds = useMemo(
     () => (needsClientFilter && data?.data ? filteredData.map(c => c.id) : null),
     [needsClientFilter, data?.data, filteredData]
@@ -1612,14 +1591,13 @@ export function CampanasPage() {
         conAps,
         sinAps,
         montoTotal: idsStatsData?.montoTotal ?? 0,
-        posteo: idsStatsData?.posteo ?? { pendientes: { count: 0, monto: 0 }, posteadas: { count: 0, monto: 0 }, total: { count: 0, monto: 0 } },
       };
     }
     return statsData || null;
   }, [needsClientFilter, filteredData, data?.data, statsData, idsStatsData]);
-  const isLoadingInversionPosteo = needsClientFilter ? isLoadingIdsStats : isLoadingStats;
+  const isLoadingInversion = needsClientFilter ? isLoadingIdsStats : isLoadingStats;
 
-  // Etiqueta del periodo que cubren inversión y posteo (misma lógica de filtro
+  // Etiqueta del periodo que cubre la inversión (misma lógica de filtro
   // que el listado: catorcena(s) o año(s)). Sin filtro: todo el histórico.
   const inversionPeriodoLabel = useMemo(() => {
     if (yearInicio === undefined || yearFin === undefined) return null;
@@ -2173,24 +2151,17 @@ export function CampanasPage() {
   const displayedCampanasPorCatorcena = useMemo(() => {
     const etapaFilters = advancedFilters.filter(f => f.field === 'etapa' && f.value);
 
-    // ¿El backend está mandando has_post? Si NINGUNA campaña lo trae, el backend
-    // no está actualizado → ignoramos el filtro POST (no ocultamos todo).
-    const postSupported = campanasPorCatorcena.some(g => g.campanas.some(c => c.has_post !== undefined));
-    const effPostFilter = postSupported ? postFilter : 'todas';
-    const hasQuickFilter = apsFilter !== 'todas' || effPostFilter !== 'todas';
+    const hasQuickFilter = apsFilter !== 'todas';
 
     if (etapaFilters.length === 0 && !hasQuickFilter) return campanasPorCatorcena;
 
-    // Filtros rápidos APS / POST — a NIVEL CAMPAÑA (flags has_aps/has_post que ya
-    // trae la lista). No requieren cargar inventario, así el conteo "N campañas"
-    // coincide con lo que se muestra y es instantáneo.
+    // Filtro rápido APS — a NIVEL CAMPAÑA (flag has_aps que ya trae la lista).
+    // No requiere cargar inventario, así el conteo "N campañas" coincide con lo
+    // que se muestra y es instantáneo.
     const matchesQuick = (c: Campana): boolean => {
       const tieneAps = !!c.has_aps;
-      const tienePost = !!c.has_post;
       if (apsFilter === 'con' && !tieneAps) return false;
       if (apsFilter === 'sin' && tieneAps) return false;
-      if (effPostFilter === 'con' && !tienePost) return false;
-      if (effPostFilter === 'sin' && tienePost) return false;
       return true;
     };
 
@@ -2212,7 +2183,7 @@ export function CampanasPage() {
     return campanasPorCatorcena
       .map(g => {
         const filteredCampanas = g.campanas.filter(c => {
-          // Filtro rápido APS/POST a nivel campaña (barato, sin inventario).
+          // Filtro rápido APS a nivel campaña (barato, sin inventario).
           if (hasQuickFilter && !matchesQuick(c)) return false;
           // Filtro de etapa (requiere inventario cargado).
           if (etapaFilters.length > 0) {
@@ -2227,7 +2198,7 @@ export function CampanasPage() {
         return { ...g, campanas: filteredCampanas };
       })
       .filter(g => g.campanas.length > 0);
-  }, [campanasPorCatorcena, advancedFilters, campanaInventarios, itemMatchesCatorcena, apsFilter, postFilter]);
+  }, [campanasPorCatorcena, advancedFilters, campanaInventarios, itemMatchesCatorcena, apsFilter]);
 
   // Campañas únicas en los grupos de catorcena visibles
   const uniqueCampsInCatorcenaView = useMemo(() => {
@@ -2384,17 +2355,15 @@ export function CampanasPage() {
     };
 
     // Construir resultado: primero los con APS (ordenados desc), luego los sin APS
-    const resultado: { aps: number | null; totalItems: number; posted: boolean; grupos: { key: string; grupoId: number | null; articulo: string | null; items: InventarioConAPS[] }[] }[] = [];
+    const resultado: { aps: number | null; totalItems: number; grupos: { key: string; grupoId: number | null; articulo: string | null; items: InventarioConAPS[] }[] }[] = [];
 
-    // Agregar los que tienen APS (ordenados descendente). Un grupo APS se marca
-    // `posted` si su APS ya se posteó a SAP (todos sus items vienen con posted=true).
+    // Agregar los que tienen APS (ordenados descendente).
     Object.entries(conAPS)
       .sort((a, b) => Number(b[0]) - Number(a[0]))
       .forEach(([apsValue, items]) => {
         resultado.push({
           aps: Number(apsValue),
           totalItems: items.length,
-          posted: items.length > 0 && items.every(it => it.posted === true),
           grupos: agruparPorGrupo(items)
         });
       });
@@ -2404,7 +2373,6 @@ export function CampanasPage() {
       resultado.push({
         aps: null, // null indica "Sin APS"
         totalItems: sinAPS.length,
-        posted: false,
         grupos: agruparPorGrupo(sinAPS)
       });
     }
@@ -2413,7 +2381,7 @@ export function CampanasPage() {
   };
 
   const hasPeriodFilter = yearInicio !== undefined && yearFin !== undefined;
-  const hasActiveFilters = !!(statusSel.length > 0 || hasPeriodFilter || activeGroupings.length > 0 || searchTags.length > 0 || selectedCatorcenaInicio || advancedFilters.length > 0 || ordenRapido !== ordenDefaultVista || soloIncompletos || apsFilter !== 'todas' || postFilter !== 'todas' || sapDbFilter !== 'todas');
+  const hasActiveFilters = !!(statusSel.length > 0 || hasPeriodFilter || activeGroupings.length > 0 || searchTags.length > 0 || selectedCatorcenaInicio || advancedFilters.length > 0 || ordenRapido !== ordenDefaultVista || soloIncompletos || apsFilter !== 'todas');
 
   // Get unique values for each field (for advanced filter dropdowns).
   // Solo se calcula cuando el panel de filtros avanzados está abierto: evita
@@ -2477,15 +2445,15 @@ export function CampanasPage() {
   }, [data?.data]);
 
   // Foto de la barra de filtros que guarda una vista (menu "Vistas" junto al
-  // boton Filtros), incluidos los rapidos APS/POST/Base SAP y la catorcena
-  // del Versionario, y como volver a aplicarla. El orden y "solo incompletos"
+  // boton Filtros), incluidos el rapido APS y la catorcena del Versionario,
+  // y como volver a aplicarla. El orden y "solo incompletos"
   // van aparte en la vista. Lo que no venga en la foto se resetea. Ver
   // lib/filtrosGuardados.
   const filtrosSnapshot = useMemo<FiltrosDatos>(() => ({
     statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin,
     historialFilter, cambiosSeleccion, activeGroupings,
-    advancedFilters, searchTags, apsFilter, postFilter, sapDbFilter, selectedCatorcenaInicio,
-  }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, activeGroupings, advancedFilters, searchTags, apsFilter, postFilter, sapDbFilter, selectedCatorcenaInicio]);
+    advancedFilters, searchTags, apsFilter, selectedCatorcenaInicio,
+  }), [statusSel, tipoPeriodo, yearInicio, yearFin, catorcenaInicio, catorcenaFin, historialFilter, cambiosSeleccion, activeGroupings, advancedFilters, searchTags, apsFilter, selectedCatorcenaInicio]);
   const aplicarFiltrosGuardados = useCallback((d: FiltrosDatos) => {
     setStatusSel(leerStrings(d.statusSel));
     setTipoPeriodo(leerString(d.tipoPeriodo));
@@ -2500,8 +2468,6 @@ export function CampanasPage() {
     setAdvancedFilters(leerCondiciones<AdvancedFilterCondition>(d.advancedFilters));
     setSearchTags(leerStrings(d.searchTags));
     setApsFilter(leerEnum(d.apsFilter, ['todas', 'con', 'sin'] as const, 'todas'));
-    setPostFilter(leerEnum(d.postFilter, ['todas', 'con', 'sin'] as const, 'todas'));
-    setSapDbFilter(leerEnum(d.sapDbFilter, ['todas', 'CIMU', 'TRADE', 'TEST', 'UDC'] as const, 'todas'));
     setSelectedCatorcenaInicio(leerString(d.selectedCatorcenaInicio));
     setSearchInput('');
     setExpandedGroups(new Set());
@@ -2527,7 +2493,6 @@ export function CampanasPage() {
     setExpandedGroups(new Set());
     setAdvancedFilters([]);
     setApsFilter('todas');
-    setPostFilter('todas');
     setPage(1);
   };
 
@@ -2661,7 +2626,7 @@ export function CampanasPage() {
 
       const headers = [
         'Campaña', 'Anunciante', 'Inversión Campaña', 'Operación', 'Código de contrato (Opcional)',
-        'Precio por cara (Opcional)', 'APS Global', 'APS Específico', 'CUIC', 'Articulo', 'Vendedor',
+        'Precio por cara (Opcional)', 'APS Global', 'APS Específico', 'ID Cliente', 'Articulo', 'Vendedor',
         'Descripción (Opcional)', 'Inicio o Periodo', 'Fin o Segmento', 'Arte',
         'Código de arte (Opcional)', 'Arte Url (Opcional)', 'Origen del arte (Opcional)',
         'Unidad', 'Cara', 'Ciudad', 'Tipo de Distribución', 'Reproducciones', 'Notas'
@@ -3359,12 +3324,10 @@ export function CampanasPage() {
           </div>
         </div>
 
-        {/* Segunda fila: inversión total del universo listado + estado de POST a
-            SAP de sus circuitos (mismo bloque que el Dashboard). La inversión es
-            la misma suma que la columna Inversión, con o sin filtro. */}
+        {/* Segunda fila: inversión total del universo listado. Es la misma suma
+            que la columna Inversión, con o sin filtro. */}
         <PosteoStatsCard
-          data={effectiveStats?.posteo}
-          isLoading={isLoadingInversionPosteo}
+          isLoading={isLoadingInversion}
           periodoLabel={inversionPeriodoLabel}
           inversionTotal={effectiveStats?.montoTotal ?? 0}
           inversionSubLabel={`${(effectiveStats?.total ?? 0).toLocaleString()} campañas · ${hasActiveFilters ? 'Filtrado' : 'Todas'}`}
@@ -3517,9 +3480,9 @@ export function CampanasPage() {
             {/* Filters Row (Expandable) */}
             {showFilters && (
               <div className={`flex flex-wrap items-center gap-2 pt-3 border-t ${isDark ? 'border-zinc-800/50' : 'border-gray-200'} relative z-50`}>
-                {/* Filtros rápidos APS / POST a SAP (solo en Versionario) — botón + popover */}
+                {/* Filtro rápido APS (solo en Versionario) — botón + popover */}
                 {activeView === 'catorcena' && (() => {
-                  const quickActive = apsFilter !== 'todas' || postFilter !== 'todas';
+                  const quickActive = apsFilter !== 'todas';
                   return (
                     <div className="relative">
                       <button
@@ -3529,7 +3492,7 @@ export function CampanasPage() {
                             ? 'bg-purple-600 text-white'
                             : isDark ? 'bg-purple-900/50 hover:bg-purple-900/70 border border-purple-500/30 text-purple-300' : 'bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700'
                         }`}
-                        title="Filtros rápidos: APS / POST a SAP"
+                        title="Filtros rápidos: APS"
                       >
                         <Zap className="h-3.5 w-3.5" />
                         <span>Rápidos</span>
@@ -3562,27 +3525,9 @@ export function CampanasPage() {
                                 ))}
                               </div>
                             </div>
-                            <div>
-                              <label className={`text-xs font-medium ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-2 block`}>POST a SAP</label>
-                              <div className="flex gap-2">
-                                {(['todas', 'con', 'sin'] as const).map(opt => (
-                                  <button
-                                    key={opt}
-                                    onClick={() => setPostFilter(opt)}
-                                    className={`flex-1 px-2 py-2 rounded-lg text-xs font-medium transition-colors ${
-                                      postFilter === opt
-                                        ? 'bg-purple-600 text-white border border-purple-500'
-                                        : isDark ? 'bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700' : 'bg-gray-100 text-gray-600 border border-gray-200 hover:bg-gray-200'
-                                    }`}
-                                  >
-                                    {opt === 'todas' ? 'Todas' : opt === 'con' ? 'Con POST' : 'Sin POST'}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
                             {quickActive && (
                               <button
-                                onClick={() => { setApsFilter('todas'); setPostFilter('todas'); }}
+                                onClick={() => setApsFilter('todas')}
                                 className={`w-full px-3 py-2 rounded-lg text-xs font-medium ${isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700 border border-zinc-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-200'} transition-colors`}
                               >
                                 Limpiar filtros rápidos
@@ -3872,23 +3817,6 @@ export function CampanasPage() {
             fija={vistaFija}
             onFijar={fijarVista}
           />
-
-          {/* Filtro por BD SAP — aplica a Vista Tabla y Versionario. UDC solo para roles de Aeropuerto. */}
-          <select
-            value={sapDbFilter}
-            onChange={(e) => setSapDbFilter(e.target.value as typeof sapDbFilter)}
-            title="Filtrar por Base SAP"
-            className={`px-3 py-2.5 rounded-xl text-sm font-medium transition-all border cursor-pointer ${
-              sapDbFilter !== 'todas'
-                ? isDark ? 'bg-purple-500/20 text-purple-300 border-purple-500/40' : 'bg-purple-100 text-purple-700 border-purple-200'
-                : isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-700'
-            }`}
-          >
-            <option value="todas">Todas las BD</option>
-            <option value="CIMU">CIMU</option>
-            <option value="TRADE">TRADE</option>
-            {permissions.canVerUDC && <option value="UDC">UDC</option>}
-          </select>
         </div>
 
         {/* Info Badge */}
@@ -4219,8 +4147,8 @@ export function CampanasPage() {
                       inventarios = matchingInv;
                       if (inventarios.length === 0) return null;
                     }
-                    // Los filtros rápidos APS / POST se aplican a nivel campaña en
-                    // `displayedCampanasPorCatorcena` (flags has_aps/has_post), no aquí.
+                    // El filtro rápido APS se aplica a nivel campaña en
+                    // `displayedCampanasPorCatorcena` (flag has_aps), no aquí.
                     const isLoadingInv = loadingInventarios.has(campana.id);
                     const apsAgrupados = getInventarioAgrupadoPorAPS(inventarios);
                     const hasInventarios = allInventarios.length > 0;
@@ -4372,11 +4300,6 @@ export function CampanasPage() {
                                         <Package className={`h-3 w-3 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} />
                                         <span className={`text-xs ${isDark ? 'text-white' : 'text-gray-900'} font-medium`}>{apsGroup.aps ? `APS ${apsGroup.aps}` : 'Sin APS'}</span>
                                         <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{apsGroup.totalItems} ubicaciones</span>
-                                        {apsGroup.posted && (
-                                          <span className={`px-2 py-0.5 rounded-full text-[10px] ${isDark ? 'bg-sky-500/20 text-sky-300 border-sky-500/30' : 'bg-sky-50 text-sky-700 border-sky-500/30'} border flex items-center gap-1`}>
-                                            <Check className="h-3 w-3" /> Posteado
-                                          </span>
-                                        )}
                                       </button>
                                       {isAPSExpanded && (
                                         <div className={`px-3 py-2 space-y-1 ${isDark ? 'bg-zinc-900/50' : 'bg-white'}`}>

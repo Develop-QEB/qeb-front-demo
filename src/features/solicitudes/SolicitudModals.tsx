@@ -1018,7 +1018,7 @@ export function ViewSolicitudModal({ isOpen, onClose, solicitudId, onEdit, onAte
                   </h3>
                   <div className="space-y-3">
                     <div className="flex justify-between">
-                      <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>CUIC</span>
+                      <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>ID Cliente</span>
                       <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{data.solicitud.cuic || '-'}</span>
                     </div>
                     <div className="flex justify-between">

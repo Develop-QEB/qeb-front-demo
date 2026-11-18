@@ -59,6 +59,9 @@ export const getStatusColor = (status: string, isDark: boolean): StatusColor => 
 
 export const STATUS_OPTIONS = ['Atendido', 'Abierto', 'Ajuste Cto-Cliente', 'Ajuste Inventario', 'Ajuste Comercial', 'Pase a ventas', 'Liberada', 'Rechazada'];
 
+// Etiquetas visibles de estatus (el valor guardado no cambia). Ver lib/estatusLabels.ts.
+export { ESTATUS_PROPUESTA_LABEL, etiquetaEstatusPropuesta, etiquetarEstatusEnTexto } from '../../lib/estatusLabels';
+
 // Roles para los que una propuesta en 'Abierto' esta bloqueada (todavia no la
 // trabaja inventarios, asi que comercial no tiene nada que hacerle).
 export const ROLES_LOCKED_BY_ABIERTO = ['Asesor Comercial', 'Director Comercial Aeropuerto', 'Asesor Comercial Aeropuerto'];

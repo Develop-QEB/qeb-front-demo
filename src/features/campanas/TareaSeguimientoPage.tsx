@@ -7354,7 +7354,7 @@ function TaskDetailModal({
                       <p className="text-white font-medium">{campana.nombre || '-'}</p>
                     </div>
                     <div>
-                      <span className="text-zinc-500">CUIC:</span>
+                      <span className="text-zinc-500">ID Cliente:</span>
                       <p className="text-white font-medium">{campana.cuic || '-'}</p>
                     </div>
                     <div>

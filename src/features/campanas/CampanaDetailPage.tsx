@@ -1,29 +1,28 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
-import { ArrowLeft, MessageSquare, Send, X, FileSpreadsheet, ListTodo, Layers, ChevronDown, ChevronRight, Check, Minus, Filter, Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown, Download, Upload, Loader2, CheckCircle, AlertCircle, AlertTriangle, Package, MapPinOff, RefreshCw, MessageSquareOff, ServerCrash, WifiOff, History, Edit2, XCircle, ShieldAlert } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Send, X, FileSpreadsheet, ListTodo, Layers, ChevronDown, ChevronRight, Check, Minus, Filter, Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown, Download, Loader2, AlertTriangle, Package, MapPinOff, RefreshCw, MessageSquareOff, ServerCrash, WifiOff, History, Edit2, ShieldAlert } from 'lucide-react';
 import { AssignInventarioCampanaModal } from './AssignInventarioCampanaModal';
 import { RefreshButton } from '../../components/RefreshButton';
 import { GoogleMap, useLoadScript, Marker } from '@react-google-maps/api';
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
 import { Header } from '../../components/layout/Header';
-import { campanasService, InventarioReservado, InventarioConAPS, SolicitudCara, buildDeliveryNote, postDeliveryNoteToSAP, patchDeliveryNoteToSAP, findExistingDeliveryNote, resolveBaseEntry, isMigratedCampaign, HistorialItem, SAPDeliveryNoteMigrated, PostLogItem } from '../../services/campanas.service';
+import { campanasService, InventarioReservado, InventarioConAPS, SolicitudCara, HistorialItem } from '../../services/campanas.service';
 import { solicitudesService } from '../../services/solicitudes.service';
 import { Catorcena } from '../../types';
 import { Badge } from '../../components/ui/badge';
 import { UserAvatar } from '../../components/ui/user-avatar';
 import { formatDate } from '../../lib/utils';
 import { formatHistorialDetalles, limpiarMotivo } from '../../lib/historial';
+import { etiquetarEstatusEnTexto } from '../../lib/estatusLabels';
 import { HistorialFiltrado } from '../historial/HistorialFiltrado';
 import { useAuthStore } from '../../store/authStore';
 import { useThemeStore } from '../../store/themeStore';
 import { getPermissions } from '../../lib/permissions';
 import { useSocketCampana } from '../../hooks/useSocket';
 import { NotasDireccionBitacora } from '../notificaciones/NotasDireccionBitacora';
-import { DesposteoModal } from '../desposteo/DesposteoModal';
-import { puedeSolicitarDesposteo, puedeBypassearDesposteo, esRolTIDesposteo, desposteoService, EstadoAps } from '../../services/desposteo.service';
 import { udcFichaDe, contratoDeArticulo } from '../../lib/udc';
-import { esArticuloGranFormato, horarioLabel } from '../../lib/periodos';
+import { horarioLabel } from '../../lib/periodos';
 import { esInventarioBloqueado } from '../../lib/bloqueoInventario';
 
 // Mini-preview (cuadrito cyan con el aspect-ratio real de la pantalla) para las
@@ -572,46 +571,6 @@ function fmtMoney(n: number): string {
   return `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// Badge para el estado de solicitud desposteo por APS. Se muestra a todos los
-// roles en el listado con APS — la accion (Cancelar POST) sigue reservada a TI.
-function DesposteoBadge({ estado }: { estado: EstadoAps | undefined }) {
-  if (!estado) return null;
-  // aprobado = listo para TI = mas prominente
-  const cfg: Record<EstadoAps['estatus'], { label: string; cls: string; title: string }> = {
-    solicitado: {
-      label: 'DESPOSTEO SOLICITADO',
-      cls: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-      title: 'Solicitud de desposteo enviada al gerente comercial',
-    },
-    filtro_aprobado: {
-      label: 'DESPOSTEO EN FACTURACION',
-      cls: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
-      title: 'Gerente comercial dio check, esperando aprobacion de Facturacion',
-    },
-    aprobado: {
-      label: 'LISTO PARA DESPOSTEAR',
-      cls: 'bg-emerald-500/25 text-emerald-200 border-emerald-500/40 animate-pulse',
-      title: 'Facturacion aprobo. TI puede cancelar el POST.',
-    },
-    ejecutado: {
-      label: 'DESPOSTEADO',
-      cls: 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30',
-      title: 'El POST ya se cancelo tras autorizacion.',
-    },
-    rechazado: {
-      label: 'DESPOSTEO RECHAZADO',
-      cls: 'bg-red-500/20 text-red-300 border-red-500/30',
-      title: 'La solicitud fue rechazada.',
-    },
-  };
-  const c = cfg[estado.estatus];
-  return (
-    <span title={c.title} className={`text-[9px] font-semibold px-1 py-0.5 rounded border shrink-0 cursor-help ${c.cls}`}>
-      {c.label}
-    </span>
-  );
-}
-
 function GroupSummaryInline({ items, groupField, isDark: isDarkProp }: { items: InventarioReservado[]; groupField: string; isDark?: boolean }) {
   const isDark = isDarkProp ?? (useThemeStore((s) => s.theme) === 'dark');
   if (groupField === 'aps') return null;
@@ -1097,41 +1056,6 @@ export function CampanaDetailPage() {
   const [sortDirectionAPS, setSortDirectionAPS] = useState<'asc' | 'desc'>('asc');
   const [showSortAPS, setShowSortAPS] = useState(false);
 
-  // Estado para POST a SAP
-  const [showPostSAPModal, setShowPostSAPModal] = useState(false);
-  const [postingToSAP, setPostingToSAP] = useState(false);
-  const [postSAPResult, setPostSAPResult] = useState<{
-    success: boolean;
-    message: string;
-    data?: unknown;
-    detail?: {
-      endpoint?: string;
-      status?: number;
-      errorType?: 'network' | 'cors' | 'parse' | 'sap-rejected' | 'http-error' | 'timeout';
-      rawResponse?: string;
-      partialSuccess?: boolean;
-      successCount?: number;
-      failedCount?: number;
-    };
-  } | null>(null);
-  const [showCancelPostSAPModal, setShowCancelPostSAPModal] = useState(false);
-  const [cancellingPostSAP, setCancellingPostSAP] = useState(false);
-  const [cancelPostSAPResult, setCancelPostSAPResult] = useState<{ success: boolean; message: string } | null>(null);
-  // Desposteo Fase 2: comercial abre DesposteoModal en modo 'solicitar' con
-  // el APS elegido. Solo se muestra el boton cuando hay APS posteados.
-  const [showSolicitarDesposteoModal, setShowSolicitarDesposteoModal] = useState(false);
-  const [desposteoAPSSelected, setDesposteoAPSSelected] = useState<number | null>(null);
-  const [alreadyPosted, setAlreadyPosted] = useState(false);
-  const [previewDeliveryNote, setPreviewDeliveryNote] = useState<any>(null);
-  const [postedAPSGroups, setPostedAPSGroups] = useState<Set<number>>(new Set());
-  // Modal "Historial de posteos" — bitácora de a quién se mandó cada APS.
-  const [showPostLogModal, setShowPostLogModal] = useState(false);
-  // Modal de detalle de UN post (al picar el badge "POST" de un APS): muestra a
-  // dónde se mandó ese post (BD SAP, CUIC, razón social, DocNum, fecha, usuario).
-  const [postDetailAPS, setPostDetailAPS] = useState<number | null>(null);
-  // APS etiquetados Pre Factura — bloquea POST a SAP y muestra badge dorado.
-  const [prefacturaAPSGroups, setPrefacturaAPSGroups] = useState<Set<number>>(new Set());
-
   const { isLoaded } = useLoadScript(GOOGLE_MAPS_LOADER_OPTIONS);
 
   const mapRefAPS = useRef<google.maps.Map | null>(null);
@@ -1197,45 +1121,9 @@ export function CampanaDetailPage() {
   // oculta el mapa y la lista ocupa todo el ancho (con la ficha de la pantalla).
   const esUDC = (campana?.sap_database || '').toUpperCase() === 'UDC';
 
-  // Inicializar alreadyPosted, postedAPSGroups y prefacturaAPSGroups desde la DB
-  useEffect(() => {
-    if (campana?.posted_to_sap) setAlreadyPosted(true);
-    if (campana?.posted_aps) setPostedAPSGroups(new Set(campana.posted_aps));
-    if (campana?.prefactura_aps) setPrefacturaAPSGroups(new Set(campana.prefactura_aps));
-  }, [campana?.posted_to_sap, campana?.posted_aps, campana?.prefactura_aps]);
-
   const { data: inventarioReservado = [], isLoading: isLoadingInventario, error: errorInventario, refetch: refetchInventario } = useQuery({
     queryKey: ['campana-inventario', campanaId],
     queryFn: () => campanasService.getInventarioReservado(campanaId),
-    staleTime: 1000 * 30,
-    placeholderData: (prev) => prev,
-  });
-
-  // Bitácora de POSTs a SAP: a quién se mandó cada APS (snapshot histórico).
-  const { data: postLog = [], refetch: refetchPostLog } = useQuery({
-    queryKey: ['campana-post-log', campanaId],
-    queryFn: () => campanasService.getPostLog(campanaId),
-    staleTime: 1000 * 30,
-    placeholderData: (prev) => prev,
-  });
-
-  // Último POST exitoso por APS — para el badge/tooltip de la lista.
-  const postLogByAPS = useMemo(() => {
-    const map = new Map<number, PostLogItem>();
-    // postLog viene ordenado por posted_at DESC, así que el primero de cada APS
-    // es el más reciente. Se prefiere el último EXITOSO para el badge.
-    for (const p of postLog) {
-      if (!p.success) continue;
-      if (!map.has(p.aps)) map.set(p.aps, p);
-    }
-    return map;
-  }, [postLog]);
-
-  // Estados de desposteo por APS — para pintar badges "en curso" / "listo TI"
-  // en el listado con APS. Se muestra a todos los roles; solo TI puede accionar.
-  const { data: estadosDesposteoAps = {} } = useQuery({
-    queryKey: ['desposteo-estados-aps', campanaId],
-    queryFn: () => desposteoService.estadosAps(campanaId),
     staleTime: 1000 * 30,
     placeholderData: (prev) => prev,
   });
@@ -1704,7 +1592,7 @@ export function CampanaDetailPage() {
     const fields: (keyof InventarioConAPS)[] = ['codigo_unico', 'solicitud_caras_id', 'mueble', 'estado', 'tipo_de_cara', 'caras_totales'];
 
     // Si hay filas seleccionadas en los checkboxes, exportar SOLO esas (mismo
-    // patrón que POST a SAP / Quitar APS). Si no hay selección, exportar todo lo
+    // patrón que Quitar APS). Si no hay selección, exportar todo lo
     // visible según los filtros activos (periodo/APS/etc.).
     const rowsToExport = selectedItemsAPS.size > 0
       ? filteredInventarioAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids)))
@@ -1735,267 +1623,6 @@ export function CampanaDetailPage() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }, [filteredInventarioAPS, selectedItemsAPS, campana?.nombre]);
-
-  // Handler para POST a SAP
-  const handlePostToSAP = useCallback(async () => {
-    if (!campana || inventarioConAPS.length === 0) {
-      setPostSAPResult({
-        success: false,
-        message: 'No hay datos para enviar a SAP',
-      });
-      return;
-    }
-
-    setPostingToSAP(true);
-    setPostSAPResult(null);
-
-    try {
-      // Usar solo items seleccionados, o todos si no hay selección
-      const itemsToPost = selectedItemsAPS.size > 0
-        ? inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids)))
-        : inventarioConAPS;
-
-      // Fetch artículos SAP para obtener U_IMU_OcrCode (CostingCode) - usar BD de la campaña
-      let articulosMap: Record<string, { U_IMU_OcrCode?: string; U_IMU_cod_sitio?: number; U_IMU_dscSitio?: string }> = {};
-      const { getEndpoints } = await import('../../store/environmentStore');
-      const sapDb = (campana.sap_database || 'CIMU') as import('../../store/environmentStore').SapDatabase;
-      try {
-        const artResponse = await fetch(getEndpoints(sapDb).articulos);
-        const artData = await artResponse.json();
-        const items = artData.value || artData || [];
-        items.forEach((a: { ItemCode: string; U_IMU_OcrCode?: string; U_IMU_cod_sitio?: number; U_IMU_dscSitio?: string }) => {
-          if (a.ItemCode) articulosMap[a.ItemCode] = { U_IMU_OcrCode: a.U_IMU_OcrCode, U_IMU_cod_sitio: a.U_IMU_cod_sitio, U_IMU_dscSitio: a.U_IMU_dscSitio };
-        });
-      } catch (err) {
-        console.warn('Could not fetch articulos for CostingCode:', err);
-      }
-
-      // UDC: el delivery note puede incluir caras de GRAN FORMATO (artículos de
-      // CIMU) que /articulos-udc NO trae → su metadata (CostingCode/Sitio/dscSitio)
-      // saldría en default. Traemos también el catálogo CIMU y mezclamos SOLO los
-      // de gran formato (sin pisar los de UDC). El posteo sigue yendo a UDC.
-      if (sapDb === 'UDC') {
-        try {
-          const rc = await fetch(getEndpoints('CIMU').articulos);
-          const dc = await rc.json();
-          const cimu = (dc.value || dc || []) as { ItemCode: string; ItemName?: string; U_IMU_OcrCode?: string; U_IMU_cod_sitio?: number; U_IMU_dscSitio?: string }[];
-          cimu.forEach(a => {
-            if (a.ItemCode && !articulosMap[a.ItemCode] && esArticuloGranFormato(a.ItemName || '', a.ItemCode)) {
-              articulosMap[a.ItemCode] = { U_IMU_OcrCode: a.U_IMU_OcrCode, U_IMU_cod_sitio: a.U_IMU_cod_sitio, U_IMU_dscSitio: a.U_IMU_dscSitio };
-            }
-          });
-        } catch (err) {
-          console.warn('Could not fetch CIMU articulos for UDC gran formato CostingCode:', err);
-        }
-      }
-
-      // Resolver card_code desde SAP si la campaña no lo tiene
-      let resolvedCampana = campana;
-      if (!campana.card_code && campana.cuic) {
-        try {
-          const cuicResponse = await fetch(getEndpoints(sapDb).cuic);
-          const cuicData = await cuicResponse.json();
-          const cuicList: { CUIC?: number; ACA_U_SAPCode?: string }[] = cuicData.value || cuicData || [];
-          const match = cuicList.find(c => String(c.CUIC) === String(campana.cuic));
-          if (match?.ACA_U_SAPCode) {
-            resolvedCampana = { ...campana, card_code: match.ACA_U_SAPCode };
-            console.log(`Resolved card_code from SAP CUIC ${campana.cuic}: ${match.ACA_U_SAPCode}`);
-          }
-        } catch (err) {
-          console.warn('Could not resolve card_code from SAP CUIC:', err);
-        }
-      }
-
-      // Construir los payloads (uno por APS)
-      let deliveryNotes = buildDeliveryNote(resolvedCampana, itemsToPost, campana.sap_database, articulosMap);
-
-      // Si es migrada, resolver BaseEntry desde SAP para cada delivery note
-      if (isMigratedCampaign(campana)) {
-        const db = campana.sap_database || 'TRADE';
-        console.log('Resolving BaseEntry from SAP... DB:', db, 'DocNum:', campana.id);
-        const resolved = [];
-        for (const dn of deliveryNotes) {
-          const r = await resolveBaseEntry(dn as SAPDeliveryNoteMigrated, campana.id?.toString() || '', db);
-          resolved.push(r);
-        }
-        deliveryNotes = resolved;
-      }
-
-      // POST cada delivery note a SAP (sin lookup previo — el GET por NumAtCard
-      // a SAP tardaba ~90s porque NumAtCard no está indexado, y el lookup
-      // saturaba SAP con 502s a otras requests). La idempotencia se manejará
-      // a futuro guardando DocEntry en la BD QEB tras el POST exitoso.
-      const results: import('../../services/campanas.service').SAPPostResponse[] = [];
-      for (let i = 0; i < deliveryNotes.length; i++) {
-        const dn = deliveryNotes[i];
-        console.log(`========== DELIVERY NOTE ${i + 1}/${deliveryNotes.length} (APS: ${dn.U_IMU_CotNum}) ==========`);
-        console.log('SAP Database:', campana.sap_database);
-        console.log(JSON.stringify(dn, null, 2));
-        console.log('==========================================');
-
-        const result = await postDeliveryNoteToSAP(dn, campana.sap_database);
-        results.push(result);
-      }
-
-      // Bitácora: guardar a QUIÉN se mandó cada APS con el snapshot del cliente
-      // que tenía la campaña en este momento. Si luego le cambian el cliente
-      // (ej. SABA -> Chevrolet para las siguientes catorcenas), este registro
-      // conserva el destino real de lo ya posteado. Se guardan también los
-      // intentos fallidos, para poder rastrear qué pasó.
-      try {
-        const logEntries = deliveryNotes.map((dn, idx) => {
-          const r = results[idx];
-          const apsNum = Number(dn.U_IMU_CotNum);
-          // Circuitos (solicitudCaras) que abarcó este APS
-          const carasIds = Array.from(new Set(
-            itemsToPost
-              .filter(i => String(i.aps) === String(dn.U_IMU_CotNum))
-              .map(i => i.solicitud_caras_id)
-              .filter((v): v is number => v != null)
-          ));
-          return {
-            aps: apsNum,
-            card_code: resolvedCampana.card_code ?? null,
-            cuic: resolvedCampana.cuic ?? null,
-            razon_social: resolvedCampana.T0_U_RazonSocial ?? resolvedCampana.cliente_razon_social ?? null,
-            marca: resolvedCampana.T2_U_Marca ?? null,
-            cliente_nombre: resolvedCampana.T0_U_Cliente ?? resolvedCampana.cliente_nombre ?? null,
-            sap_database: campana.sap_database ?? null,
-            salesperson_code: (dn as { SalesPersonCode?: number | string }).SalesPersonCode ?? null,
-            solicitud_caras_ids: carasIds,
-            success: !!r?.success,
-            doc_entry: (r?.data?.DocEntry as number | undefined) ?? (r?.data?.BaseEntry as number | undefined) ?? null,
-            doc_num: (r?.data?.DocNum as number | undefined) ?? null,
-            error_msg: r?.success ? null : (r?.error ?? null),
-            payload_json: JSON.stringify(dn),
-          };
-        }).filter(e => Number.isFinite(e.aps));
-
-        if (logEntries.length > 0) {
-          await campanasService.registrarPostLog(campana.id, logEntries);
-          refetchPostLog();
-        }
-      } catch (e) {
-        // No romper el flujo del POST por un fallo de bitácora.
-        console.error('Error registrando bitácora de POST:', e);
-      }
-
-      const allSuccess = results.every(r => r.success);
-      const failedCount = results.filter(r => !r.success).length;
-      const successCount = deliveryNotes.length - failedCount;
-      const firstError = results.find(r => !r.success);
-
-      if (allSuccess) {
-        setPostSAPResult({
-          success: true,
-          message: `${deliveryNotes.length} Delivery Note${deliveryNotes.length > 1 ? 's' : ''} creado${deliveryNotes.length > 1 ? 's' : ''} exitosamente en SAP`,
-          data: results[results.length - 1].data,
-        });
-        // Guardar en DB los APS posteados y actualizar estado
-        const apsPosteados = Array.from(new Set(itemsToPost.map(i => i.aps)));
-        try {
-          const updatedAPS = await campanasService.markPostedAPS(campana.id, apsPosteados);
-          setPostedAPSGroups(new Set(updatedAPS));
-        } catch (e) { console.error('Error marcando posted_aps:', e); }
-      } else {
-        // Si hubo al menos un éxito, marcar esos APS como posted (los que el
-        // result devolvió DocNum o success=true) — evita perder estado y
-        // reduce duplicados al reintentar.
-        const partialSuccess = successCount > 0;
-        if (partialSuccess) {
-          const successfulAPS = results
-            .map((r, idx) => r.success ? deliveryNotes[idx]?.U_IMU_CotNum : null)
-            .filter(Boolean);
-          const apsNums = Array.from(new Set(itemsToPost.map(i => i.aps).filter(a => successfulAPS.includes(String(a)))));
-          if (apsNums.length > 0) {
-            try {
-              const updatedAPS = await campanasService.markPostedAPS(campana.id, apsNums);
-              setPostedAPSGroups(new Set(updatedAPS));
-            } catch (e) { console.error('Error marcando posted_aps parciales:', e); }
-          }
-        }
-        setPostSAPResult({
-          success: false,
-          message: failedCount === deliveryNotes.length
-            ? (firstError?.error || 'Error al crear Delivery Notes en SAP')
-            : `${successCount} exitosos, ${failedCount} fallidos`,
-          detail: {
-            endpoint: firstError?.endpoint,
-            status: firstError?.status,
-            errorType: firstError?.errorType,
-            rawResponse: firstError?.rawResponse,
-            partialSuccess,
-            successCount,
-            failedCount,
-          },
-        });
-      }
-    } catch (error) {
-      console.error('Error en handlePostToSAP:', error);
-      setPostSAPResult({
-        success: false,
-        message: error instanceof Error ? error.message : 'Error inesperado al conectar con SAP',
-        detail: { errorType: 'network' },
-      });
-    } finally {
-      setPostingToSAP(false);
-    }
-  }, [campana, inventarioConAPS, selectedItemsAPS]);
-
-  // Handler para cancelar POST a SAP / Pre Factura. Si entre los APS
-  // seleccionados hay alguno etiquetado Pre Factura, se llama también a
-  // cancelPrefactura — que además regresa las reservas a Sin APS (decisión
-  // del producto: para liberar Pre Factura, reasignar APS desde cero).
-  const handleCancelPostSAP = useCallback(async () => {
-    if (!campana) return;
-    setCancellingPostSAP(true);
-    setCancelPostSAPResult(null);
-    try {
-      const selectedAPS = selectedItemsAPS.size > 0
-        ? inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids))).map(i => i.aps)
-        : null;
-
-      // Particionar selección entre POSTed (cancelar etiqueta SAP, deja APS) y
-      // Pre Factura (cancelar etiqueta + regresar reservas a Sin APS).
-      const apsPostedSel = selectedAPS
-        ? Array.from(new Set(selectedAPS.filter(a => postedAPSGroups.has(a))))
-        : null;
-      const apsPrefacturaSel = selectedAPS
-        ? Array.from(new Set(selectedAPS.filter(a => prefacturaAPSGroups.has(a))))
-        : null;
-
-      // Si no hay selección, mantener el comportamiento anterior: limpiar
-      // todo posted_aps. No tocamos Pre Factura globalmente para no
-      // sorprender — eso requiere selección explícita.
-      const ranPosted = apsPostedSel ? apsPostedSel.length > 0 : true;
-      const ranPrefactura = apsPrefacturaSel && apsPrefacturaSel.length > 0;
-
-      if (ranPosted) {
-        const updatedAPS = await campanasService.unmarkPostedAPS(campana.id, apsPostedSel || undefined);
-        setPostedAPSGroups(new Set(updatedAPS));
-        if (updatedAPS.length === 0) setAlreadyPosted(false);
-      }
-      if (ranPrefactura) {
-        const updatedPF = await campanasService.cancelPrefactura(campana.id, apsPrefacturaSel!);
-        setPrefacturaAPSGroups(new Set(updatedPF));
-        // Las reservas quedan en Sin APS — refrescamos ambas vistas.
-        queryClient.invalidateQueries({ queryKey: ['campana-inventario', campanaId] });
-        queryClient.invalidateQueries({ queryKey: ['campana-inventario-aps', campanaId] });
-        queryClient.invalidateQueries({ queryKey: ['campana', campanaId] });
-      }
-
-      const msg = ranPosted && ranPrefactura
-        ? 'POST y Pre Factura cancelados correctamente'
-        : ranPrefactura
-          ? 'Pre Factura cancelada — las reservas regresaron a Sin APS'
-          : 'POST cancelado correctamente';
-      setCancelPostSAPResult({ success: true, message: msg });
-    } catch (error) {
-      setCancelPostSAPResult({ success: false, message: error instanceof Error ? error.message : 'Error al cancelar POST' });
-    } finally {
-      setCancellingPostSAP(false);
-    }
-  }, [campana, campanaId, inventarioConAPS, selectedItemsAPS, postedAPSGroups, prefacturaAPSGroups, queryClient]);
 
   // Agrupar datos del inventario
   const groupedInventario = useMemo(() => {
@@ -2354,25 +1981,6 @@ export function CampanaDetailPage() {
     },
   });
 
-  // Mismo flujo que assignAPSMutation pero el back lo marca como Pre Factura
-  // (queda en campania.prefactura_aps → bloquea POST a SAP en la vista Con APS).
-  const assignAPSPrefacturaMutation = useMutation({
-    mutationFn: (params: { inventarioIds: number[]; solicitudCarasIds: number[]; rsvIds: number[] }) =>
-      campanasService.assignAPSPrefactura(campanaId, params.inventarioIds, params.solicitudCarasIds, params.rsvIds),
-    onSuccess: (data) => {
-      setSelectedItems(new Set());
-      setPrefacturaAPSGroups(prev => new Set([...prev, data.aps]));
-      queryClient.invalidateQueries({ queryKey: ['campana-inventario', campanaId] });
-      queryClient.invalidateQueries({ queryKey: ['campana-inventario-aps', campanaId] });
-      queryClient.invalidateQueries({ queryKey: ['campana', campanaId] });
-      queryClient.invalidateQueries({ queryKey: ['campanas'] });
-      alert(`APS Pre Factura #${data.aps} asignado correctamente`);
-    },
-    onError: (error: Error) => {
-      alert(`Error al asignar APS Pre Factura: ${error.message}`);
-    },
-  });
-
   // Reúne los IDs (inventarioIds + solicitudCarasIds + rsvIds) desde la
   // selección actual y valida que ningún grupo esté incompleto/excedido.
   // Devuelve null si hay error (ya alertó al usuario).
@@ -2428,16 +2036,6 @@ export function CampanaDetailPage() {
     }
     const payload = buildAPSPayloadFromSelection();
     if (payload) assignAPSMutation.mutate(payload);
-  };
-
-  const handleAssignAPSPrefactura = () => {
-    if (selectedItems.size === 0) {
-      alert('Selecciona al menos un elemento para asignar APS Pre Factura');
-      return;
-    }
-    if (!confirm('Se asignará un APS etiquetado como Pre Factura.\n\nEste APS NO se podrá enviar a SAP (POST deshabilitado). Para liberarlo después se usa el botón Cancelar POST, que devolverá las reservas a Sin APS para reasignarles un APS real.\n\n¿Continuar?')) return;
-    const payload = buildAPSPayloadFromSelection();
-    if (payload) assignAPSPrefacturaMutation.mutate(payload);
   };
 
   // Cortesías (CT): ir directo al gestor de artes sin APS
@@ -2607,8 +2205,6 @@ export function CampanaDetailPage() {
       ? 'Quitando APS...'
       : assignAPSMutation.isPending
       ? 'Asignando APS...'
-      : postingToSAP
-      ? 'Enviando a SAP...'
       : addCommentMutation.isPending
       ? 'Guardando comentario...'
       : enviandoCodigo
@@ -2655,8 +2251,8 @@ export function CampanaDetailPage() {
             <span className="text-sm sm:text-base">Volver</span>
           </button>
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Actualizar: refetch de campaña, inventario, APS, caras, historial y
-                posteos sin recargar la página. */}
+            {/* Actualizar: refetch de campaña, inventario, APS, caras e historial
+                sin recargar la página. */}
             <RefreshButton
               isDark={isDark}
               variant="compact"
@@ -2666,8 +2262,6 @@ export function CampanaDetailPage() {
                 ['campana-inventario-aps', campanaId],
                 ['campana-caras', campanaId],
                 ['campana-historial', campanaId],
-                ['campana-post-log', campanaId],
-                ['desposteo-estados-aps', campanaId],
               ]}
             />
             {permissions.canEditCampanas && (() => {
@@ -2795,20 +2389,8 @@ export function CampanaDetailPage() {
             <h3 className={`text-xs md:text-sm font-semibold mb-2 md:mb-3 ${isDark ? 'text-purple-300' : 'text-purple-700'} uppercase tracking-wide`}>Cliente</h3>
             <div className="space-y-0">
               <InfoItem label="Cliente" value={campana.T0_U_Cliente} type="user" />
-              {campana.sap_database && (
-                <div className="flex items-center gap-2 px-3 py-1.5">
-                  <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>SAP BD:</span>
-                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
-                    campana.sap_database === 'CIMU' ? (isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200') :
-                    campana.sap_database === 'TEST' ? (isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200') :
-                    campana.sap_database === 'TRADE' ? (isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200') :
-                    campana.sap_database === 'UDC' ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200') :
-                    (isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-100 text-gray-700 border-gray-200')
-                  }`}>{campana.sap_database}</span>
-                </div>
-              )}
               <InfoItem label="Razon Social" value={campana.T0_U_RazonSocial} type="default" />
-              <InfoItem label="CUIC" value={campana.cuic} type="id" />
+              <InfoItem label="ID Cliente" value={campana.cuic} type="id" />
               <InfoItem label="Agencia" value={campana.T0_U_Agencia} type="category" />
               <InfoItem label="Asesor" value={campana.T0_U_Asesor} type="user" />
               <InfoItem label="Marca" value={campana.T2_U_Marca} type="category" />
@@ -2909,7 +2491,7 @@ export function CampanaDetailPage() {
                               {(parsedDetalles.cambios as { articulo: string; label: string; antes: string; despues: string }[]).map((c: { articulo: string; label: string; antes: string; despues: string }, i: number) => (
                                 <p key={i} className={`text-[11px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                                   <span className={isDark ? 'text-zinc-400' : 'text-gray-500'}>{c.articulo}</span>
-                                  {' · '}{c.label}: <span className="line-through text-red-400/60">{c.antes}</span> → <span className="text-emerald-400">{c.despues}</span>
+                                  {' · '}{c.label}: <span className="line-through text-red-400/60">{etiquetarEstatusEnTexto(c.antes)}</span> → <span className="text-emerald-400">{etiquetarEstatusEnTexto(c.despues)}</span>
                                 </p>
                               ))}
                             </div>
@@ -2979,26 +2561,6 @@ export function CampanaDetailPage() {
                   {assignAPSMutation.isPending ? <Loader2 className="h-3 sm:h-3.5 w-3 sm:w-3.5 animate-spin" /> : <FileSpreadsheet className="h-3 sm:h-3.5 w-3 sm:w-3.5" />}
                   <span className="hidden sm:inline">{assignAPSMutation.isPending ? 'Asignando...' : `APS${selectedItems.size > 0 ? ` (${selectedItems.size})` : ''}`}</span>
                   <span className="sm:hidden">{assignAPSMutation.isPending ? '...' : `APS${selectedItems.size > 0 ? ` (${selectedItems.size})` : ''}`}</span>
-                </button>
-              )}
-              {/* APS Pre Factura — mismo permiso que Asignar APS. Crea el APS
-                  pero lo etiqueta de modo que NO se puede mandar a SAP. */}
-              {permissions.canEditDetalleCampana && (
-                <button
-                  onClick={selectedHasAutorizacionBloqueada ? () => explicarBloqueoAutorizacion(selectedBloqueadosAutorizacion) : handleAssignAPSPrefactura}
-                  disabled={selectedItems.size === 0 || assignAPSPrefacturaMutation.isPending || selectedHasIncompleteOrExcess}
-                  title={selectedHasAutorizacionBloqueada ? `${selectedBloqueadosAutorizacion.length} circuito(s) seleccionado(s) sin autorización de Dirección aprobada — no se puede asignar Pre Factura (clic para ver detalle)` : selectedHasIncompleteOrExcess ? 'Hay grupos incompletos o con exceso de caras — ajusta el inventario antes de asignar Pre Factura' : 'Asigna APS y lo etiqueta como Pre Factura (no se puede mandar a SAP hasta cancelar la etiqueta)'}
-                  className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-xs font-medium rounded-lg transition-colors ${
-                    selectedHasAutorizacionBloqueada
-                      ? isDark ? 'bg-red-900/30 text-red-300 border border-red-500/40 cursor-not-allowed' : 'bg-red-50 text-red-600 border border-red-300 cursor-not-allowed'
-                      : selectedItems.size === 0 || selectedHasIncompleteOrExcess
-                      ? isDark ? 'bg-amber-900/30 text-amber-400/50 cursor-not-allowed' : 'bg-amber-100 text-amber-300 cursor-not-allowed'
-                      : 'bg-amber-500 hover:bg-amber-600 text-white'
-                  }`}
-                >
-                  {assignAPSPrefacturaMutation.isPending ? <Loader2 className="h-3 sm:h-3.5 w-3 sm:w-3.5 animate-spin" /> : <FileSpreadsheet className="h-3 sm:h-3.5 w-3 sm:w-3.5" />}
-                  <span className="hidden sm:inline">{assignAPSPrefacturaMutation.isPending ? 'Asignando...' : `Pre Factura${selectedItems.size > 0 ? ` (${selectedItems.size})` : ''}`}</span>
-                  <span className="sm:hidden">{assignAPSPrefacturaMutation.isPending ? '...' : `PF${selectedItems.size > 0 ? ` (${selectedItems.size})` : ''}`}</span>
                 </button>
               )}
               {/* Cortesías (CT): bypass APS → gestor de artes (visible si algún item seleccionado es cortesía) */}
@@ -4400,28 +3962,8 @@ export function CampanaDetailPage() {
               <span className="text-[10px] sm:text-xs text-muted-foreground">
                 {filteredInventarioAPS.length} registros
               </span>
-              {/* Historial de posteos: a quién se mandó cada APS (bitácora) */}
-              {postLog.length > 0 && (
-                <button
-                  onClick={() => setShowPostLogModal(true)}
-                  className={`flex items-center justify-center w-6 sm:w-7 h-6 sm:h-7 rounded-lg border transition-colors ${
-                    isDark ? 'bg-purple-900/50 hover:bg-purple-900/70 border-purple-500/30' : 'bg-purple-100 hover:bg-purple-200 border-purple-300'
-                  }`}
-                  title="Historial de posteos a SAP (a quién se mandó cada APS)"
-                >
-                  <History className={`h-3.5 sm:h-4 w-3.5 sm:w-4 ${isDark ? 'text-purple-300' : 'text-purple-700'}`} />
-                </button>
-              )}
               {permissions.canEditDetalleCampana && (() => {
-                const selectedHavePosted = selectedItemsAPS.size > 0 &&
-                  inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids))).some(i => postedAPSGroups.has(i.aps));
-                const selectedHavePrefactura = selectedItemsAPS.size > 0 &&
-                  inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids))).some(i => prefacturaAPSGroups.has(i.aps));
-                // Para Pre Factura usamos el botón "Cancelar POST" (que llama
-                // a cancelPrefactura y regresa las reservas a Sin APS). Aquí
-                // bloqueamos el quitar-APS individual para evitar dejar el JSON
-                // prefactura_aps con números huérfanos.
-                const disabled = selectedItemsAPS.size === 0 || selectedHavePosted || selectedHavePrefactura;
+                const disabled = selectedItemsAPS.size === 0;
                 return (
                 <button
                   onClick={handleQuitarAPS}
@@ -4431,7 +3973,7 @@ export function CampanaDetailPage() {
                       ? isDark ? 'bg-red-900/20 border-red-500/20 cursor-not-allowed' : 'bg-red-50 border-red-200 cursor-not-allowed'
                       : isDark ? 'bg-red-900/50 hover:bg-red-900/70 border-red-500/30' : 'bg-red-100 hover:bg-red-200 border-red-300'
                   }`}
-                  title={selectedHavePosted ? 'No se puede eliminar APS con POST a SAP' : selectedHavePrefactura ? 'Para liberar un APS Pre Factura usa Cancelar POST' : quitandoAPS ? 'Quitando...' : 'Quitar APS'}
+                  title={quitandoAPS ? 'Quitando...' : 'Quitar APS'}
                 >
                   {quitandoAPS ? (
                     <Loader2 className={`h-3.5 sm:h-4 w-3.5 sm:w-4 animate-spin ${isDark ? 'text-red-400' : 'text-red-600'}`} />
@@ -4439,83 +3981,6 @@ export function CampanaDetailPage() {
                     <Minus className={`h-3.5 sm:h-4 w-3.5 sm:w-4 ${disabled ? (isDark ? 'text-red-400/40' : 'text-red-300') : (isDark ? 'text-red-400' : 'text-red-600')}`} />
                   )}
                 </button>
-                );
-              })()}
-              {(permissions.canEditDetalleCampana || permissions.canPostToSAP) && inventarioConAPS.length > 0 && (() => {
-                const selectedHavePostedAPS = selectedItemsAPS.size > 0 &&
-                  inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids))).some(i => postedAPSGroups.has(i.aps));
-                const selectedHavePrefacturaAPS = selectedItemsAPS.size > 0 &&
-                  inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids))).some(i => prefacturaAPSGroups.has(i.aps));
-                const isPostDisabled = alreadyPosted || selectedHavePostedAPS || selectedHavePrefacturaAPS;
-                return (
-                  <button
-                    onClick={() => {
-                      if (campana) {
-                        const itemsToPreview = selectedItemsAPS.size > 0
-                          ? inventarioConAPS.filter(i => selectedItemsAPS.has(String(i.rsv_ids)))
-                          : inventarioConAPS;
-                        const dns = buildDeliveryNote(campana, itemsToPreview, campana.sap_database);
-                        const allLines = dns.flatMap((d: any) => d.DocumentLines);
-                        setPreviewDeliveryNote({ ...dns[0], DocumentLines: allLines });
-                      }
-                      setShowPostSAPModal(true);
-                    }}
-                    disabled={isPostDisabled}
-                    className={`flex items-center justify-center px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg border transition-colors ${isPostDisabled ? (isDark ? 'bg-zinc-800/50 border-zinc-700' : 'bg-gray-100 border-gray-200') + ' cursor-not-allowed opacity-50' : (isDark ? 'bg-cyan-900/30' : 'bg-cyan-50') + ' border-cyan-500/20 hover:bg-cyan-500/20 hover:border-cyan-500/40'}`}
-                    title={alreadyPosted ? 'Ya se envió a SAP' : selectedHavePostedAPS ? 'Este APS ya fue enviado a SAP' : selectedHavePrefacturaAPS ? 'Este APS está etiquetado como Pre Factura — no se puede mandar a SAP. Cancela la etiqueta primero.' : 'Enviar a SAP'}
-                  >
-                    <Upload className={`h-3 sm:h-3.5 w-3 sm:w-3.5 mr-1 ${isPostDisabled ? (isDark ? 'text-zinc-500' : 'text-gray-400') : (isDark ? 'text-cyan-400' : 'text-cyan-600')}`} />
-                    <span className={`text-[10px] sm:text-xs font-medium ${isPostDisabled ? (isDark ? 'text-zinc-500' : 'text-gray-400') : (isDark ? 'text-cyan-300' : 'text-cyan-700')}`}>{alreadyPosted ? 'ENVIADO' : 'POST'}</span>
-                  </button>
-                );
-              })()}
-              {puedeSolicitarDesposteo(user?.rol) && postedAPSGroups.size > 0 && (
-                <button
-                  onClick={() => {
-                    // Preseleccionar el primer APS que el usuario haya marcado
-                    // en la tabla, o el primero posteado si no hay seleccion.
-                    const selectedPosted = Array.from(selectedItemsAPS)
-                      .map(k => inventarioConAPS.find(i => String(i.rsv_ids) === k)?.aps)
-                      .filter((a): a is number => !!a && postedAPSGroups.has(a));
-                    const apsPrefill = selectedPosted[0] ?? Array.from(postedAPSGroups)[0];
-                    setDesposteoAPSSelected(apsPrefill);
-                    setShowSolicitarDesposteoModal(true);
-                  }}
-                  className={`flex items-center justify-center px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg border transition-colors ${isDark ? 'bg-rose-900/30 border-rose-500/20 hover:bg-rose-500/20 hover:border-rose-500/40' : 'bg-rose-50 border-rose-200 hover:bg-rose-100'}`}
-                  title="Solicitar quitar posteo — inicia flujo comercial > gerente > facturacion"
-                >
-                  <Send className={`h-3 sm:h-3.5 w-3 sm:w-3.5 mr-1 ${isDark ? 'text-rose-400' : 'text-rose-600'}`} />
-                  <span className={`text-[10px] sm:text-xs font-medium ${isDark ? 'text-rose-300' : 'text-rose-700'}`}>Solicitar desposteo</span>
-                </button>
-              )}
-              {/* Cancelar POST — visible solo para Admin/DEV (bypass emergencia)
-                  y roles TI. Para TI, deshabilitado si no hay ningun APS con
-                  desposteo aprobado por Facturacion. Feedback Jos: cualquier
-                  otro rol no debe ver el boton (aunque el back siempre valida). */}
-              {(puedeBypassearDesposteo(user?.rol) || esRolTIDesposteo(user?.rol)) && inventarioConAPS.length > 0 && (() => {
-                const isTI = esRolTIDesposteo(user?.rol) && !puedeBypassearDesposteo(user?.rol);
-                const hayApsAprobado = Object.values(estadosDesposteoAps).some(e => e.estatus === 'aprobado');
-                const tiBloqueado = isTI && !hayApsAprobado;
-                return (
-                  <button
-                    onClick={() => { if (tiBloqueado) return; setCancelPostSAPResult(null); setShowCancelPostSAPModal(true); }}
-                    disabled={tiBloqueado}
-                    className={`flex items-center justify-center px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg border transition-colors ${
-                      tiBloqueado
-                        ? (isDark ? 'bg-red-900/10 border-red-500/10 opacity-50 cursor-not-allowed' : 'bg-red-50/50 border-red-100 opacity-50 cursor-not-allowed')
-                        : (isDark ? 'bg-red-900/30 border-red-500/20 hover:bg-red-500/20 hover:border-red-500/40' : 'bg-red-50 border-red-200 hover:bg-red-100')
-                    }`}
-                    title={
-                      puedeBypassearDesposteo(user?.rol)
-                        ? 'Cancelar POST a SAP (Admin/DEV: bypass sin solicitud aprobada, queda auditado)'
-                        : tiBloqueado
-                          ? 'No hay ningun APS con desposteo aprobado por Facturacion. Espera la autorizacion para poder cancelar.'
-                          : 'Cancelar POST a SAP — requiere solicitud de desposteo aprobada'
-                    }
-                  >
-                    <XCircle className={`h-3 sm:h-3.5 w-3 sm:w-3.5 mr-1 ${isDark ? 'text-red-400' : 'text-red-600'}`} />
-                    <span className={`text-[10px] sm:text-xs font-medium ${isDark ? 'text-red-300' : 'text-red-700'}`}>Cancelar POST</span>
-                  </button>
                 );
               })()}
             </div>
@@ -5116,72 +4581,6 @@ export function CampanaDetailPage() {
                               {AVAILABLE_GROUPINGS_APS.find(g => g.field === activeGroupingsAPS[0])?.label}:
                             </span>
                             <span className={`text-xs ${isDark ? 'text-white' : 'text-gray-900'}`}>{groupKey}</span>
-                            {activeGroupingsAPS[0] === 'aps' && allGroupItemsAPS[0] && (postedAPSGroups.has(allGroupItemsAPS[0].aps) || alreadyPosted) && (
-                              <span
-                                onClick={postLogByAPS.has(allGroupItemsAPS[0].aps) ? (e) => { e.stopPropagation(); setPostDetailAPS(allGroupItemsAPS[0].aps); } : undefined}
-                                title={postLogByAPS.has(allGroupItemsAPS[0].aps) ? 'Ver datos del post (BD SAP, CUIC, destino)' : undefined}
-                                className={`text-[9px] font-semibold px-1 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 shrink-0 ${postLogByAPS.has(allGroupItemsAPS[0].aps) ? 'cursor-pointer hover:bg-green-500/40 underline decoration-dotted underline-offset-2' : ''}`}
-                              >POST</span>
-                            )}
-                            {/* Destino real del POST (snapshot). Sobrevive a que le
-                                cambien el cliente a la campaña después de postear. */}
-                            {activeGroupingsAPS[0] === 'aps' && allGroupItemsAPS[0] && (() => {
-                              const log = postLogByAPS.get(allGroupItemsAPS[0].aps);
-                              if (!log) return null;
-                              const destino = log.marca || log.razon_social || log.cliente_nombre || log.card_code || '—';
-                              const fecha = log.posted_at ? new Date(log.posted_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '';
-                              const tip = [
-                                `Posteado a: ${destino}`,
-                                log.razon_social ? `Razón social: ${log.razon_social}` : '',
-                                log.cuic != null ? `CUIC: ${log.cuic}` : '',
-                                log.card_code ? `CardCode: ${log.card_code}` : '',
-                                log.sap_database ? `BD SAP: ${log.sap_database}` : '',
-                                log.doc_num != null ? `DocNum: ${log.doc_num}` : '',
-                                fecha ? `Fecha: ${fecha}` : '',
-                                log.usuario_nombre ? `Por: ${log.usuario_nombre}` : '',
-                              ].filter(Boolean).join('\n');
-                              // BD SAP: mismo código de color que se usa en el resto del sistema
-                              // (CIMU azul, TEST ámbar, TRADE esmeralda).
-                              const sapCls = log.sap_database === 'CIMU' ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
-                                : log.sap_database === 'TEST' ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-                                : log.sap_database === 'TRADE' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-                                : log.sap_database === 'UDC' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
-                                : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30';
-                              return (
-                                <>
-                                  <span
-                                    title={tip}
-                                    className="text-[9px] font-semibold px-1 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 shrink-0 max-w-[140px] truncate cursor-help"
-                                  >
-                                    → {destino}
-                                  </span>
-                                  {/* Etiqueta BD SAP del post (congelada del snapshot) */}
-                                  {log.sap_database && (
-                                    <span
-                                      title={tip}
-                                      className={`text-[9px] font-semibold px-1 py-0.5 rounded border shrink-0 cursor-help ${sapCls}`}
-                                    >
-                                      {log.sap_database}
-                                    </span>
-                                  )}
-                                  {/* Etiqueta CUIC del post (congelada del snapshot) */}
-                                  {log.cuic != null && (
-                                    <span
-                                      title={tip}
-                                      className="text-[9px] font-semibold px-1 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0 cursor-help"
-                                    >
-                                      CUIC {log.cuic}
-                                    </span>
-                                  )}
-                                </>
-                              );
-                            })()}
-                            {activeGroupingsAPS[0] === 'aps' && allGroupItemsAPS[0] && prefacturaAPSGroups.has(allGroupItemsAPS[0].aps) && (
-                              <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">PRE FACTURA</span>
-                            )}
-                            {activeGroupingsAPS[0] === 'aps' && allGroupItemsAPS[0] && (
-                              <DesposteoBadge estado={estadosDesposteoAps[allGroupItemsAPS[0].aps]} />
-                            )}
                             <GroupSummaryInline items={allGroupItemsAPS} groupField={activeGroupingsAPS[0]} />
                             <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
                               {totalItems} items
@@ -5325,19 +4724,6 @@ export function CampanaDetailPage() {
                                             {AVAILABLE_GROUPINGS_APS.find(g => g.field === activeGroupingsAPS[1])?.label}:
                                           </span>
                                           <span className={`text-[10px] ${isDark ? 'text-white' : 'text-gray-900'}`}>{subGroupKey}</span>
-                                          {activeGroupingsAPS[1] === 'aps' && allSubItemsAPS[0] && postedAPSGroups.has(allSubItemsAPS[0].aps) && (
-                                            <span
-                                              onClick={postLogByAPS.has(allSubItemsAPS[0].aps) ? (e) => { e.stopPropagation(); setPostDetailAPS(allSubItemsAPS[0].aps); } : undefined}
-                                              title={postLogByAPS.has(allSubItemsAPS[0].aps) ? 'Ver datos del post' : undefined}
-                                              className={`text-[9px] font-semibold px-1 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 shrink-0 ${postLogByAPS.has(allSubItemsAPS[0].aps) ? 'cursor-pointer hover:bg-green-500/40 underline decoration-dotted underline-offset-2' : ''}`}
-                                            >POST</span>
-                                          )}
-                                          {activeGroupingsAPS[1] === 'aps' && allSubItemsAPS[0] && prefacturaAPSGroups.has(allSubItemsAPS[0].aps) && (
-                                            <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">PRE FACTURA</span>
-                                          )}
-                                          {activeGroupingsAPS[1] === 'aps' && allSubItemsAPS[0] && (
-                                            <DesposteoBadge estado={estadosDesposteoAps[allSubItemsAPS[0].aps]} />
-                                          )}
                                           <GroupSummaryInline items={allSubItemsAPS} groupField={activeGroupingsAPS[1]} />
                                           <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
                                             {subTotalItems}
@@ -5476,19 +4862,6 @@ export function CampanaDetailPage() {
                                                           {AVAILABLE_GROUPINGS_APS.find(g => g.field === activeGroupingsAPS[2])?.label}:
                                                         </span>
                                                         <span className={`text-[10px] ${isDark ? 'text-white' : 'text-gray-900'}`}>{thirdGroupKey}</span>
-                                                        {activeGroupingsAPS[2] === 'aps' && thirdItems[0] && postedAPSGroups.has(thirdItems[0].aps) && (
-                                                          <span
-                                                            onClick={postLogByAPS.has(thirdItems[0].aps) ? (e) => { e.stopPropagation(); setPostDetailAPS(thirdItems[0].aps); } : undefined}
-                                                            title={postLogByAPS.has(thirdItems[0].aps) ? 'Ver datos del post' : undefined}
-                                                            className={`text-[9px] font-semibold px-1 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30 shrink-0 ${postLogByAPS.has(thirdItems[0].aps) ? 'cursor-pointer hover:bg-green-500/40 underline decoration-dotted underline-offset-2' : ''}`}
-                                                          >POST</span>
-                                                        )}
-                                                        {activeGroupingsAPS[2] === 'aps' && thirdItems[0] && prefacturaAPSGroups.has(thirdItems[0].aps) && (
-                                                          <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">PRE FACTURA</span>
-                                                        )}
-                                                        {activeGroupingsAPS[2] === 'aps' && thirdItems[0] && (
-                                                          <DesposteoBadge estado={estadosDesposteoAps[thirdItems[0].aps]} />
-                                                        )}
                                                         <GroupSummaryInline items={thirdItems} groupField={activeGroupingsAPS[2]} />
                                                         <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
                                                           {thirdItems.length}
@@ -5797,464 +5170,6 @@ export function CampanaDetailPage() {
                     </button>
                   </div>
                 )}
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Modal POST a SAP */}
-      {showPostSAPModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !postingToSAP && !postSAPResult && setShowPostSAPModal(false)}>
-          <div className={`${isDark ? 'bg-[#1a1025] border-purple-900/50' : 'bg-white border-purple-200'} border rounded-xl p-6 max-w-md w-full mx-4 max-h-[80vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className={`text-lg font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>Enviar a SAP</h3>
-              <button
-                onClick={() => {
-                  setShowPostSAPModal(false);
-                  setPostSAPResult(null);
-                }}
-                disabled={postingToSAP}
-                className="text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {!postSAPResult ? (
-              <>
-                <div className="mb-6">
-                  <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
-                    <p className={`text-sm ${isDark ? 'text-yellow-300' : 'text-yellow-700'} font-medium`}>⚠️ Esta acción no se puede deshacer</p>
-                    <p className={`text-xs ${isDark ? 'text-yellow-400/70' : 'text-yellow-600'} mt-1`}>Se creará un Delivery Note en SAP. Verifica que los datos sean correctos antes de enviar.</p>
-                  </div>
-                  {previewDeliveryNote && (
-                    <div className={`${isDark ? 'bg-purple-900/20' : 'bg-purple-50'} rounded-lg p-3 space-y-2 text-xs`}>
-                      {campana && isMigratedCampaign(campana) ? (
-                        <>
-                          <div className="bg-cyan-500/10 border border-cyan-500/30 rounded px-2 py-1 mb-1">
-                            <span className="text-cyan-300 text-[10px] font-medium">POST (campaña migrada)</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Campaña:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.U_CRM_Camp || campana.nombre}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>CardCode:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.CardCode}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Razón Social:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-right max-w-[200px]`}>{previewDeliveryNote.U_CRM_R_S || '-'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>BaseType (en líneas):</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.DocumentLines?.[0]?.BaseType}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>BaseEntry (en líneas):</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>(se resuelve al enviar)</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Base SAP:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{campana.sap_database || 'TEST'}</span>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Campaña:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.U_CRM_Camp}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>CardCode:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.CardCode}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Razón Social:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'} text-right max-w-[200px]`}>{previewDeliveryNote.U_CRM_R_S || '-'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Marca:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.U_CRM_Marca || '-'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Series:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.Series}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>APS:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.U_IMU_ART_APS}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Asesor:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.U_CRM_Asesor || '-'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Agencia:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{previewDeliveryNote.U_CRM_Agencia || '-'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Base SAP:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{campana?.sap_database || 'TEST'}</span>
-                          </div>
-                        </>
-                      )}
-                      <hr className={`${isDark ? 'border-purple-800/40' : 'border-purple-200'}`} />
-                      <p className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} font-medium`}>Líneas ({previewDeliveryNote.DocumentLines.length}):</p>
-                      {previewDeliveryNote.DocumentLines.map((line: any, i: number) => (
-                        <div key={i} className={`${isDark ? 'bg-purple-950/30' : 'bg-purple-50'} rounded p-2 space-y-1`}>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Artículo:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{line.ItemCode}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Cantidad:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{line.Quantity}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Tarifa:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>${Number(line.UnitPrice).toLocaleString()}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Periodo:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{line.U_dscPeriod}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>Estatus:</span>
-                            <span className={`${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>{line.U_dscTAsig}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex justify-end gap-3">
-                  <button
-                    onClick={() => setShowPostSAPModal(false)}
-                    disabled={postingToSAP}
-                    className={`px-4 py-2 text-sm font-medium rounded-lg border ${isDark ? 'border-zinc-700 hover:bg-zinc-800' : 'border-gray-200 hover:bg-gray-100'} transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    onClick={handlePostToSAP}
-                    disabled={postingToSAP}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {postingToSAP ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Enviando...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-4 w-4" />
-                        Enviar a SAP
-                      </>
-                    )}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="text-center">
-                {postSAPResult.success ? (
-                  <>
-                    <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4" />
-                    <p className="text-lg font-medium text-green-400 mb-2">¡Éxito!</p>
-                    <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-4`}>{postSAPResult.message}</p>
-                  </>
-                ) : (
-                  <>
-                    <AlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
-                    <p className="text-lg font-medium text-red-400 mb-2">Error</p>
-                    <p className={`text-sm ${isDark ? 'text-zinc-300' : 'text-gray-700'} mb-3 font-medium`}>{postSAPResult.message}</p>
-
-                    {postSAPResult.detail?.partialSuccess && (
-                      <div className={`mb-4 p-3 rounded-lg text-left text-xs ${isDark ? 'bg-amber-900/30 border border-amber-500/40 text-amber-200' : 'bg-amber-50 border border-amber-300 text-amber-900'}`}>
-                        <p className="font-semibold mb-1">⚠ Resultado parcial</p>
-                        <p>{postSAPResult.detail.successCount} APS sí se postearon a SAP y ya están marcados como posteados. Los {postSAPResult.detail.failedCount} fallidos puedes reintentarlos sin duplicar los exitosos.</p>
-                      </div>
-                    )}
-
-                    {postSAPResult.detail?.errorType && (
-                      <div className={`mb-3 p-3 rounded-lg text-left text-xs ${isDark ? 'bg-zinc-800/60 border border-zinc-700' : 'bg-gray-50 border border-gray-200'}`}>
-                        <p className={`font-semibold mb-2 ${isDark ? 'text-zinc-200' : 'text-gray-800'}`}>Qué pasó:</p>
-                        {postSAPResult.detail.errorType === 'network' && (
-                          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            El navegador <b>no pudo llegar al servidor SAP</b>. Causas comunes:
-                            tunnel de Cloudflare caído, internet inestable, o la URL del relay SAP cambió.
-                            <br />
-                            <b>Qué hacer:</b> refresca la página (Ctrl+Shift+R) y reintenta. Si sigue, avisa a TI.
-                          </p>
-                        )}
-                        {postSAPResult.detail.errorType === 'cors' && (
-                          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            El navegador <b>bloqueó la respuesta por CORS</b>. Generalmente significa que el
-                            tunnel respondió HTML de error en vez del JSON esperado.
-                            <br />
-                            <b>Qué hacer:</b> avisa a TI que verifique el tunnel.
-                          </p>
-                        )}
-                        {postSAPResult.detail.errorType === 'parse' && (
-                          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            <b>SAP respondió pero el contenido no es JSON válido</b>. Es posible que el delivery
-                            note SÍ se haya creado en SAP, pero la respuesta llegó mal.
-                            <br />
-                            <b>Qué hacer:</b> antes de reintentar, verifica en SAP si ya existe el delivery note
-                            de esta campaña — si existe, no le des POST otra vez.
-                          </p>
-                        )}
-                        {postSAPResult.detail.errorType === 'http-error' && (
-                          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            <b>Error HTTP {postSAPResult.detail.status}</b> del servidor SAP.
-                            {postSAPResult.detail.status === 500 && ' Error interno de SAP — generalmente un problema temporal.'}
-                            {postSAPResult.detail.status === 401 && ' Sesión SAP expirada — reintenta y debería renovar sola.'}
-                            {postSAPResult.detail.status === 502 && ' Bad Gateway — el tunnel o SAP están caídos.'}
-                            {postSAPResult.detail.status === 503 && ' Servicio SAP no disponible.'}
-                          </p>
-                        )}
-                        {postSAPResult.detail.errorType === 'sap-rejected' && (
-                          <p className={`${isDark ? 'text-zinc-400' : 'text-gray-600'}`}>
-                            <b>SAP rechazó el delivery note</b> por una validación de negocio (cliente inactivo,
-                            precio, código mal, etc). Lee el mensaje de arriba y corrige antes de reintentar.
-                          </p>
-                        )}
-                        <div className={`mt-2 pt-2 border-t ${isDark ? 'border-zinc-700' : 'border-gray-200'} text-[10px] font-mono ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                          {postSAPResult.detail.endpoint && <div>endpoint: {postSAPResult.detail.endpoint}</div>}
-                          {postSAPResult.detail.status !== undefined && <div>status: {postSAPResult.detail.status}</div>}
-                          <div>tipo: {postSAPResult.detail.errorType}</div>
-                        </div>
-                        {postSAPResult.detail.rawResponse && (
-                          <details className="mt-2">
-                            <summary className={`cursor-pointer text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>Ver respuesta cruda</summary>
-                            <pre className={`mt-1 p-2 rounded text-[9px] overflow-auto max-h-32 ${isDark ? 'bg-zinc-950 text-zinc-400' : 'bg-white text-gray-600'}`}>{postSAPResult.detail.rawResponse}</pre>
-                          </details>
-                        )}
-                      </div>
-                    )}
-                  </>
-                )}
-                <button
-                  onClick={() => {
-                    setShowPostSAPModal(false);
-                    setPostSAPResult(null);
-                  }}
-                  className="px-4 py-2 text-sm font-medium rounded-lg bg-purple-600 hover:bg-purple-700 transition-colors"
-                >
-                  Cerrar
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Modal de detalle de UN post — se abre al picar el badge "POST" de un APS.
-          Muestra a dónde se mandó ese post (snapshot congelado por circuito). */}
-      {postDetailAPS != null && (() => {
-        const p = postLogByAPS.get(postDetailAPS);
-        if (!p) return null;
-        const sapCls = p.sap_database === 'CIMU' ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
-          : p.sap_database === 'TEST' ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
-          : p.sap_database === 'TRADE' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
-          : p.sap_database === 'UDC' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
-          : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30';
-        const row = (label: string, value: React.ReactNode) => (
-          <div className="flex justify-between gap-4 py-1.5 border-t border-border first:border-t-0">
-            <span className="text-xs text-muted-foreground">{label}</span>
-            <span className={`text-xs font-medium text-right ${isDark ? 'text-white' : 'text-gray-900'}`}>{value}</span>
-          </div>
-        );
-        return (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setPostDetailAPS(null)}>
-            <div
-              className={`rounded-xl shadow-2xl max-w-md w-full ${isDark ? 'bg-zinc-900 border border-purple-500/20' : 'bg-white border border-purple-200'}`}
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between p-4 border-b border-border">
-                <div>
-                  <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Datos del POST — APS {p.aps}</h3>
-                  <p className="text-xs text-muted-foreground">A dónde se mandó este circuito (snapshot congelado)</p>
-                </div>
-                <button onClick={() => setPostDetailAPS(null)} className="p-1 rounded hover:bg-muted">
-                  <X className="h-5 w-5 text-muted-foreground" />
-                </button>
-              </div>
-              <div className="p-4">
-                <div className="flex items-center gap-2 mb-3 flex-wrap">
-                  {p.sap_database && <span className={`text-[11px] font-semibold px-2 py-0.5 rounded border ${sapCls}`}>{p.sap_database}</span>}
-                  {p.cuic != null && <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">CUIC {p.cuic}</span>}
-                  {p.success
-                    ? <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30">OK</span>
-                    : <span title={p.error_msg || 'Error'} className="text-[11px] font-semibold px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 cursor-help">ERROR</span>}
-                </div>
-                {row('BD SAP', p.sap_database || '—')}
-                {row('CUIC', p.cuic ?? '—')}
-                {row('Razón social', p.razon_social || '—')}
-                {row('Marca / Cliente', p.marca || p.cliente_nombre || '—')}
-                {row('CardCode', p.card_code || '—')}
-                {row('DocNum', p.doc_num ?? '—')}
-                {row('DocEntry', p.doc_entry ?? '—')}
-                {row('Fecha', p.posted_at ? new Date(p.posted_at).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' }) : '—')}
-                {row('Posteó', p.usuario_nombre || '—')}
-                {!p.success && p.error_msg && row('Error', <span className="text-red-400">{p.error_msg}</span>)}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Modal Historial de posteos — bitácora de a quién se mandó cada APS.
-          Cada fila es un snapshot tomado al momento del POST, así que sigue
-          siendo correcto aunque después le cambien el cliente a la campaña. */}
-      {showPostLogModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setShowPostLogModal(false)}>
-          <div
-            className={`rounded-xl shadow-2xl max-w-5xl w-full max-h-[85vh] flex flex-col ${isDark ? 'bg-zinc-900 border border-purple-500/20' : 'bg-white border border-purple-200'}`}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <div className="flex items-center gap-3">
-                <History className={`h-5 w-5 ${isDark ? 'text-purple-300' : 'text-purple-700'}`} />
-                <div>
-                  <h3 className={`text-sm font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Historial de posteos a SAP</h3>
-                  <p className="text-xs text-muted-foreground">
-                    A quién se mandó cada APS ({postLog.length} registro{postLog.length !== 1 ? 's' : ''})
-                  </p>
-                </div>
-              </div>
-              <button onClick={() => setShowPostLogModal(false)} className="p-1 rounded hover:bg-muted">
-                <X className="h-5 w-5 text-muted-foreground" />
-              </button>
-            </div>
-
-            <div className="overflow-auto p-4">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className={`${isDark ? 'text-purple-300' : 'text-purple-700'} text-left`}>
-                    <th className="px-2 py-2 font-semibold">APS</th>
-                    <th className="px-2 py-2 font-semibold">Catorcena</th>
-                    <th className="px-2 py-2 font-semibold">Acción</th>
-                    <th className="px-2 py-2 font-semibold">Posteado a</th>
-                    <th className="px-2 py-2 font-semibold">Razón social</th>
-                    <th className="px-2 py-2 font-semibold">CUIC</th>
-                    <th className="px-2 py-2 font-semibold">CardCode</th>
-                    <th className="px-2 py-2 font-semibold">BD</th>
-                    <th className="px-2 py-2 font-semibold">DocNum</th>
-                    <th className="px-2 py-2 font-semibold">Resultado</th>
-                    <th className="px-2 py-2 font-semibold">Fecha</th>
-                    <th className="px-2 py-2 font-semibold">Usuario</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {postLog.map(p => (
-                    <tr key={p.id} className={`border-t ${isDark ? 'border-zinc-800' : 'border-gray-100'}`}>
-                      <td className={`px-2 py-2 font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{p.aps}</td>
-                      <td className="px-2 py-2 text-muted-foreground whitespace-nowrap">
-                        {p.catorcena_numero != null ? `C${p.catorcena_numero}${p.catorcena_anio ? '/' + p.catorcena_anio : ''}` : '—'}
-                      </td>
-                      <td className="px-2 py-2">
-                        {p.accion === 'CANCELACION'
-                          ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">CANCELADO</span>
-                          : <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30">POST</span>}
-                      </td>
-                      <td className={`px-2 py-2 ${isDark ? 'text-white' : 'text-gray-900'}`}>
-                        {p.marca || p.cliente_nombre || p.razon_social || '—'}
-                      </td>
-                      <td className="px-2 py-2 text-muted-foreground">{p.razon_social || '—'}</td>
-                      <td className="px-2 py-2 text-muted-foreground">{p.cuic ?? '—'}</td>
-                      <td className="px-2 py-2 text-muted-foreground">{p.card_code || '—'}</td>
-                      <td className="px-2 py-2 text-muted-foreground">{p.sap_database || '—'}</td>
-                      <td className="px-2 py-2 text-muted-foreground">{p.doc_num ?? '—'}</td>
-                      <td className="px-2 py-2">
-                        {p.success ? (
-                          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30">OK</span>
-                        ) : (
-                          <span
-                            title={p.error_msg || 'Error'}
-                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 cursor-help"
-                          >
-                            ERROR
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-2 py-2 text-muted-foreground whitespace-nowrap">
-                        {p.posted_at ? new Date(p.posted_at).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
-                      </td>
-                      <td className="px-2 py-2 text-muted-foreground">{p.usuario_nombre || '—'}</td>
-                    </tr>
-                  ))}
-                  {postLog.length === 0 && (
-                    <tr>
-                      <td colSpan={10} className="px-2 py-6 text-center text-muted-foreground">
-                        Todavía no hay posteos registrados para esta campaña.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Solicitar desposteo (Fase 2 - comercial) */}
-      {showSolicitarDesposteoModal && desposteoAPSSelected !== null && campana && (
-        <DesposteoModal
-          isOpen={showSolicitarDesposteoModal}
-          onClose={() => { setShowSolicitarDesposteoModal(false); setDesposteoAPSSelected(null); }}
-          modo="solicitar"
-          campaniaId={campana.id}
-          aps={desposteoAPSSelected}
-          onDone={() => queryClient.invalidateQueries({ queryKey: ['campana', campanaId] })}
-        />
-      )}
-
-      {/* Modal Cancelar POST SAP */}
-      {showCancelPostSAPModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => !cancellingPostSAP && setShowCancelPostSAPModal(false)}>
-          <div className={`rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 ${isDark ? 'bg-zinc-900 border border-red-500/20' : 'bg-white border border-red-200'}`} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <XCircle className="h-6 w-6 text-red-500" />
-              <h2 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Cancelar POST a SAP</h2>
-            </div>
-            {!cancelPostSAPResult ? (
-              <>
-                <p className={`text-sm mb-2 ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>
-                  {selectedItemsAPS.size > 0
-                    ? `¿Cancelar el POST de los ${selectedItemsAPS.size} APS seleccionados?`
-                    : `¿Cancelar el POST de todos los APS enviados a SAP en esta campaña?`}
-                </p>
-                <p className={`text-xs mb-6 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>
-                  Esta acción marcará los APS como no enviados y permitirá volver a hacer POST.
-                </p>
-                <div className="flex gap-3 justify-end">
-                  <button onClick={() => setShowCancelPostSAPModal(false)} className={`px-4 py-2 rounded-lg text-sm ${isDark ? 'bg-zinc-700 hover:bg-zinc-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}>
-                    Cerrar
-                  </button>
-                  <button
-                    onClick={handleCancelPostSAP}
-                    disabled={cancellingPostSAP}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
-                  >
-                    {cancellingPostSAP ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
-                    {cancellingPostSAP ? 'Cancelando...' : 'Confirmar Cancelar'}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className={`flex items-center gap-2 p-3 rounded-lg mb-4 ${cancelPostSAPResult.success ? (isDark ? 'bg-emerald-900/30 text-emerald-300' : 'bg-emerald-50 text-emerald-700') : (isDark ? 'bg-red-900/30 text-red-300' : 'bg-red-50 text-red-700')}`}>
-                  {cancelPostSAPResult.success ? <Check className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-                  <span className="text-sm">{cancelPostSAPResult.message}</span>
-                </div>
-                <div className="flex justify-end">
-                  <button onClick={() => setShowCancelPostSAPModal(false)} className={`px-4 py-2 rounded-lg text-sm ${isDark ? 'bg-zinc-700 hover:bg-zinc-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}>
-                    Cerrar
-                  </button>
-                </div>
               </>
             )}
           </div>

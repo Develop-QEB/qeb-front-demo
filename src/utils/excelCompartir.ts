@@ -5,6 +5,7 @@
 // el circuito) van con fondo gris y texto gris/italica para que se noten, ademas
 // de la columna "Estado". `xlsx` CE ignora los estilos.
 import { FMT_COORD, FMT_ENTERO, FMT_MONEDA } from './excelFormat';
+import { MARCA, argb } from '../config/marca';
 
 export { FMT_COORD, FMT_ENTERO, FMT_MONEDA };
 
@@ -30,8 +31,9 @@ export interface HojaExcel {
 
 const GRIS_FONDO = 'FFEDEDED';
 const GRIS_TEXTO = 'FF808080';
-const HEADER_FONDO = 'FFE6F0FA';
-const HEADER_TEXTO = 'FF0054A6';
+// Encabezado con los colores de marca (config/marca.ts).
+const HEADER_FONDO = argb(MARCA.colores.claro);
+const HEADER_TEXTO = argb(MARCA.colores.primario);
 
 export async function descargarExcelCompartir(nombreArchivo: string, hojas: HojaExcel[], notaPie?: string): Promise<void> {
   const mod = await import('exceljs');

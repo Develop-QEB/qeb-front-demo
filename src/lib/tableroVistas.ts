@@ -1,4 +1,5 @@
 import { AUTORIZACION_OPCIONES, AUTORIZACION_PREFIX } from './autorizacionFiltro';
+import { etiquetaEstatusPropuesta } from './estatusLabels';
 
 // Vistas de Tablero (Propuestas / Campañas): orden rápido, filtro de
 // incompletos y vistas guardadas por usuario.
@@ -234,7 +235,7 @@ export function construirOpcionesCambio(estatus: readonly string[]): CambioOpcio
     const n = normalizaEstatus(s);
     if (!n || vistos.has(n)) return;
     vistos.add(n);
-    out.push({ key: `${CAMBIO_ESTATUS_PREFIX}${s}`, label: s, grupo: 'estatus' });
+    out.push({ key: `${CAMBIO_ESTATUS_PREFIX}${s}`, label: etiquetaEstatusPropuesta(s), grupo: 'estatus' });
   });
   AUTORIZACION_OPCIONES.forEach(o => {
     out.push({ key: `${AUTORIZACION_PREFIX}${o.key}`, label: o.label, grupo: 'autorizacion' });

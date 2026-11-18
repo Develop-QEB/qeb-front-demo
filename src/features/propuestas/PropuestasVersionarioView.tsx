@@ -118,7 +118,7 @@ export const AVAILABLE_GROUPINGS: GroupConfig[] = [
   { field: 'propuesta', label: 'Propuesta' },
   { field: 'circuito', label: 'Circuito' },
   { field: 'anunciante', label: 'Anunciante' },
-  { field: 'cuic', label: 'CUIC' },
+  { field: 'cuic', label: 'ID Cliente' },
   { field: 'estatus', label: 'Estatus' },
   { field: 'tipo_periodo', label: 'Tipo de Periodo' },
   { field: 'anio', label: 'Año' },
@@ -205,8 +205,8 @@ function getGroupValue(row: Row, field: GroupByField): { key: string; label: str
       return { key: v, label: `Anunciante: ${v}` };
     }
     case 'cuic': {
-      const v = (row.propuesta.cuic || '').trim() || 'Sin CUIC';
-      return { key: v, label: `CUIC: ${v}` };
+      const v = (row.propuesta.cuic || '').trim() || 'Sin ID Cliente';
+      return { key: v, label: `ID Cliente: ${v}` };
     }
     case 'estatus': {
       const v = (row.propuesta.status || '').trim() || 'Sin estatus';
@@ -752,7 +752,7 @@ export default function PropuestasVersionarioView({ isDark, filters, advancedFil
 
       const headers = [
         'Campaña', 'Anunciante', 'Inversión Campaña', 'Operación', 'Código de contrato (Opcional)',
-        'Precio por cara (Opcional)', 'APS Global', 'APS Específico', 'CUIC', 'Articulo', 'Vendedor',
+        'Precio por cara (Opcional)', 'APS Global', 'APS Específico', 'ID Cliente', 'Articulo', 'Vendedor',
         'Descripción (Opcional)', 'Inicio o Periodo', 'Fin o Segmento', 'Arte',
         'Código de arte (Opcional)', 'Arte Url (Opcional)', 'Origen del arte (Opcional)',
         'Unidad', 'Cara', 'Ciudad', 'Tipo de Distribución', 'Reproducciones', 'Notas',

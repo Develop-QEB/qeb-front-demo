@@ -557,7 +557,7 @@ export function AuditoriaConflictosModal({ open, onClose, onOpenEnMatriz, autoIn
         ['Con Arte / Sin Arte', 'NO son estatus de ocupación: son estado del arte guardado en la columna del estatus. Son ventas; se reportan como la venta que son y el arte va en su columna.'],
         ['Impresión (IM-)', 'NO ocupa: es producción, no renta de la cara. Fuera del conteo y la limpieza nunca la toca.'],
         ['Digital', 'Fuera del conteo: varias campañas comparten pantalla.'],
-        ['Reserva con APS', 'Nunca se borra. Con dos APS en la misma celda, se omite y se revisa con SAP.'],
+        ['Reserva con APS', 'Nunca se borra. Con dos APS en la misma celda, se omite y se revisa a mano.'],
       ];
       filas.forEach(([k, v]) => resumen.addRow([k, v]));
       resumen.getRow(1).font = { bold: true, size: 13 };
@@ -842,7 +842,7 @@ export function AuditoriaConflictosModal({ open, onClose, onOpenEnMatriz, autoIn
                   {' '}cuentan como tal, pero aquí se muestran como la venta que son y el estado del arte va en su
                   {' '}propia columna del detalle.
                 </div>
-                <div>· Una reserva con <strong>APS</strong> nunca se borra; si hay dos con APS, la celda se omite y se revisa a mano con SAP.</div>
+                <div>· Una reserva con <strong>APS</strong> nunca se borra; si hay dos con APS, la celda se omite y se revisa a mano.</div>
               </div>
             </div>
           )}
@@ -1110,7 +1110,7 @@ export function AuditoriaConflictosModal({ open, onClose, onOpenEnMatriz, autoIn
                         <td className="px-3 py-1.5 text-center">
                           {(r.tentativas_campania ?? 0) > 0 ? (
                             <span
-                              title="Doble venta: una campaña ya vendida tiene la cara solo como apartado tentativo (nunca se marcó Vendido) y otra campaña la vendió en firme encima. No se limpia sola: decidir con Comercial y revisar APS en SAP"
+                              title="Doble venta: una campaña ya vendida tiene la cara solo como apartado tentativo (nunca se marcó Vendido) y otra campaña la vendió en firme encima. No se limpia sola: decidir con Comercial y revisar el APS"
                               className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold border ${isDark ? 'bg-red-600/30 text-red-200 border-red-500/60' : 'bg-red-100 text-red-800 border-red-400'}`}
                             >
                               Doble venta
@@ -1270,7 +1270,7 @@ export function AuditoriaConflictosModal({ open, onClose, onOpenEnMatriz, autoIn
                                         <td className="px-2 py-1.5">
                                           {res.aps && res.aps > 0 ? (
                                             <span
-                                              title={res.posted ? 'APS ya posteado a SAP: esta reserva no se toca' : 'Tiene APS asignado: no se puede borrar'}
+                                              title={res.posted ? 'APS ya posteado: esta reserva no se toca' : 'Tiene APS asignado: no se puede borrar'}
                                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${
                                                 res.posted
                                                   ? isDark ? 'bg-red-500/20 text-red-200 border-red-500/40' : 'bg-red-100 text-red-800 border-red-300'

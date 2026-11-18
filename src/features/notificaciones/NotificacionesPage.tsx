@@ -17,6 +17,7 @@ import { usuariosService } from '../../services/usuarios.service';
 import { Notificacion, ComentarioTarea } from '../../types';
 import { formatDate, formatDateCompact } from '../../lib/utils';
 import { motivoRechazoValido, limpiarMotivo } from '../../lib/historial';
+import { etiquetarEstatusEnTexto } from '../../lib/estatusLabels';
 import { STATUS_CONFIG, getTipoConfig, getStatusConfig } from '../../lib/taskConfig';
 import { useAuthStore } from '../../store/authStore';
 import { useThemeStore } from '../../store/themeStore';
@@ -151,9 +152,9 @@ function BitacoraTareaInline({ tareaId, isDark }: { tareaId: number; isDark: boo
                     <div key={i} className="text-[11px] flex items-start gap-2">
                       <span className={`shrink-0 font-medium ${isDark ? 'text-amber-300' : 'text-amber-700'}`}>{c.label || c.campo || '—'}:</span>
                       <span className={isDark ? 'text-zinc-300' : 'text-gray-700'}>
-                        <span className={isDark ? 'text-zinc-500 line-through' : 'text-gray-400 line-through'}>{fmt(c.antes)}</span>
+                        <span className={isDark ? 'text-zinc-500 line-through' : 'text-gray-400 line-through'}>{etiquetarEstatusEnTexto(fmt(c.antes))}</span>
                         <span className="mx-1">→</span>
-                        <span className={isDark ? 'text-zinc-100 font-medium' : 'text-gray-900 font-medium'}>{fmt(c.despues)}</span>
+                        <span className={isDark ? 'text-zinc-100 font-medium' : 'text-gray-900 font-medium'}>{etiquetarEstatusEnTexto(fmt(c.despues))}</span>
                       </span>
                     </div>
                   ))}
@@ -2547,11 +2548,11 @@ function ApprovalModal({
                                 <div className="grid grid-cols-2 divide-x divide-zinc-700/30">
                                   <div className="px-2.5 py-1.5 bg-red-500/5">
                                     <div className="text-[9px] uppercase text-red-400/70 mb-0.5">Antes</div>
-                                    <div className={`text-[11px] font-mono ${isDark ? 'text-red-300' : 'text-red-600'}`}>{c.antes}</div>
+                                    <div className={`text-[11px] font-mono ${isDark ? 'text-red-300' : 'text-red-600'}`}>{etiquetarEstatusEnTexto(c.antes == null ? '' : String(c.antes))}</div>
                                   </div>
                                   <div className="px-2.5 py-1.5 bg-emerald-500/5">
                                     <div className="text-[9px] uppercase text-emerald-400/70 mb-0.5">Actual</div>
-                                    <div className={`text-[11px] font-mono ${isDark ? 'text-emerald-300' : 'text-emerald-600'}`}>{c.despues}</div>
+                                    <div className={`text-[11px] font-mono ${isDark ? 'text-emerald-300' : 'text-emerald-600'}`}>{etiquetarEstatusEnTexto(c.despues == null ? '' : String(c.despues))}</div>
                                   </div>
                                 </div>
                               </div>

@@ -1924,7 +1924,7 @@ export function InventariosPage() {
                             };
                             const a = accion.accion.toLowerCase();
                             const style =
-                              a.startsWith('vendida') || a.startsWith('pasó a ventas') ? paleta.rojo
+                              a.startsWith('vendida') || a.startsWith('pasó a ventas') || a.startsWith('venta confirmada') ? paleta.rojo
                               : a.startsWith('reservada') ? paleta.ambar
                               : a.startsWith('liberada') ? paleta.gris
                               : a.startsWith('bloqueado') || a.startsWith('inhabilitado') || a.startsWith('no disponible') ? paleta.rojo

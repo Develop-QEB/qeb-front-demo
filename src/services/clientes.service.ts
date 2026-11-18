@@ -23,13 +23,6 @@ export interface ClientesFilterOptions {
   categorias: string[];
 }
 
-export interface SAPClientesResponse {
-  success: boolean;
-  data: Cliente[];
-  total: number;
-  cached: boolean;
-}
-
 export interface FullClientesResponse {
   success: boolean;
   data: Cliente[];
@@ -63,20 +56,6 @@ export const clientesService = {
       throw new Error(response.data.error || 'Error al obtener opciones de filtro');
     }
     return response.data.data;
-  },
-
-  async getSAPClientes(search?: string): Promise<SAPClientesResponse> {
-    const response = await api.get<SAPClientesResponse>('/clientes/sap', {
-      params: search ? { search } : undefined
-    });
-    return response.data;
-  },
-
-  async getSAPClientesByDB(database: string, search?: string): Promise<SAPClientesResponse> {
-    const response = await api.get<SAPClientesResponse>(`/clientes/sap/${database}`, {
-      params: search ? { search } : undefined
-    });
-    return response.data;
   },
 
   async getById(id: number): Promise<Cliente> {

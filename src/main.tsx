@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import 'leaflet/dist/leaflet.css';
 import './index.css'
 import App from './App.tsx'
+import { aplicarVariablesMarca } from './config/marca'
 
 // Apply saved theme before first render to avoid flash
 try {
@@ -13,6 +14,9 @@ try {
     document.documentElement.classList.remove('dark');
   }
 } catch { /* ignore */ }
+
+// Colores de marca (config/marca.ts) como variables CSS para las clases *-marca-*.
+try { aplicarVariablesMarca(); } catch { /* ignore */ }
 
 // Demo sin SAP: borrar cachés SAP que un navegador pudo guardar en versiones
 // anteriores (catálogos de clientes/artículos y la BD SAP seleccionada).

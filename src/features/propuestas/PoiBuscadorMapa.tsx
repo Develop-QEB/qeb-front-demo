@@ -21,8 +21,8 @@ interface Props {
   range: number;
   onRangeChange: (range: number) => void;
   isDark?: boolean;
-  /** Color de acento: azul IMU (visor publico) o morado (compartir interna). */
-  acento?: 'imu' | 'purple';
+  /** Color de acento: marca (visor público) o morado (compartir interna). */
+  acento?: 'marca' | 'purple';
 }
 
 export function PoiBuscadorMapa({ getMap, isLoaded, pois, onChange, range, onRangeChange, isDark = false, acento = 'purple' }: Props) {
@@ -31,9 +31,9 @@ export function PoiBuscadorMapa({ getMap, isLoaded, pois, onChange, range, onRan
   const [buscando, setBuscando] = useState(false);
   const [sinResultados, setSinResultados] = useState(false);
 
-  const ring = acento === 'imu' ? 'focus:ring-[#0054A6]' : 'focus:ring-purple-500';
-  const btn = acento === 'imu'
-    ? 'bg-[#0054A6] hover:bg-[#003B71] text-white'
+  const ring = acento === 'marca' ? 'focus:ring-marca-primario' : 'focus:ring-purple-500';
+  const btn = acento === 'marca'
+    ? 'bg-marca-primario hover:bg-marca-oscuro text-white'
     : 'bg-purple-600 hover:bg-purple-700 text-white';
   const input = isDark
     ? 'bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-500'

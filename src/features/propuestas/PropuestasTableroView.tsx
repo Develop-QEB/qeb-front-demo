@@ -4,7 +4,7 @@ import { Propuesta } from '../../types';
 import { formatCurrency, formatDate, formatDateCompact } from '../../lib/utils';
 import { TableroBoard, TableroCard, type TableroColumna } from '../../components/tablero/TableroBoard';
 import { buildMapaColumnas, fechaUltimoCambio, normalizaEstatus } from '../../lib/tableroVistas';
-import { getStatusColor, esPropuestaIncompleta, IncompletaBadge } from './propuestaEstatus';
+import { getStatusColor, esPropuestaIncompleta, IncompletaBadge, etiquetaEstatusPropuesta } from './propuestaEstatus';
 import { PropuestaAcciones, type PropuestaAccionesProps } from './PropuestaAcciones';
 
 /** Permisos y callbacks de la fila de acciones; los mismos que recibe la fila de la tabla. */
@@ -53,7 +53,7 @@ export const PROPUESTAS_COLUMNAS: readonly TableroColumna[] = [
   },
   {
     key: 'Pase a ventas',
-    label: 'Pase a Ventas',
+    label: 'Confirmar venta',
     descripcion: 'Lista para cerrar',
     alias: ['Pase a Ventas'],
     color: { bg: 'bg-emerald-500/10', border: 'border-emerald-500/30', text: 'text-emerald-400', dot: 'bg-emerald-500' },
@@ -244,11 +244,11 @@ function TarjetaPropuesta({
             className={`px-2 py-0.5 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border} hover:opacity-80 transition-opacity`}
             title="Cambiar estatus"
           >
-            {propuesta.status}
+            {etiquetaEstatusPropuesta(propuesta.status)}
           </button>
         ) : (
           <span className={`px-2 py-0.5 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
-            {propuesta.status}
+            {etiquetaEstatusPropuesta(propuesta.status)}
           </span>
         )}
         {esPropuestaIncompleta(propuesta) && (

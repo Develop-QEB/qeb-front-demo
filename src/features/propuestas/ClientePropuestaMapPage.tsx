@@ -34,17 +34,17 @@ import { CapasMapaOverlay } from './CapasMapaOverlay';
 import { PoiBuscadorMapa, PoiMapaOverlay } from './PoiBuscadorMapa';
 import type { POIEncontrado } from './poiBusqueda';
 
-const IMU_BLUE = '#0054A6';
-const IMU_GREEN = '#7AB800';
-const IMU_DARK = '#003B71';
+const COLOR_PRIMARIO = MARCA.colores.primario;
+const COLOR_ACENTO = MARCA.colores.acento;
+const COLOR_OSCURO = MARCA.colores.oscuro;
 
 // Paleta de colores para diferenciar catorcenas (se cicla si hay mas de 14).
 const CAT_COLORS = [
-  '#0054A6', '#7AB800', '#E4002B', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4',
+  MARCA.colores.primario, MARCA.colores.acento, '#EF4444', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4',
   '#10B981', '#F97316', '#6366F1', '#14B8A6', '#A855F7', '#DC2626', '#84CC16',
 ];
 
-const IMU_MAP_STYLES = [
+const MAPA_ESTILOS = [
   { elementType: 'geometry', stylers: [{ color: '#f5f5f5' }] },
   { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
   { elementType: 'labels.text.stroke', stylers: [{ color: '#ffffff' }] },
@@ -53,7 +53,7 @@ const IMU_MAP_STYLES = [
   { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
   { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
   { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#c5e8c5' }] },
-  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#7AB800' }] },
+  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6B9A76' }] },
   { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
   { featureType: 'road.arterial', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
   { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#dadada' }] },
@@ -62,7 +62,7 @@ const IMU_MAP_STYLES = [
   { featureType: 'transit.line', elementType: 'geometry', stylers: [{ color: '#e5e5e5' }] },
   { featureType: 'transit.station', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#c9e4f5' }] },
-  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#0054A6' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#4A6FA5' }] },
 ];
 
 interface InventarioReservado extends ConVersion, ConOrigen {
@@ -174,7 +174,7 @@ function TriCheckbox({ checked, indeterminate, onChange, className }: {
       checked={checked}
       onChange={onChange}
       onClick={(e) => e.stopPropagation()}
-      className={className || 'h-3.5 w-3.5 accent-[#0054A6] cursor-pointer'}
+      className={className || 'h-3.5 w-3.5 accent-marca-primario cursor-pointer'}
     />
   );
 }
@@ -289,7 +289,7 @@ export function ClientePropuestaMapPage() {
     catorcenas.forEach(c => m.set(c.key, c.color));
     return m;
   }, [catorcenas]);
-  const colorFor = (key: string) => colorByCat.get(key) || IMU_BLUE;
+  const colorFor = (key: string) => colorByCat.get(key) || COLOR_PRIMARIO;
 
   // Opciones de filtros
   const plazaOptions = useMemo(() => [...new Set(baseRows.map(r => r.plaza).filter(Boolean) as string[])].sort(), [baseRows]);
@@ -560,10 +560,10 @@ export function ClientePropuestaMapPage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-white via-blue-50 to-green-50">
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-white via-marca-claro to-marca-acento-claro">
         <div className="text-center">
           <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-20 w-auto mx-auto mb-4 animate-pulse" />
-          <Loader2 className="h-8 w-8 animate-spin text-[#0054A6] mx-auto" />
+          <Loader2 className="h-8 w-8 animate-spin text-marca-primario mx-auto" />
           <p className="text-gray-500 mt-2">Cargando propuesta...</p>
         </div>
       </div>
@@ -572,7 +572,7 @@ export function ClientePropuestaMapPage() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-white via-blue-50 to-green-50">
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-white via-marca-claro to-marca-acento-claro">
         <div className="text-center">
           <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-16 w-auto mx-auto mb-4" />
           <p className="text-red-600 font-medium">Error al cargar la propuesta</p>
@@ -581,17 +581,17 @@ export function ClientePropuestaMapPage() {
     );
   }
 
-  const selectClass = 'px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#0054A6] max-w-[8.5rem]';
+  const selectClass = 'px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-marca-primario max-w-[8.5rem]';
 
   return (
-    <div className="h-screen overflow-hidden bg-gradient-to-br from-white via-blue-50/30 to-green-50/30 text-gray-800 flex flex-col">
+    <div className="h-screen overflow-hidden bg-gradient-to-br from-white via-marca-claro/30 to-marca-acento-claro/30 text-gray-800 flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-50 backdrop-blur shadow-md border-b bg-white/95 border-gray-200">
         <div className="max-w-full mx-auto px-3 sm:px-4 py-2.5 sm:py-4 flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <img src={MARCA.logoUrl} alt={MARCA.nombre} className="h-9 sm:h-14 w-auto object-contain shrink-0" />
             <div className="border-l pl-2 sm:pl-4 border-gray-300 min-w-0">
-              <h1 className="text-base sm:text-xl font-bold text-[#0054A6] truncate">Propuesta de Campaña</h1>
+              <h1 className="text-base sm:text-xl font-bold text-marca-primario truncate">Propuesta de Campaña</h1>
               <p className="text-[11px] sm:text-sm text-gray-500">Referencia #{propuestaId}</p>
             </div>
           </div>
@@ -599,10 +599,10 @@ export function ClientePropuestaMapPage() {
           {/* Info de campaña (oculta en movil) */}
           <div className="hidden lg:flex items-center gap-6">
             <div className="text-right">
-              <p className="text-sm font-semibold text-[#0054A6]">{data?.cotizacion?.nombre_campania || 'Propuesta'}</p>
+              <p className="text-sm font-semibold text-marca-primario">{data?.cotizacion?.nombre_campania || 'Propuesta'}</p>
               <div className="flex items-center gap-3 text-xs text-gray-500">
-                <span>Inicio: <span className="text-[#0054A6] font-medium">{periodoInicio}</span></span>
-                <span>Fin: <span className="text-[#0054A6] font-medium">{periodoFin}</span></span>
+                <span>Inicio: <span className="text-marca-primario font-medium">{periodoInicio}</span></span>
+                <span>Fin: <span className="text-marca-primario font-medium">{periodoFin}</span></span>
               </div>
             </div>
             <div className="border-l border-gray-200 pl-4 text-right">
@@ -610,7 +610,7 @@ export function ClientePropuestaMapPage() {
               <p className="text-sm font-medium text-gray-800">{data?.solicitud?.cliente || 'N/A'}</p>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <div className={`px-3 py-1 rounded-full text-sm font-medium border ${esCampana ? 'bg-[#0054A6]/10 text-[#0054A6] border-[#0054A6]/30' : 'bg-amber-100 text-amber-700 border-amber-300'}`}>
+              <div className={`px-3 py-1 rounded-full text-sm font-medium border ${esCampana ? 'bg-marca-primario/10 text-marca-primario border-marca-primario/30' : 'bg-amber-100 text-amber-700 border-amber-300'}`}>
                 {leyendaCircuitos}
               </div>
               {/* Versionado: ultima version completada + leyenda del gris */}
@@ -642,14 +642,14 @@ export function ClientePropuestaMapPage() {
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               onClick={handleDownloadXLSX}
-              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-[#7AB800] hover:bg-[#689c00] text-white rounded-lg text-xs sm:text-sm font-medium shadow-sm transition-colors"
+              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-marca-acento hover:bg-[#689c00] text-white rounded-lg text-xs sm:text-sm font-medium shadow-sm transition-colors"
               title="Descargar Excel de lo seleccionado o lo visible en el mapa"
             >
               <FileSpreadsheet className="h-4 w-4" /> <span className="hidden sm:inline">Excel</span>
             </button>
             <button
               onClick={handleDownloadKML}
-              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-[#0054A6] hover:bg-[#003B71] text-white rounded-lg text-xs sm:text-sm font-medium shadow-sm transition-colors"
+              className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-marca-primario hover:bg-marca-oscuro text-white rounded-lg text-xs sm:text-sm font-medium shadow-sm transition-colors"
               title="Descargar KML (agrupado por catorcena) de lo seleccionado o lo visible"
             >
               <Download className="h-4 w-4" /> <span className="hidden sm:inline">KML</span>
@@ -659,7 +659,7 @@ export function ClientePropuestaMapPage() {
               className="flex items-center gap-1.5 px-2.5 sm:px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs sm:text-sm font-medium shadow-sm transition-colors"
               title="Copiar enlace de este mapa"
             >
-              {copied ? <Check className="h-4 w-4 text-[#7AB800]" /> : <Copy className="h-4 w-4" />}
+              {copied ? <Check className="h-4 w-4 text-marca-acento" /> : <Copy className="h-4 w-4" />}
               <span className="hidden sm:inline">{copied ? 'Copiado!' : 'Copiar Enlace'}</span>
             </button>
           </div>
@@ -675,7 +675,7 @@ export function ClientePropuestaMapPage() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Buscar codigo, ubicacion, circuito..."
-                className="w-full pl-8 pr-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[#0054A6] text-gray-700"
+                className="w-full pl-8 pr-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-marca-primario text-gray-700"
               />
             </div>
 
@@ -746,8 +746,8 @@ export function ClientePropuestaMapPage() {
             onClick={() => setShowList(v => !v)}
             className="flex items-center gap-2 px-4 py-2.5 w-full hover:bg-gray-50 transition-colors shrink-0"
           >
-            <MapIcon className="h-4 w-4 text-[#0054A6]" />
-            <span className="text-sm font-semibold text-[#0054A6]">Ubicaciones</span>
+            <MapIcon className="h-4 w-4 text-marca-primario" />
+            <span className="text-sm font-semibold text-marca-primario">Ubicaciones</span>
             <span className="text-xs text-gray-400 ml-1">({visibleRows.length})</span>
             <ChevronDown className={`h-4 w-4 text-gray-400 ml-auto transition-transform ${showList ? '' : '-rotate-90'}`} />
           </button>
@@ -816,7 +816,7 @@ export function ClientePropuestaMapPage() {
                                 <div
                                   key={item._rk}
                                   title={origen ? ORIGEN_LABEL[origen] : undefined}
-                                  className={`flex items-center gap-2 pl-3 pr-2 py-1.5 border-l-2 cursor-pointer ${isActive ? 'bg-[#0054A6]/10' : 'hover:bg-gray-50'} ${noVigente ? 'opacity-50 grayscale italic' : ''}`}
+                                  className={`flex items-center gap-2 pl-3 pr-2 py-1.5 border-l-2 cursor-pointer ${isActive ? 'bg-marca-primario/10' : 'hover:bg-gray-50'} ${noVigente ? 'opacity-50 grayscale italic' : ''}`}
                                   style={{ borderColor: noVigente ? MAPA_GRIS : colorOrigen || cat.color }}
                                   onClick={() => handleFocusLocation(item)}
                                 >
@@ -856,7 +856,7 @@ export function ClientePropuestaMapPage() {
             onChange={setPoiMarkers}
             range={searchRange}
             onRangeChange={setSearchRange}
-            acento="imu"
+            acento="marca"
           />
         </div>
 
@@ -878,7 +878,7 @@ export function ClientePropuestaMapPage() {
             mapContainerStyle={{ width: '100%', height: '100%' }}
             center={mapCenter}
             zoom={12}
-            options={{ styles: IMU_MAP_STYLES, disableDefaultUI: true, zoomControl: true }}
+            options={{ styles: MAPA_ESTILOS, disableDefaultUI: true, zoomControl: true }}
             onLoad={(map) => {
               mapRef.current = map;
               if (mapRows.length > 0) {
@@ -904,7 +904,7 @@ export function ClientePropuestaMapPage() {
                     fillColor: esNoVigente(item) ? MAPA_GRIS
                       : origenColor(item, mostrarOrigen) || colorFor(item._catKey),
                     fillOpacity: esNoVigente(item) ? 0.75 : 0.9,
-                    strokeColor: isActive ? IMU_DARK : esNoVigente(item) ? '#6b7280' : '#ffffff',
+                    strokeColor: isActive ? COLOR_OSCURO : esNoVigente(item) ? '#6b7280' : '#ffffff',
                     strokeWeight: isActive ? 3 : 1.5,
                   }}
                 />
@@ -918,7 +918,7 @@ export function ClientePropuestaMapPage() {
                 <div className="p-2 min-w-[210px]" style={{ color: '#000' }}>
                   <div className="flex items-center gap-1.5 mb-2">
                     <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: colorFor(selectedMarker._catKey) }} />
-                    <h4 className="font-bold text-sm" style={{ color: IMU_DARK }}>{selectedMarker.codigo_unico}</h4>
+                    <h4 className="font-bold text-sm" style={{ color: COLOR_OSCURO }}>{selectedMarker.codigo_unico}</h4>
                   </div>
                   {/* Tarjeta de pin para el CLIENTE: se omiten a propósito
                       Circuito (nomenclatura interna), Tipo de cara y Tarifa
@@ -938,11 +938,11 @@ export function ClientePropuestaMapPage() {
                 </div>
               </InfoWindow>
             )}
-            <PoiMapaOverlay pois={poiMarkers} onChange={setPoiMarkers} color={IMU_GREEN} />
+            <PoiMapaOverlay pois={poiMarkers} onChange={setPoiMarkers} color={COLOR_ACENTO} />
           </GoogleMap>
         ) : (
           <div className="flex items-center justify-center h-full bg-gray-50">
-            <Loader2 className="h-8 w-8 animate-spin text-[#0054A6]" />
+            <Loader2 className="h-8 w-8 animate-spin text-marca-primario" />
           </div>
         )}
       </div>

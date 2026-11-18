@@ -2,9 +2,9 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useModalTracker } from '../../hooks/useModalTracker';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Search, Users, Building2, Tag, Database, Cloud, Plus, Trash2,
-  Filter, ChevronDown, ChevronRight, X, Layers, Package, RefreshCw,
-  Eye, User, Calendar, Hash, FileText, ArrowUpDown, ArrowUp, ArrowDown, Check, Loader2
+  Search, Users, Building2, Tag, Database, Plus, Trash2,
+  Filter, ChevronDown, ChevronRight, X, Layers, Package,
+  Eye, User, FileText, ArrowUpDown, ArrowUp, ArrowDown, Check, Loader2
 } from 'lucide-react';
 import { Header } from '../../components/layout/Header';
 import { clientesService } from '../../services/clientes.service';
@@ -13,8 +13,6 @@ import { useAuthStore } from '../../store/authStore';
 import { getPermissions } from '../../lib/permissions';
 import { useSocketClientes } from '../../hooks/useSocket';
 import { useThemeStore } from '../../store/themeStore';
-import { SAP_BASE_URL } from '../../store/environmentStore';
-import { ClientesSyncModal } from './ClientesSyncModal';
 
 // ============ TIPOS Y CONFIGURACIÓN DE FILTROS/ORDENAMIENTO ============
 type FilterOperator = '=' | '!=' | 'contains' | 'not_contains';
@@ -34,7 +32,7 @@ interface FilterFieldConfig {
 
 // Campos disponibles para filtrar/ordenar
 const FILTER_FIELDS: FilterFieldConfig[] = [
-  { field: 'CUIC', label: 'CUIC', type: 'string' },
+  { field: 'CUIC', label: 'ID Cliente', type: 'string' },
   { field: 'T0_U_Cliente', label: 'Cliente', type: 'string' },
   { field: 'T0_U_RazonSocial', label: 'Razón Social', type: 'string' },
   { field: 'T0_U_Agencia', label: 'Agencia', type: 'string' },
@@ -96,20 +94,6 @@ function applyFilters(data: Cliente[], filters: FilterCondition[]): Cliente[] {
   });
 }
 
-// Helper para formatear fechas
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-';
-  try {
-    return new Date(dateStr).toLocaleDateString('es-MX', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
-    });
-  } catch {
-    return dateStr;
-  }
-}
-
 // ============ VIEW CLIENTE MODAL ============
 interface ViewClienteModalProps {
   isOpen: boolean;
@@ -149,23 +133,8 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                 <div className="flex items-center gap-2">
                   <h2 className={`text-lg font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Cliente</h2>
                   <span className={`font-mono text-sm px-2 py-0.5 rounded-lg ${isDark ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-purple-100 text-purple-700 border border-purple-200'}`}>
-                    CUIC: {cliente.CUIC || '-'}
+                    ID Cliente: {cliente.CUIC || '-'}
                   </span>
-                  {cliente.sap_database && (
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-lg border ${
-                      cliente.sap_database === 'CIMU'
-                        ? (isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200')
-                        : cliente.sap_database === 'TEST'
-                        ? (isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200')
-                        : cliente.sap_database === 'TRADE'
-                        ? (isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200')
-                        : cliente.sap_database === 'UDC'
-                        ? (isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200')
-                        : (isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-100 text-gray-600 border-gray-200')
-                    }`}>
-                      {cliente.sap_database}
-                    </span>
-                  )}
                 </div>
                 <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} text-sm`}>{cliente.T0_U_Cliente || 'Sin nombre'}</p>
               </div>
@@ -184,7 +153,7 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
               <div className="grid grid-cols-4 gap-6">
                 <div className="text-center">
                   <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'} font-mono`}>{cliente.CUIC || '-'}</p>
-                  <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-1`}>CUIC</p>
+                  <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-1`}>ID Cliente</p>
                 </div>
                 <div className="text-center">
                   <p className={`text-lg font-bold ${isDark ? 'text-purple-400' : 'text-purple-600'} truncate`}>{cliente.T2_U_Marca || '-'}</p>
@@ -211,11 +180,7 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                 </h3>
                 <div className="space-y-3">
                   <div className="flex justify-between">
-                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>ID</span>
-                    <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.id}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>CUIC</span>
+                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>ID Cliente</span>
                     <span className={`${isDark ? 'text-purple-300' : 'text-purple-600'} text-sm font-mono font-medium`}>{cliente.CUIC || '-'}</span>
                   </div>
                   <div className="flex justify-between">
@@ -227,8 +192,8 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                     <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm truncate ml-4 max-w-[200px]`}>{cliente.T0_U_RazonSocial || '-'}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>CardCode SAP</span>
-                    <span className={`${isDark ? 'text-cyan-300' : 'text-cyan-700'} text-sm font-mono font-medium`}>{cliente.card_code || cliente.ACA_U_SAPCode || '-'}</span>
+                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>Unidad de Negocio</span>
+                    <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm truncate ml-4 max-w-[200px]`}>{cliente.T1_U_UnidadNegocio || '-'}</span>
                   </div>
                 </div>
               </div>
@@ -242,19 +207,7 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                 <div className="space-y-3">
                   <div className="flex justify-between">
                     <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>Asesor</span>
-                    <span className={`${isDark ? 'text-emerald-400' : 'text-emerald-600'} text-sm font-medium`}>{cliente.ASESOR_U_Asesor || cliente.T0_U_Asesor || '-'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>ID Asesor</span>
-                    <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.ASESOR_U_IDAsesor || cliente.T0_U_IDAsesor || '-'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>Código SAP Asesor</span>
-                    <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.ASESOR_U_SAPCode || '-'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-sm`}>Unidad Asesor</span>
-                    <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{cliente.ASESOR_U_UnidadNegocio || '-'}</span>
+                    <span className={`${isDark ? 'text-emerald-400' : 'text-emerald-600'} text-sm font-medium`}>{cliente.T0_U_Asesor || '-'}</span>
                   </div>
                 </div>
               </div>
@@ -269,7 +222,6 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                   Agencia
                 </h3>
                 <p className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium text-lg`}>{cliente.T0_U_Agencia || '-'}</p>
-                <p className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs mt-1`}>ID: {cliente.T0_U_IDAgencia || '-'}</p>
               </div>
 
               {/* Marca y Producto */}
@@ -279,10 +231,8 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                   Marca & Producto
                 </h3>
                 <p className={`${isDark ? 'text-fuchsia-300' : 'text-fuchsia-600'} font-medium`}>{cliente.T2_U_Marca || '-'}</p>
-                <p className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs mt-0.5`}>ID Marca: {cliente.T1_U_IDMarca || '-'}</p>
                 <div className={`mt-2 pt-2 border-t ${isDark ? 'border-zinc-700/50' : 'border-gray-200'}`}>
                   <p className={`${isDark ? 'text-amber-300' : 'text-amber-600'} font-medium`}>{cliente.T2_U_Producto || '-'}</p>
-                  <p className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs mt-0.5`}>ID Producto: {cliente.T2_U_IDProducto || '-'}</p>
                 </div>
               </div>
 
@@ -293,59 +243,6 @@ function ViewClienteModal({ isOpen, onClose, cliente }: ViewClienteModalProps) {
                   Categoría
                 </h3>
                 <p className={`${isDark ? 'text-white' : 'text-gray-900'} font-medium text-lg`}>{cliente.T2_U_Categoria || '-'}</p>
-                <p className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs mt-1`}>ID: {cliente.T2_U_IDCategoria || '-'}</p>
-              </div>
-            </div>
-
-            {/* Vigencias */}
-            <div className={`${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} rounded-2xl p-5 border`}>
-              <h3 className={`text-sm font-semibold ${isDark ? 'text-purple-400' : 'text-purple-600'} mb-4 flex items-center gap-2`}>
-                <Calendar className="h-4 w-4" />
-                Vigencias
-              </h3>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>Válido Desde (T1)</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{formatDate(cliente.T1_U_ValidFrom)}</span>
-                </div>
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>Válido Hasta (T1)</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{formatDate(cliente.T1_U_ValidTo)}</span>
-                </div>
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>Válido Desde (T2)</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{formatDate(cliente.T2_U_ValidFrom)}</span>
-                </div>
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>Válido Hasta (T2)</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{formatDate(cliente.T2_U_ValidTo)}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* IDs Técnicos */}
-            <div className={`${isDark ? 'bg-zinc-800/30 border-zinc-800/50' : 'bg-gray-50 border-gray-200'} rounded-2xl p-5 border`}>
-              <h3 className={`text-sm font-semibold ${isDark ? 'text-purple-400' : 'text-purple-600'} mb-4 flex items-center gap-2`}>
-                <Hash className="h-4 w-4" />
-                IDs Técnicos
-              </h3>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>T0 IDACA</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.T0_U_IDACA || '-'}</span>
-                </div>
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>T1 IDACA</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.T1_U_IDACA || '-'}</span>
-                </div>
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>T1 IDCM</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.T1_U_IDCM || '-'}</span>
-                </div>
-                <div>
-                  <span className={`${isDark ? 'text-zinc-500' : 'text-gray-500'} text-xs block mb-1`}>T2 IDCM</span>
-                  <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-mono`}>{cliente.T2_U_IDCM || '-'}</span>
-                </div>
               </div>
             </div>
           </div>
@@ -542,7 +439,6 @@ export function ClientesPage() {
   // WebSocket para actualizaciones en tiempo real
   useSocketClientes();
 
-  const [activeTab, setActiveTab] = useState<'db' | 'CIMU' | 'TEST' | 'TRADE' | 'UDC'>('db');
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -554,8 +450,6 @@ export function ClientesPage() {
   const [showViewModal, setShowViewModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   useModalTracker('Registrar Cliente', showCreateModal);
-  const [showSyncModal, setShowSyncModal] = useState(false);
-  useModalTracker('Sincronizar Clientes SAP', showSyncModal);
 
   // Estados para filtros avanzados
   const [filters, setFilters] = useState<FilterCondition[]>([]);
@@ -575,7 +469,6 @@ export function ClientesPage() {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
       setPage(1);
-      setSapPage(1);
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
@@ -600,69 +493,12 @@ export function ClientesPage() {
     enabled: needsFullData,
   });
 
-  // SAP pagination
-  const [sapPage, setSapPage] = useState(1);
-  const sapLimit = 100;
-
-  // Fetch SAP clients per database - all prefetch on mount (no wait for tab click)
-  const { data: cimuData, isLoading: cimuLoading, refetch: refetchCimu, isFetching: cimuFetching } = useQuery({
-    queryKey: ['clientes-sap-CIMU', debouncedSearch],
-    queryFn: () => clientesService.getSAPClientesByDB('CIMU', debouncedSearch || undefined),
-    staleTime: 10 * 60 * 1000,
-  });
-
-  const { data: testData, isLoading: testLoading, refetch: refetchTest, isFetching: testFetching } = useQuery({
-    queryKey: ['clientes-sap-TEST', debouncedSearch],
-    queryFn: () => clientesService.getSAPClientesByDB('TEST', debouncedSearch || undefined),
-    staleTime: 10 * 60 * 1000,
-  });
-
-  const { data: tradeData, isLoading: tradeLoading, refetch: refetchTrade, isFetching: tradeFetching } = useQuery({
-    queryKey: ['clientes-sap-TRADE', debouncedSearch],
-    queryFn: () => clientesService.getSAPClientesByDB('TRADE', debouncedSearch || undefined),
-    staleTime: 10 * 60 * 1000,
-  });
-
-  // UDC (aeropuerto AICM, compañía SBOUDC).
-  const { data: udcData, isLoading: udcLoading, refetch: refetchUdc, isFetching: udcFetching } = useQuery({
-    queryKey: ['clientes-sap-UDC', debouncedSearch],
-    queryFn: () => clientesService.getSAPClientesByDB('UDC', debouncedSearch || undefined),
-    staleTime: 10 * 60 * 1000,
-    enabled: permissions.canVerUDC, // solo roles de Aeropuerto ven/consultan UDC
-  });
-
-  // Helper to get the active SAP query data/refetch
-  const activeSapData = activeTab === 'CIMU' ? cimuData : activeTab === 'TEST' ? testData : activeTab === 'TRADE' ? tradeData : activeTab === 'UDC' ? udcData : null;
-  const activeSapLoading = activeTab === 'CIMU' ? cimuLoading : activeTab === 'TEST' ? testLoading : activeTab === 'TRADE' ? tradeLoading : activeTab === 'UDC' ? udcLoading : false;
-  const activeSapFetching = activeTab === 'CIMU' ? cimuFetching : activeTab === 'TEST' ? testFetching : activeTab === 'TRADE' ? tradeFetching : activeTab === 'UDC' ? udcFetching : false;
-  const activeSapRefetch = activeTab === 'CIMU' ? refetchCimu : activeTab === 'TEST' ? refetchTest : activeTab === 'TRADE' ? refetchTrade : activeTab === 'UDC' ? refetchUdc : null;
-
-  // Refresh SAP data (clear cache on backend)
-  const handleRefreshSap = async () => {
-    // Clear SAP proxy cache for cuic data
-    try {
-      await Promise.all([
-        fetch(`${SAP_BASE_URL}/clear-cache?key=cuic`),
-        fetch(`${SAP_BASE_URL}/clear-cache?key=cuic-test`),
-        fetch(`${SAP_BASE_URL}/clear-cache?key=cuic-trade`),
-        fetch(`${SAP_BASE_URL}/clear-cache?key=cuic-udc`),
-      ]);
-    } catch (e) { /* ignore */ }
-    if (activeSapRefetch) {
-      await activeSapRefetch();
-    }
-  };
-
   // Create client mutation
   const createMutation = useMutation({
     mutationFn: clientesService.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clientes'] });
       queryClient.invalidateQueries({ queryKey: ['clientes-full'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-CIMU'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-TEST'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-TRADE'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-UDC'] });
       queryClient.invalidateQueries({ queryKey: ['clientes-stats'] });
     },
   });
@@ -673,45 +509,19 @@ export function ClientesPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clientes'] });
       queryClient.invalidateQueries({ queryKey: ['clientes-full'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-CIMU'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-TEST'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-TRADE'] });
-      queryClient.invalidateQueries({ queryKey: ['clientes-sap-UDC'] });
       queryClient.invalidateQueries({ queryKey: ['clientes-stats'] });
     },
   });
 
-  // Get current data based on tab and filters
-  const isDb = activeTab === 'db';
-  const isSapTab = activeTab === 'CIMU' || activeTab === 'TEST' || activeTab === 'TRADE' || activeTab === 'UDC';
-
-  // All SAP data (for total count + filtering)
-  const allSapData = useMemo(() => {
-    if (!isSapTab) return [];
-    return activeSapData?.data || [];
-  }, [isSapTab, activeSapData]);
-
-  // Paginated SAP data
-  const paginatedSapData = useMemo(() => {
-    const start = (sapPage - 1) * sapLimit;
-    return allSapData.slice(start, start + sapLimit);
-  }, [allSapData, sapPage]);
-
-  const sapTotalPages = Math.max(1, Math.ceil(allSapData.length / sapLimit));
-
+  // Get current data based on filters (solo clientes de la BD local)
   const currentData = useMemo(() => {
-    if (isSapTab) {
-      return paginatedSapData;
-    }
     if (needsFullData && fullDbData?.data) {
       return fullDbData.data;
     }
     return dbData?.data || [];
-  }, [isSapTab, paginatedSapData, fullDbData, dbData, needsFullData]);
+  }, [fullDbData, dbData, needsFullData]);
 
-  const isLoading = isSapTab
-    ? activeSapLoading
-    : (needsFullData ? fullDbLoading : dbLoading);
+  const isLoading = needsFullData ? fullDbLoading : dbLoading;
 
   // Obtener valores únicos para cada campo de filtro
   const getUniqueValues = useMemo(() => {
@@ -856,25 +666,6 @@ export function ClientesPage() {
     });
   };
 
-  const [addingCuic, setAddingCuic] = useState<number | null>(null);
-
-  const handleAddToDatabase = async (cliente: Cliente) => {
-    try {
-      setAddingCuic(cliente.CUIC ?? null);
-      const payload: Partial<Cliente> = { ...cliente };
-      if (isSapTab) {
-        payload.sap_database = activeTab;
-        payload.card_code = cliente.ACA_U_SAPCode || null;
-        payload.salesperson_code = cliente.ASESOR_U_SAPCode_Original ? Number(cliente.ASESOR_U_SAPCode_Original) : (cliente.ASESOR_U_SAPCode ? Number(cliente.ASESOR_U_SAPCode) : null);
-      }
-      await createMutation.mutateAsync(payload);
-    } catch (error) {
-      console.error('Error adding cliente:', error);
-    } finally {
-      setAddingCuic(null);
-    }
-  };
-
   const handleDelete = async (id: number) => {
     if (confirm('¿Estás seguro de eliminar este cliente?')) {
       try {
@@ -893,23 +684,11 @@ export function ClientesPage() {
     setExpandedGroups(new Set());
   };
 
-  const sapDatabaseBadgeClasses: Record<string, string> = {
-    CIMU: isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200',
-    TEST: isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200',
-    TRADE: isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    UDC: isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200',
-  };
-
-  const renderClientRow = (item: Cliente, isDbRow: boolean, index: number) => (
-    <tr key={isDbRow ? `db-${item.id}` : `sap-${index}-${item.CUIC}`} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-100 hover:bg-gray-50'} transition-colors`}>
+  const renderClientRow = (item: Cliente) => (
+    <tr key={`db-${item.id}`} className={`border-b ${isDark ? 'border-zinc-800/50 hover:bg-zinc-800/30' : 'border-gray-100 hover:bg-gray-50'} transition-colors`}>
       <td className="px-2 py-2">
         <div className="flex items-center gap-1">
           <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${isDark ? 'bg-purple-500/10 text-purple-300' : 'bg-purple-50 text-purple-700'}`}>{item.CUIC || '-'}</span>
-          {isDbRow && item.sap_database && (
-            <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded border ${sapDatabaseBadgeClasses[item.sap_database] || (isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-100 text-gray-600 border-gray-200')}`}>
-              {item.sap_database}
-            </span>
-          )}
         </div>
       </td>
       <td className="px-2 py-2">
@@ -935,14 +714,12 @@ export function ClientesPage() {
           {item.T2_U_Categoria || '-'}
         </span>
       </td>
-      {isDbRow && (
-        <td className="px-2 py-2 hidden xl:table-cell">
-          <span className="inline-flex items-center gap-1 max-w-[100px]">
-            <Package className={`h-3 w-3 ${isDark ? 'text-amber-400' : 'text-amber-600'} flex-shrink-0`} />
-            <span className={`${isDark ? 'text-amber-300' : 'text-amber-600'} text-[11px] truncate`}>{item.T2_U_Producto || '-'}</span>
-          </span>
-        </td>
-      )}
+      <td className="px-2 py-2 hidden xl:table-cell">
+        <span className="inline-flex items-center gap-1 max-w-[100px]">
+          <Package className={`h-3 w-3 ${isDark ? 'text-amber-400' : 'text-amber-600'} flex-shrink-0`} />
+          <span className={`${isDark ? 'text-amber-300' : 'text-amber-600'} text-[11px] truncate`}>{item.T2_U_Producto || '-'}</span>
+        </span>
+      </td>
       <td className="px-2 py-2">
         <div className="flex items-center gap-0.5">
           <button
@@ -952,7 +729,7 @@ export function ClientesPage() {
           >
             <Eye className="h-3 w-3" />
           </button>
-          {isDbRow && permissions.canDeleteClientes && (
+          {permissions.canDeleteClientes && (
             <button
               onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
               disabled={deleteMutation.isPending}
@@ -962,30 +739,12 @@ export function ClientesPage() {
               <Trash2 className="h-3 w-3" />
             </button>
           )}
-          {!isDbRow && (
-            <button
-              onClick={(e) => { e.stopPropagation(); handleAddToDatabase(item); }}
-              disabled={addingCuic !== null}
-              className={`p-1.5 rounded-lg ${isDark ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 hover:text-emerald-300 border-emerald-500/20 hover:border-emerald-500/40' : 'bg-emerald-50 text-emerald-600 hover:bg-emerald-100 hover:text-emerald-700 border-emerald-200 hover:border-emerald-300'} border transition-all disabled:opacity-50`}
-              title="Agregar a BD"
-            >
-              {addingCuic === item.CUIC ? (
-                <RefreshCw className="h-3 w-3 animate-spin" />
-              ) : (
-                <Plus className="h-3 w-3" />
-              )}
-            </button>
-          )}
         </div>
       </td>
     </tr>
   );
 
   const dbTotalPages = dbData?.pagination?.totalPages || 1;
-  const cimuTotal = cimuData?.total ?? 0;
-  const testTotal = testData?.total ?? 0;
-  const tradeTotal = tradeData?.total ?? 0;
-  const udcTotal = udcData?.total ?? 0;
   const dbTotal = dbData?.pagination?.total ?? 0;
 
   return (
@@ -1033,49 +792,13 @@ export function ClientesPage() {
               {/* Tabs */}
               <div className="flex items-center gap-2 flex-wrap">
                 <TabButton
-                  active={activeTab === 'db'}
-                  onClick={() => { setActiveTab('db'); setPage(1); clearAllFilters(); }}
+                  active
+                  onClick={() => { setPage(1); clearAllFilters(); }}
                   icon={Database}
                   label="Base de Datos"
                   count={dbTotal}
                   loading={dbLoading}
                 />
-                <TabButton
-                  active={activeTab === 'CIMU'}
-                  onClick={() => { setActiveTab('CIMU'); setSapPage(1); clearAllFilters(); }}
-                  icon={Cloud}
-                  label="CIMU"
-                  count={cimuTotal}
-                  loading={activeTab === 'CIMU' && cimuLoading}
-                />
-                <TabButton
-                  active={activeTab === 'TRADE'}
-                  onClick={() => { setActiveTab('TRADE'); setSapPage(1); clearAllFilters(); }}
-                  icon={Cloud}
-                  label="TRADE"
-                  count={tradeTotal}
-                  loading={activeTab === 'TRADE' && tradeLoading}
-                />
-                {permissions.canVerUDC && (
-                <TabButton
-                  active={activeTab === 'UDC'}
-                  onClick={() => { setActiveTab('UDC'); setSapPage(1); clearAllFilters(); }}
-                  icon={Cloud}
-                  label="UDC"
-                  count={udcTotal}
-                  loading={activeTab === 'UDC' && udcLoading}
-                />
-                )}
-                {isSapTab && (
-                  <button
-                    onClick={handleRefreshSap}
-                    disabled={activeSapFetching}
-                    className={`p-2 rounded-lg ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-700'} border transition-all disabled:opacity-50`}
-                    title="Refrescar SAP"
-                  >
-                    <RefreshCw className={`h-4 w-4 ${activeSapFetching ? 'animate-spin' : ''}`} />
-                  </button>
-                )}
               </div>
 
               {/* Search */}
@@ -1098,18 +821,6 @@ export function ClientesPage() {
                 <Plus className="h-4 w-4" />
                 Nuevo Cliente
               </button>
-
-              {/* Sincronizar desde SAP — visible para todos en tab "db" */}
-              {isDb && (
-                <button
-                  onClick={() => setShowSyncModal(true)}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all border ${isDark ? 'bg-zinc-800/60 text-purple-300 border-purple-500/30 hover:bg-zinc-800' : 'bg-white text-purple-700 border-purple-300 hover:bg-purple-50'}`}
-                  title="Comparar QEB con SAP y aplicar cambios"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Sincronizar SAP
-                </button>
-              )}
 
               {/* Botones de Acción: Filtrar, Agrupar, Ordenar */}
               <div className="flex items-center gap-2">
@@ -1375,15 +1086,13 @@ export function ClientesPage() {
                 <table className="w-full">
                   <thead>
                     <tr className={`border-b ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/30 via-fuchsia-900/20 to-purple-900/30' : 'border-purple-100 bg-gradient-to-r from-purple-50 via-fuchsia-50 to-purple-50'}`}>
-                      <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>CUIC</th>
+                      <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>ID Cliente</th>
                       <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>Cliente</th>
                       <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden lg:table-cell`}>Razón Social</th>
                       <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden md:table-cell`}>Agencia</th>
                       <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}>Marca</th>
                       <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden xl:table-cell`}>Categoría</th>
-                      {isDb && (
-                        <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden xl:table-cell`}>Producto</th>
-                      )}
+                      <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider hidden xl:table-cell`}>Producto</th>
                       <th className={`px-2 py-2 text-left text-[10px] font-semibold ${isDark ? 'text-purple-300' : 'text-purple-600'} uppercase tracking-wider`}></th>
                     </tr>
                   </thead>
@@ -1415,24 +1124,24 @@ export function ClientesPage() {
                                   />
                                   {/* Level 2 Content */}
                                   {expandedGroups.has(`${group.name}|${subgroup.name}`) &&
-                                    subgroup.items.map((item, idx) => renderClientRow(item, isDb, idx))
+                                    subgroup.items.map((item) => renderClientRow(item))
                                   }
                                 </React.Fragment>
                               ))
                             ) : (
                               // No subgroups (1 level grouping)
-                              group.items.map((item, idx) => renderClientRow(item, isDb, idx))
+                              group.items.map((item) => renderClientRow(item))
                             )
                           )}
                         </React.Fragment>
                       ))
                     ) : (
-                      filteredData.map((item, idx) => renderClientRow(item, isDb, idx))
+                      filteredData.map((item) => renderClientRow(item))
                     )}
                     {filteredData.length === 0 && !groupedData && (
                       <tr>
-                        <td colSpan={isDb ? 8 : 7} className={`px-4 py-12 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                          {isSapTab ? `No hay clientes nuevos en SAP (${activeTab})` : "No se encontraron clientes"}
+                        <td colSpan={8} className={`px-4 py-12 text-center ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
+                          No se encontraron clientes
                         </td>
                       </tr>
                     )}
@@ -1440,8 +1149,8 @@ export function ClientesPage() {
                 </table>
               </div>
 
-              {/* Pagination for DB only (when not filtering/grouping) */}
-              {isDb && !needsFullData && dbData?.pagination && dbTotalPages > 1 && (
+              {/* Pagination (when not filtering/grouping) */}
+              {!needsFullData && dbData?.pagination && dbTotalPages > 1 && (
                 <div className={`flex items-center justify-between border-t ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-purple-100 bg-gradient-to-r from-purple-50/50 via-transparent to-fuchsia-50/50'} px-4 py-3`}>
                   <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-purple-500'}`}>
                     Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{page}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{dbTotalPages}</span>
@@ -1467,38 +1176,11 @@ export function ClientesPage() {
               )}
 
               {/* Full data info when filtering/grouping */}
-              {isDb && needsFullData && (
+              {needsFullData && (
                 <div className={`flex items-center justify-between px-4 py-3 border-t ${isDark ? 'border-purple-500/20' : 'border-purple-100'}`}>
                   <span className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                     Mostrando {filteredData.length} clientes filtrados
                   </span>
-                </div>
-              )}
-
-              {/* SAP pagination + info */}
-              {isSapTab && (
-                <div className={`flex items-center justify-between border-t ${isDark ? 'border-purple-500/20 bg-gradient-to-r from-purple-900/20 via-transparent to-fuchsia-900/20' : 'border-purple-100 bg-gradient-to-r from-purple-50/50 via-transparent to-fuchsia-50/50'} px-4 py-3`}>
-                  <span className={`text-sm ${isDark ? 'text-purple-300/70' : 'text-purple-500'}`}>
-                    Página <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{sapPage}</span> de <span className={`font-semibold ${isDark ? 'text-purple-300' : 'text-purple-700'}`}>{sapTotalPages}</span>
-                    <span className={`${isDark ? 'text-purple-300/50' : 'text-purple-400'} ml-2`}>({allSapData.length} total)</span>
-                    {activeSapData?.cached && <span className="ml-2 text-emerald-400 text-xs">(cache)</span>}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setSapPage(p => Math.max(1, p - 1))}
-                      disabled={sapPage === 1}
-                      className={`px-4 py-2 rounded-lg border ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'} text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all`}
-                    >
-                      Anterior
-                    </button>
-                    <button
-                      onClick={() => setSapPage(p => Math.min(sapTotalPages, p + 1))}
-                      disabled={sapPage === sapTotalPages}
-                      className={`px-4 py-2 rounded-lg border ${isDark ? 'border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:border-purple-500/50' : 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 hover:border-purple-300'} text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-all`}
-                    >
-                      Siguiente
-                    </button>
-                  </div>
                 </div>
               )}
             </>
@@ -1521,9 +1203,9 @@ export function ClientesPage() {
             <div className={`${isDark ? 'bg-gradient-to-r from-purple-900/40 via-fuchsia-900/30 to-purple-900/40 border-purple-500/20' : 'bg-gradient-to-r from-purple-50 via-fuchsia-50 to-purple-50 border-purple-200'} px-6 py-4 border-b`}>
               <h3 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'} flex items-center gap-2`}>
                 <Plus className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
-                Nuevo Cliente Manual
+                Nuevo Cliente
               </h3>
-              <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-1`}>CUIC: <span className={`${isDark ? 'text-purple-300' : 'text-purple-600'} font-mono`}>0</span> (sin SAP)</p>
+              <p className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-1`}>El ID de cliente se asigna automáticamente al guardar.</p>
             </div>
             {/* Form */}
             <form
@@ -1540,6 +1222,7 @@ export function ClientesPage() {
                   T2_U_Categoria: (form.elements.namedItem('categoria') as HTMLInputElement).value || null,
                   T0_U_Agencia: (form.elements.namedItem('agencia') as HTMLInputElement).value || null,
                   T0_U_Asesor: (form.elements.namedItem('asesor') as HTMLInputElement).value || null,
+                  T1_U_UnidadNegocio: (form.elements.namedItem('unidad_negocio') as HTMLInputElement).value || null,
                   sap_database: null,
                 };
                 try {
@@ -1557,8 +1240,8 @@ export function ClientesPage() {
                   <input name="razon_social" required className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`} placeholder="Razón social del cliente" />
                 </div>
                 <div className="col-span-2">
-                  <label className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-1 block`}>Cliente *</label>
-                  <input name="cliente" required className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`} placeholder="Nombre del cliente" />
+                  <label className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-1 block`}>Nombre Comercial *</label>
+                  <input name="cliente" required className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`} placeholder="Nombre comercial del cliente" />
                 </div>
                 <div>
                   <label className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-1 block`}>Marca</label>
@@ -1580,6 +1263,10 @@ export function ClientesPage() {
                   <label className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-1 block`}>Asesor</label>
                   <input name="asesor" className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`} placeholder="Asesor" />
                 </div>
+                <div>
+                  <label className={`text-xs ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-1 block`}>Unidad de Negocio</label>
+                  <input name="unidad_negocio" className={`w-full px-3 py-2 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white' : 'bg-gray-50 border-gray-300 text-gray-900'} border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500/50`} placeholder="Unidad de negocio" />
+                </div>
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => setShowCreateModal(false)} className={`px-4 py-2 rounded-lg border ${isDark ? 'border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500' : 'border-gray-300 text-gray-500 hover:text-gray-700 hover:border-gray-400'} text-sm transition-all`}>
@@ -1594,9 +1281,6 @@ export function ClientesPage() {
           </div>
         </div>
       )}
-
-      {/* Sync modal */}
-      <ClientesSyncModal isOpen={showSyncModal} onClose={() => setShowSyncModal(false)} />
     </div>
   );
 }

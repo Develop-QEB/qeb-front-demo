@@ -443,7 +443,7 @@ export function AuditoriaReservasTab({ isDark }: { isDark: boolean }) {
         <ResultTable
           isDark={isDark} query={cliDesQuery} data={cliDesFiltered}
           title="Cliente desalineado"
-          subtitle="Solicitud, propuesta y campaña con cliente_id distinto o card_code/CUIC desfasado."
+          subtitle="Solicitud, propuesta y campaña con cliente_id distinto o datos del cliente desfasados."
           columns={[
             { h: 'prop_id', cell: r => `#${r.propuesta_id}` },
             { h: 'cam', cell: r => r.cam_nombre ? `#${r.cam_id} ${r.cam_nombre}` : `#${r.cam_id || '-'}` },

@@ -38,7 +38,6 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../lib/api';
 import { Header } from '../../components/layout/Header';
 import { Skeleton } from '../../components/ui/skeleton';
-import { PosteoStatsCard } from '../../components/PosteoStatsCard';
 import { formatMoneyMXN } from '../../lib/utils';
 import { useThemeStore } from '../../store/themeStore';
 import { Button } from '../../components/ui/button';
@@ -1321,7 +1320,7 @@ function InventoryTable({ data, isLoading, page, totalPages, total, onPageChange
 
   const downloadCSV = useCallback(async () => {
     const generateCSV = (items: any[]) => {
-      const headers = ['Codigo', 'Plaza', 'Municipio', 'Mueble', 'Tipo', 'Estatus', 'Cliente', 'CUIC', 'Marca', 'Agencia', 'ID Propuesta', 'ID Campana', 'Nombre', 'APS'];
+      const headers = ['Codigo', 'Plaza', 'Municipio', 'Mueble', 'Tipo', 'Estatus', 'Cliente', 'ID Cliente', 'Marca', 'Agencia', 'ID Propuesta', 'ID Campana', 'Nombre', 'APS'];
       const rows = items.map(item => [
         item.codigo_unico || item.id,
         item.plaza || '',
@@ -1386,7 +1385,7 @@ function InventoryTable({ data, isLoading, page, totalPages, total, onPageChange
       });
       const items = allData.items;
       if (items.length === 0) return;
-      const headers = ['Codigo', 'Plaza', 'Municipio', 'Mueble', 'Tipo de Mueble', 'Tipo', 'Estatus', 'Cliente', 'CUIC', 'Marca', 'Agencia', 'ID Propuesta', 'ID Campana', 'Nombre', 'APS'];
+      const headers = ['Codigo', 'Plaza', 'Municipio', 'Mueble', 'Tipo de Mueble', 'Tipo', 'Estatus', 'Cliente', 'ID Cliente', 'Marca', 'Agencia', 'ID Propuesta', 'ID Campana', 'Nombre', 'APS'];
       const rows = items.map((item: any) => [
         item.codigo_unico || item.id,
         item.plaza || '',
@@ -2116,53 +2115,6 @@ export function DashboardPage() {
     return filterOptions.catorcenas.find(c => c.id === filters.catorcena_id) || null;
   }, [filters.catorcena_id, filterOptions]);
 
-  // Estado de POST a SAP — depende del periodo (catorcena / rango de fechas) y
-  // de los filtros de inventario (estado/plaza/formato/nse/tipo), igual que los
-  // KPIs. El dashboard SIEMPRE opera sobre un periodo: si el usuario no eligio
-  // uno, usamos la catorcena actual (la que muestra el indicador "Periodo
-  // Actual"), no todo el historico.
-  //
-  // Al filtrar por plaza el back prorratea el monto por caras: un circuito con
-  // caras en varias plazas aporta solo la fraccion que cae en la plaza filtrada,
-  // asi que la suma de todas las plazas cuadra con el total sin filtro. El
-  // conteo de circuitos no se parte, por lo que si suma mas que el total.
-  const posteoFilters = useMemo(() => {
-    const inventario = {
-      estado: filters.estado,
-      ciudad: filters.ciudad,
-      formato: filters.formato,
-      nse: filters.nse,
-      tipo: filters.tipo,
-    };
-    if (filters.catorcena_id) return { ...inventario, catorcena_id: filters.catorcena_id };
-    if (filters.fecha_inicio && filters.fecha_fin) return { ...inventario, fecha_inicio: filters.fecha_inicio, fecha_fin: filters.fecha_fin };
-    if (catorcenaDefault?.id) return { ...inventario, catorcena_id: catorcenaDefault.id };
-    return inventario;
-  }, [
-    filters.catorcena_id, filters.fecha_inicio, filters.fecha_fin, catorcenaDefault?.id,
-    filters.estado, filters.ciudad, filters.formato, filters.nse, filters.tipo,
-  ]);
-  const { data: posteoStats, isLoading: loadingPosteo } = useQuery({
-    queryKey: ['dashboard', 'posteo-stats', posteoFilters],
-    queryFn: () => dashboardService.getPosteoStats(posteoFilters),
-    // Espera al periodo default: con posteoFilters {} el back agrega TODO el
-    // historico de solicitudCaras.
-    enabled: periodoListo,
-  });
-
-  // Etiqueta del periodo que refleja el bloque de posteo (para dejar claro que
-  // los montos son de esa catorcena, no del historico completo).
-  const posteoPeriodoLabel = useMemo(() => {
-    if (filters.fecha_inicio && filters.fecha_fin) {
-      // timeZone UTC: 'YYYY-MM-DD' se parsea como medianoche UTC; en hora local
-      // se mostraria un dia antes.
-      const fmt = (d: string) => new Date(d).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-      return `${fmt(filters.fecha_inicio)} – ${fmt(filters.fecha_fin)}`;
-    }
-    const cat = filteredCatorcena || catorcenaDefault;
-    return cat ? `Cat. ${cat.numero} / ${cat.ano}` : null;
-  }, [filters.fecha_inicio, filters.fecha_fin, filteredCatorcena, catorcenaDefault]);
-
   const graficas = useMemo(() => activeEstatus !== 'total' && estatusStats ? estatusStats.graficas : stats?.graficas, [activeEstatus, estatusStats, stats]);
 
   // Base para los % de los KPIs: el total de inventarios con los filtros activos.
@@ -2204,14 +2156,14 @@ export function DashboardPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `pase_a_ventas_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `ventas_confirmadas_${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (e) {
-      console.error('Error descargando reporte pase a ventas:', e);
-      alert('No se pudo descargar el reporte de pase a ventas.');
+      console.error('Error descargando reporte de ventas confirmadas:', e);
+      alert('No se pudo descargar el reporte de ventas confirmadas.');
     } finally {
       setDescargandoPaseVentas(false);
     }
@@ -2254,10 +2206,10 @@ export function DashboardPage() {
                   onClick={descargarPaseAVentas}
                   disabled={descargandoPaseVentas}
                   className="gap-2"
-                  title="Reporte Pase a Ventas"
+                  title="Reporte de ventas confirmadas"
                 >
                   <Download className="h-4 w-4" />
-                  {descargandoPaseVentas ? 'Generando...' : 'Reporte Pase a Ventas'}
+                  {descargandoPaseVentas ? 'Generando...' : 'Reporte ventas confirmadas'}
                 </Button>
               )}
               <Button
@@ -2495,9 +2447,6 @@ export function DashboardPage() {
           />
           <KPICard title="No Disponible" value={stats?.kpis.bloqueados || 0} icon={Lock} color="pink" isActive={activeEstatus === 'Bloqueado'} onClick={() => handleEstatusChange('Bloqueado')} isLoading={loadingStats} total={kpiTotal} />
         </div>
-
-        {/* Estado de POST a SAP: pendientes por postear vs posteadas */}
-        <PosteoStatsCard data={posteoStats} isLoading={loadingPosteo} periodoLabel={posteoPeriodoLabel} collapseKey="dashboard" />
 
         {/* Charts Row 1 */}
         {(loadingEstatus || loadingInventory) && (

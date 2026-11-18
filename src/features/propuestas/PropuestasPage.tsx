@@ -35,7 +35,7 @@ import { ConfirmModal } from '../../components/ui/confirm-modal';
 import { PropuestaAprobadaInfoModal } from '../../components/PropuestaAprobadaInfoModal';
 import { monthLabelShort } from '../../lib/periodos';
 import {
-  getStatusColor, STATUS_OPTIONS, COMPLETITUD_STATUS, esPropuestaIncompleta, IncompletaBadge,
+  getStatusColor, STATUS_OPTIONS, COMPLETITUD_STATUS, esPropuestaIncompleta, IncompletaBadge, etiquetaEstatusPropuesta,
   esPropuestaBloqueada, puedeAbrirPropuesta,
 } from './propuestaEstatus';
 import PropuestasTableroView, {
@@ -750,7 +750,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
             <MessageSquare className={`h-5 w-5 ${isDark ? 'text-purple-400' : 'text-purple-600'}`} />
             <h2 className={`text-lg font-semibold ${isDark ? 'text-white' : 'text-gray-900'}`}>Estado y Comentarios</h2>
             <span className={`px-2 py-1 rounded-full text-xs ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
-              {propuesta.status}
+              {etiquetaEstatusPropuesta(propuesta.status)}
             </span>
           </div>
           <button onClick={onClose} className={`p-2 ${isDark ? 'hover:bg-zinc-800' : 'hover:bg-gray-100'} rounded-lg transition-colors`}>
@@ -782,7 +782,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
                     {rechazadasDg > 0 && ` — DG: ${rechazadasDg}`}
                     {rechazadasDcm > 0 && `${rechazadasDg > 0 ? ',' : ' —'} DCM: ${rechazadasDcm}`}.{' '}
                   </>)}
-                  No se puede cambiar a "Pase a ventas", "Aprobada", "Rechazada" ni "Cancelada" hasta que todas las caras estén autorizadas.
+                  No se puede cambiar a "Confirmar venta", "Aprobada", "Rechazada" ni "Cancelada" hasta que todas las caras estén autorizadas.
                 </p>
               </div>
             </div>
@@ -795,7 +795,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
               <div>
                 <p className={`text-sm font-medium ${isDark ? 'text-amber-200' : 'text-amber-800'}`}>Reservas incompletas</p>
                 <p className={`text-xs mt-1 ${isDark ? 'text-amber-300/70' : 'text-amber-700'}`}>
-                  Hay circuitos sin sus reservas completas (de menos o de más). Aviso informativo: no impide cambiar a "Pase a ventas" ni "Aprobada".
+                  Hay circuitos sin sus reservas completas (de menos o de más). Aviso informativo: no impide cambiar a "Confirmar venta" ni "Aprobada".
                 </p>
               </div>
             </div>
@@ -804,9 +804,9 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
             <div className={`mb-4 p-3 rounded-lg ${isDark ? 'bg-orange-500/10 border-orange-500/30' : 'bg-orange-50 border-orange-200'} border flex items-start gap-3`}>
               <AlertTriangle className={`h-5 w-5 ${isDark ? 'text-orange-400' : 'text-orange-600'} flex-shrink-0 mt-0.5`} />
               <div>
-                <p className={`text-sm font-medium ${isDark ? 'text-orange-200' : 'text-orange-800'}`}>Cliente Lead (CUIC 0)</p>
+                <p className={`text-sm font-medium ${isDark ? 'text-orange-200' : 'text-orange-800'}`}>Cliente Lead (ID Cliente 0)</p>
                 <p className={`text-xs mt-1 ${isDark ? 'text-orange-300/70' : 'text-orange-700'}`}>
-                  El cliente actual es un Cliente Lead sin CUIC válido. Edita la propuesta y asigna un cliente con CUIC antes de hacer "Pase a ventas".
+                  El cliente actual es un Cliente Lead sin ID Cliente válido. Edita la propuesta y asigna un cliente con ID Cliente antes de confirmar la venta.
                 </p>
               </div>
             </div>
@@ -820,7 +820,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
             >
               {/* Mostrar estado actual si no está en las opciones permitidas */}
               {propuesta.status && !availableStatuses.includes(propuesta.status) && (
-                <option value={propuesta.status} disabled>{propuesta.status} (actual)</option>
+                <option value={propuesta.status} disabled>{etiquetaEstatusPropuesta(propuesta.status)} (actual)</option>
               )}
               {availableStatuses.map(s => {
                 // Ajuste feedback 2026-08-19: bloquear tambien Rechazada /
@@ -836,7 +836,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
                 const isBlockedByCuic = esClienteLead && s === 'Pase a ventas';
                 const isBlocked = isBlockedByAuth || isBlockedByCuic;
                 const etiquetaExtra = isBlockedByCuic
-                  ? ' (Cliente Lead - CUIC 0)'
+                  ? ' (Cliente Lead - ID Cliente 0)'
                   : isBlockedByAuth
                     ? ' (Autorización abierta)'
                     : '';
@@ -846,7 +846,7 @@ function StatusModal({ isOpen, onClose, propuesta, onStatusChange, allowedStatus
                     value={s}
                     disabled={isBlocked}
                   >
-                    {s}{etiquetaExtra}
+                    {etiquetaEstatusPropuesta(s)}{etiquetaExtra}
                   </option>
                 );
               })}
@@ -1318,17 +1318,6 @@ const PropuestaRow = React.memo(function PropuestaRow({
       <td className="px-4 py-3">
         <div className="flex items-center gap-1.5">
           <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm font-medium`}>{item.marca_nombre || item.articulo || '-'}</span>
-          {item.sap_database && (
-            <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${
-              item.sap_database === 'CIMU'
-                ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200'
-                : item.sap_database === 'TEST'
-                  ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200'
-                  : item.sap_database === 'UDC'
-                    ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200'
-                    : isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-            }`}>{item.sap_database}</span>
-          )}
         </div>
       </td>
       <td className="px-4 py-3">
@@ -1396,11 +1385,11 @@ const PropuestaRow = React.memo(function PropuestaRow({
               onClick={() => onStatus(item)}
               className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border} hover:opacity-80 transition-opacity cursor-pointer`}
             >
-              {item.status}
+              {etiquetaEstatusPropuesta(item.status)}
             </button>
           ) : (
             <span className={`px-2 py-1 rounded-full text-[10px] whitespace-nowrap ${statusColor.bg} ${statusColor.text} border ${statusColor.border}`}>
-              {item.status}
+              {etiquetaEstatusPropuesta(item.status)}
             </span>
           )}
           {esPropuestaIncompleta(item) && (
@@ -1894,7 +1883,7 @@ export function PropuestasPage() {
     if (entries.length === 0) return null;
 
     return entries.map(([statusName, count], index) => ({
-      label: statusName,
+      label: etiquetaEstatusPropuesta(statusName),
       value: count,
       color: CHART_COLORS[index % CHART_COLORS.length],
       percent: effectiveStats.total > 0 ? ((count / effectiveStats.total) * 100).toFixed(1) : '0',
@@ -1980,7 +1969,7 @@ export function PropuestasPage() {
 
       const headers = [
         'Campaña', 'Anunciante', 'Inversión Campaña', 'Operación', 'Código de contrato (Opcional)',
-        'Precio por cara (Opcional)', 'APS Global', 'CUIC', 'Articulo', 'Vendedor',
+        'Precio por cara (Opcional)', 'APS Global', 'ID Cliente', 'Articulo', 'Vendedor',
         'Descripción (Opcional)', 'Inicio o Periodo', 'Fin o Segmento', 'Arte',
         'Código de arte (Opcional)', 'Arte Url (Opcional)', 'Origen del arte (Opcional)',
         'Unidad', 'Cara', 'Ciudad', 'Tipo de Distribución', 'Reproducciones', 'Notas',
@@ -2080,7 +2069,7 @@ export function PropuestasPage() {
       };
 
       const headers = [
-        'Plaza', 'Tipo', 'Vendedor', 'APS Global', 'APS Específico', 'CUIC',
+        'Plaza', 'Tipo', 'Vendedor', 'APS Global', 'APS Específico', 'ID Cliente',
         'Fecha Inicio', 'Fecha Fin', 'Anunciante', 'Campaña', 'Artículo',
         'Negociación', 'Caras', 'Tarifa', 'Monto Total',
       ];
@@ -2424,7 +2413,7 @@ export function PropuestasPage() {
                     onClick={handleExportOcupacion}
                     disabled={exportingLayout || exportingOcupacion}
                     className={`flex shrink-0 items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap ${isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200 hover:text-gray-900'} border transition-all ${exportingLayout || exportingOcupacion ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    title="Exporta Excel formato Orden de Montaje (Plaza, Tipo, Vendedor, APS, CUIC, Caras, Tarifa, Monto)"
+                    title="Exporta Excel formato Orden de Montaje (Plaza, Tipo, Vendedor, APS, ID Cliente, Caras, Tarifa, Monto)"
                   >
                     {exportingOcupacion ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                     <span className="hidden xl:inline">{exportingOcupacion ? 'Generando...' : 'Exportar Ocupación'}</span>
@@ -2918,7 +2907,7 @@ export function PropuestasPage() {
                   groupedData.map(([groupName, items]) => (
                     <React.Fragment key={groupName}>
                       <GroupHeader
-                        groupName={groupName}
+                        groupName={etiquetaEstatusPropuesta(groupName)}
                         count={items.length}
                         expanded={expandedGroups.has(groupName)}
                         onToggle={() => toggleGroup(groupName)}

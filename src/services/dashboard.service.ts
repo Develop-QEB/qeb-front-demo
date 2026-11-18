@@ -102,17 +102,6 @@ export interface TopCliente {
   totalReservas: number;
 }
 
-export interface PosteoBucket {
-  count: number;
-  monto: number;
-}
-
-export interface PosteoStats {
-  pendientes: PosteoBucket;
-  posteadas: PosteoBucket;
-  total: PosteoBucket;
-}
-
 // Catorcena "actual" efectiva a partir de filter-options.
 // OJO: las fechas de la tabla `catorcenas` estan corridas +1 dia respecto a la
 // operacion real (la catorcena inicia en lunes, pero la tabla guarda el martes
@@ -205,21 +194,6 @@ class DashboardService {
 
   async getTopClientes(): Promise<TopCliente[]> {
     const response = await api.get('/dashboard/top-clientes');
-    return response.data.data;
-  }
-
-  async getPosteoStats(filters?: DashboardFilters): Promise<PosteoStats> {
-    const params = new URLSearchParams();
-    appendMulti(params, 'estado', filters?.estado);
-    appendMulti(params, 'ciudad', filters?.ciudad);
-    appendMulti(params, 'formato', filters?.formato);
-    appendMulti(params, 'nse', filters?.nse);
-    appendMulti(params, 'tipo', filters?.tipo);
-    if (filters?.catorcena_id) params.append('catorcena_id', filters.catorcena_id.toString());
-    if (filters?.fecha_inicio) params.append('fecha_inicio', filters.fecha_inicio);
-    if (filters?.fecha_fin) params.append('fecha_fin', filters.fecha_fin);
-    const queryString = params.toString();
-    const response = await api.get(`/dashboard/posteo-stats${queryString ? `?${queryString}` : ''}`);
     return response.data.data;
   }
 

@@ -38,6 +38,16 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Colores de marca de las vistas para clientes. Las variables las define
+        // aplicarVariablesMarca() (src/config/marca.ts) al arrancar la app.
+        marca: {
+          primario: "rgb(var(--marca-primario) / <alpha-value>)",
+          oscuro: "rgb(var(--marca-oscuro) / <alpha-value>)",
+          acento: "rgb(var(--marca-acento) / <alpha-value>)",
+          "acento-oscuro": "rgb(var(--marca-acento-oscuro) / <alpha-value>)",
+          claro: "rgb(var(--marca-claro) / <alpha-value>)",
+          "acento-claro": "rgb(var(--marca-acento-claro) / <alpha-value>)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

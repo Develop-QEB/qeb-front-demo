@@ -16,9 +16,36 @@ export const MARCA = {
     primario: '#4338CA',
     oscuro: '#1E1B4B',
     acento: '#0D9488',
+    acentoOscuro: '#0F766E',
     claro: '#EEF2FF',
+    acentoClaro: '#F0FDFA',
   },
 } as const;
+
+/**
+ * Publica los colores de marca como variables CSS (canales RGB) para las
+ * clases de Tailwind `*-marca-*` (ver tailwind.config.js). Se llama una vez al
+ * arrancar (main.tsx), así cambiar un color aquí cambia todas las vistas.
+ */
+export function aplicarVariablesMarca(): void {
+  const root = document.documentElement;
+  const vars: Record<string, string> = {
+    '--marca-primario': MARCA.colores.primario,
+    '--marca-oscuro': MARCA.colores.oscuro,
+    '--marca-acento': MARCA.colores.acento,
+    '--marca-acento-oscuro': MARCA.colores.acentoOscuro,
+    '--marca-claro': MARCA.colores.claro,
+    '--marca-acento-claro': MARCA.colores.acentoClaro,
+  };
+  for (const [nombre, hex] of Object.entries(vars)) {
+    root.style.setProperty(nombre, rgb(hex).join(' '));
+  }
+}
+
+/** "#RRGGBB" → "FFRRGGBB", el formato ARGB que usan los estilos de Excel. */
+export function argb(hex: string): string {
+  return `FF${hex.replace('#', '').toUpperCase()}`;
+}
 
 /** "#RRGGBB" → [r, g, b], el formato que piden los setColor de jsPDF. */
 export function rgb(hex: string): [number, number, number] {

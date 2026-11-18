@@ -1573,7 +1573,7 @@ function MatrizView({
                               {c.articulo && (
                                 <div
                                   className={`text-[10px] mt-0.5 truncate font-mono ${isDark ? 'text-purple-300' : 'text-purple-700'}`}
-                                  title={`Artículo SAP: ${c.articulo}`}
+                                  title={`Artículo: ${c.articulo}`}
                                 >
                                   {c.articulo}
                                 </div>

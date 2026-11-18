@@ -32,15 +32,15 @@ import type { InventarioReservado as SvcInventarioReservado } from '../../servic
 import { GOOGLE_MAPS_LOADER_OPTIONS } from '../../config/googleMaps';
 import { MARCA, rgb } from '../../config/marca';
 
-// IMU Color Palette
-const IMU_BLUE = '#0054A6';
-const IMU_GREEN = '#7AB800';
-const IMU_DARK = '#003B71';
-const IMU_LIGHT_BLUE = '#E6F0FA';
-const IMU_LIGHT_GREEN = '#F0F9E6';
+// Paleta de marca (config/marca.ts)
+const COLOR_PRIMARIO = MARCA.colores.primario;
+const COLOR_ACENTO = MARCA.colores.acento;
+const COLOR_OSCURO = MARCA.colores.oscuro;
+const COLOR_CLARO = MARCA.colores.claro;
+const COLOR_ACENTO_CLARO = MARCA.colores.acentoClaro;
 
-// IMU Map styles (Light - Clean Professional)
-const IMU_MAP_STYLES = [
+// Estilos de mapa (claro)
+const MAPA_ESTILOS = [
   { elementType: 'geometry', stylers: [{ color: '#f5f5f5' }] },
   { elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
   { elementType: 'labels.text.stroke', stylers: [{ color: '#ffffff' }] },
@@ -49,7 +49,7 @@ const IMU_MAP_STYLES = [
   { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
   { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
   { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#c5e8c5' }] },
-  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#7AB800' }] },
+  { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: '#6B9A76' }] },
   { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
   { featureType: 'road.arterial', elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
   { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#dadada' }] },
@@ -58,7 +58,7 @@ const IMU_MAP_STYLES = [
   { featureType: 'transit.line', elementType: 'geometry', stylers: [{ color: '#e5e5e5' }] },
   { featureType: 'transit.station', elementType: 'geometry', stylers: [{ color: '#eeeeee' }] },
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#c9e4f5' }] },
-  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#0054A6' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#4A6FA5' }] },
 ];
 
 interface InventarioReservado extends ConVersion, ConOrigen {
@@ -633,7 +633,7 @@ export function ClientePropuestaPage() {
     const PDF_ACENTO = rgb(MARCA.colores.acento);
 
     // Píldora resaltada para la leyenda de contexto: ámbar = Circuitos Muestra,
-    // verde IMU = Circuitos Confirmados. Header (pág. 1) + pie de TODAS las páginas.
+    // color de acento = Circuitos Confirmados. Header (pág. 1) + pie de TODAS las páginas.
     const LEY_BG = esCampana ? PDF_ACENTO : ([255, 193, 7] as const);
     const LEY_TX = esCampana ? ([255, 255, 255] as const) : ([102, 60, 0] as const);
     const drawLeyendaPill = (centerX: number, topY: number) => {
@@ -939,14 +939,14 @@ export function ClientePropuestaPage() {
     setExpandedResumen(next);
   };
 
-  const COLORS = ['#0054A6', '#7AB800', '#003B71', '#5FA800', '#0077E6', '#8BC34A'];
+  const COLORS = [MARCA.colores.primario, MARCA.colores.acento, MARCA.colores.oscuro, MARCA.colores.acentoOscuro, '#6366F1', '#14B8A6'];
 
   if (isLoading) {
     return (
-      <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-zinc-900' : 'bg-gradient-to-br from-white via-blue-50 to-green-50'}`}>
+      <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-zinc-900' : 'bg-gradient-to-br from-white via-marca-claro to-marca-acento-claro'}`}>
         <div className="text-center">
           <img src={isDark ? MARCA.logoBlancoUrl : MARCA.logoUrl} alt={MARCA.nombre} className="h-20 w-auto mx-auto mb-4 animate-pulse" />
-          <Loader2 className="h-8 w-8 animate-spin text-[#0054A6] mx-auto" />
+          <Loader2 className="h-8 w-8 animate-spin text-marca-primario mx-auto" />
           <p className={`${isDark ? 'text-zinc-400' : 'text-gray-500'} mt-2`}>Cargando propuesta...</p>
         </div>
       </div>
@@ -955,7 +955,7 @@ export function ClientePropuestaPage() {
 
   if (error) {
     return (
-      <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-zinc-900' : 'bg-gradient-to-br from-white via-blue-50 to-green-50'}`}>
+      <div className={`flex items-center justify-center h-screen ${isDark ? 'bg-zinc-900' : 'bg-gradient-to-br from-white via-marca-claro to-marca-acento-claro'}`}>
         <div className="text-center">
           <img src={isDark ? MARCA.logoBlancoUrl : MARCA.logoUrl} alt={MARCA.nombre} className="h-16 w-auto mx-auto mb-4" />
           <p className="text-red-600 font-medium">Error al cargar la propuesta</p>
@@ -965,7 +965,7 @@ export function ClientePropuestaPage() {
   }
 
   return (
-    <div className={`min-h-screen ${isDark ? 'bg-zinc-900 text-white' : 'bg-gradient-to-br from-white via-blue-50/30 to-green-50/30 text-gray-800'}`}>
+    <div className={`min-h-screen ${isDark ? 'bg-zinc-900 text-white' : 'bg-gradient-to-br from-white via-marca-claro/30 to-marca-acento-claro/30 text-gray-800'}`}>
       {/* Header */}
       <header className={`sticky top-0 z-50 backdrop-blur shadow-md border-b ${isDark ? 'bg-zinc-900/95 border-zinc-700' : 'bg-white/95 border-gray-200'}`}>
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -974,7 +974,7 @@ export function ClientePropuestaPage() {
               <img src={isDark ? MARCA.logoBlancoUrl : MARCA.logoUrl} alt={MARCA.nombre} className="h-14 w-auto object-contain" />
             </div>
             <div className={`border-l pl-4 ${isDark ? 'border-zinc-700' : 'border-gray-300'}`}>
-              <h1 className="text-xl font-bold text-[#0054A6]">Propuesta de Campaña</h1>
+              <h1 className="text-xl font-bold text-marca-primario">Propuesta de Campaña</h1>
               <p className={`text-sm ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>Referencia #{propuestaId}</p>
             </div>
           </div>
@@ -985,7 +985,7 @@ export function ClientePropuestaPage() {
               <MapIcon className="h-4 w-4" /> KML
             </button>
             )}
-            <button onClick={handleGeneratePDF} className="flex items-center gap-2 px-4 py-2 bg-[#0054A6] hover:bg-[#003B71] text-white rounded-lg text-sm font-medium shadow-sm transition-colors">
+            <button onClick={handleGeneratePDF} className="flex items-center gap-2 px-4 py-2 bg-marca-primario hover:bg-marca-oscuro text-white rounded-lg text-sm font-medium shadow-sm transition-colors">
               <FileText className="h-4 w-4" /> PDF
             </button>
           </div>
@@ -997,7 +997,7 @@ export function ClientePropuestaPage() {
         <div className={`rounded-2xl p-6 shadow-sm border ${isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-gray-200'}`}>
           <div className="flex items-start justify-between">
             <div>
-              <h2 className="text-2xl font-bold mb-2 text-[#0054A6]">
+              <h2 className="text-2xl font-bold mb-2 text-marca-primario">
                 {data?.cotizacion?.nombre_campania || 'Propuesta'}
               </h2>
                {/* <p className="text-gray-600">{data?.propuesta?.descripcion || ''}</p> */}
@@ -1006,7 +1006,7 @@ export function ClientePropuestaPage() {
                 no se muestra al cliente. Debajo, la fecha de la ultima version
                 completada y la leyenda del gris (si aplica). */}
             <div className="flex flex-col items-end gap-1.5">
-              <div className={`px-3 py-1 rounded-full text-sm font-medium border ${esCampana ? 'bg-[#0054A6]/10 text-[#0054A6] border-[#0054A6]/30' : 'bg-amber-100 text-amber-700 border-amber-300'}`}>
+              <div className={`px-3 py-1 rounded-full text-sm font-medium border ${esCampana ? 'bg-marca-primario/10 text-marca-primario border-marca-primario/30' : 'bg-amber-100 text-amber-700 border-amber-300'}`}>
                 {leyendaCircuitos}
               </div>
               {leyendaVersion(inventario) && (
@@ -1032,11 +1032,11 @@ export function ClientePropuestaPage() {
           <div className={`flex gap-6 mt-4 text-sm border-t pt-4 ${isDark ? 'text-zinc-400 border-zinc-700' : 'text-gray-500 border-gray-100'}`}>
             <span className="flex items-center gap-1">
               <span className={`font-medium ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>Inicio:</span>
-              <span className="text-[#0054A6] font-medium">{periodoInicio}</span>
+              <span className="text-marca-primario font-medium">{periodoInicio}</span>
             </span>
             <span className="flex items-center gap-1">
               <span className={`font-medium ${isDark ? 'text-zinc-300' : 'text-gray-700'}`}>Fin:</span>
-              <span className="text-[#0054A6] font-medium">{periodoFin}</span>
+              <span className="text-marca-primario font-medium">{periodoFin}</span>
             </span>
           </div>
         </div>
@@ -1051,16 +1051,16 @@ export function ClientePropuestaPage() {
           ].map(({ label, value }) => (
             <div key={label} className={`rounded-xl p-4 border shadow-sm hover:shadow-md transition-shadow ${isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-gray-200'}`}>
               <p className={`text-xs uppercase tracking-wide mb-1 ${isDark ? 'text-zinc-400' : 'text-gray-500'}`}>{label}</p>
-              <p className="text-sm font-semibold truncate text-[#0054A6]">{value || 'N/A'}</p>
+              <p className="text-sm font-semibold truncate text-marca-primario">{value || 'N/A'}</p>
             </div>
           ))}
         </div>
 
         {/* Filtro por Catorcena/Periodo (chips multi-select) */}
         {periodoOptions.length > 1 && (
-          <div className={`rounded-2xl p-4 border ${isDark ? 'bg-zinc-900/80 border-zinc-700' : 'bg-[#E6F0FA] border-[#0054A6]/20'}`}>
+          <div className={`rounded-2xl p-4 border ${isDark ? 'bg-zinc-900/80 border-zinc-700' : 'bg-marca-claro border-marca-primario/20'}`}>
             <div className="flex items-center gap-3 flex-wrap">
-              <span className={`text-xs font-semibold ${isDark ? 'text-blue-300' : 'text-[#0054A6]'}`}>
+              <span className={`text-xs font-semibold ${isDark ? 'text-blue-300' : 'text-marca-primario'}`}>
                 <Filter className="h-3.5 w-3.5 inline mr-1" />
                 Filtrar por {tipoPeriodo === 'mensual' ? 'periodo' : 'catorcena'}:
               </span>
@@ -1068,7 +1068,7 @@ export function ClientePropuestaPage() {
                 onClick={() => setSelectedCatorcenas(new Set())}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
                   selectedCatorcenas.size === 0
-                    ? 'bg-gradient-to-r from-[#0054A6] to-[#003B71] text-white border-[#0054A6] shadow-lg shadow-[#0054A6]/20'
+                    ? 'bg-gradient-to-r from-marca-primario to-marca-oscuro text-white border-marca-primario shadow-lg shadow-marca-primario/20'
                     : isDark ? 'bg-zinc-800 text-zinc-400 border-zinc-600 hover:bg-zinc-700' : 'bg-white text-gray-600 border-gray-200 hover:bg-blue-50'
                 }`}
               >
@@ -1092,7 +1092,7 @@ export function ClientePropuestaPage() {
                     }}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
                       isSelected
-                        ? 'bg-gradient-to-r from-[#0054A6] to-[#003B71] text-white border-[#0054A6] shadow-lg shadow-[#0054A6]/20'
+                        ? 'bg-gradient-to-r from-marca-primario to-marca-oscuro text-white border-marca-primario shadow-lg shadow-marca-primario/20'
                         : isDark ? 'bg-zinc-800 text-zinc-400 border-zinc-600 hover:bg-zinc-700' : 'bg-white text-gray-600 border-gray-200 hover:bg-blue-50'
                     }`}
                   >
@@ -1116,9 +1116,9 @@ export function ClientePropuestaPage() {
         {/* KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: 'Total Caras', value: kpis.total, bg: 'bg-gradient-to-br from-[#0054A6] to-[#003B71]' },
+            { label: 'Total Caras', value: kpis.total, bg: 'bg-gradient-to-br from-marca-primario to-marca-oscuro' },
             { label: 'En Renta', value: kpis.renta, bg: 'bg-gradient-to-br from-blue-500 to-blue-600' },
-            { label: 'Bonificadas', value: kpis.bonificadas, bg: 'bg-gradient-to-br from-[#7AB800] to-[#5FA800]' },
+            { label: 'Bonificadas', value: kpis.bonificadas, bg: 'bg-gradient-to-br from-marca-acento to-marca-acento-oscuro' },
             { label: 'Inversion Total', value: formatCurrency(kpis.inversion), bg: 'bg-gradient-to-br from-amber-500 to-amber-600', iva: true },
           ].map(({ label, value, bg, iva }: any) => (
             <div key={label} className={`${bg} rounded-xl p-5 text-center shadow-lg`}>
@@ -1141,18 +1141,18 @@ export function ClientePropuestaPage() {
         {/* Resumen de Caras - Tabla principal (oculto en UDC) */}
         <div className={`rounded-2xl shadow-sm border overflow-hidden ${esUDC ? 'hidden' : ''} ${isDark ? 'bg-zinc-800 border-zinc-700' : 'bg-white border-gray-200'}`}>
           {/* Toolbar */}
-          <div className={`px-5 py-4 border-b ${isDark ? 'border-zinc-700 bg-zinc-800/50' : 'border-gray-200 bg-gradient-to-r from-[#0054A6]/5 to-[#7AB800]/5'}`}>
+          <div className={`px-5 py-4 border-b ${isDark ? 'border-zinc-700 bg-zinc-800/50' : 'border-gray-200 bg-gradient-to-r from-marca-primario/5 to-marca-acento/5'}`}>
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-[#0054A6] flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-marca-primario flex items-center gap-2">
                 <Layers className="h-4 w-4" />
                 Resumen de Caras
                 <span className={`text-xs font-normal ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>({filteredInventario.length} inventarios)</span>
               </h3>
               <div className="flex items-center gap-2">
-                <button onClick={handleDownloadXLSX} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#7AB800] hover:bg-[#5FA800] text-white rounded-lg text-xs font-medium shadow-sm transition-colors">
+                <button onClick={handleDownloadXLSX} className="flex items-center gap-1.5 px-3 py-1.5 bg-marca-acento hover:bg-marca-acento-oscuro text-white rounded-lg text-xs font-medium shadow-sm transition-colors">
                   <FileSpreadsheet className="h-3.5 w-3.5" /> Excel
                 </button>
-                <button onClick={handleDownloadKML} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0054A6] hover:bg-[#003B71] text-white rounded-lg text-xs font-medium shadow-sm transition-colors">
+                <button onClick={handleDownloadKML} className="flex items-center gap-1.5 px-3 py-1.5 bg-marca-primario hover:bg-marca-oscuro text-white rounded-lg text-xs font-medium shadow-sm transition-colors">
                   <MapIcon className="h-3.5 w-3.5" /> KML
                 </button>
                 {selectedItems.size > 0 && (
@@ -1177,12 +1177,12 @@ export function ClientePropuestaPage() {
                   placeholder="Buscar..."
                   value={filterText}
                   onChange={(e) => setFilterText(e.target.value)}
-                  className={`px-3 py-1.5 border rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[#0054A6] focus:border-transparent w-44 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder-zinc-500' : 'bg-white border-gray-300 text-gray-800'}`}
+                  className={`px-3 py-1.5 border rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-marca-primario focus:border-transparent w-44 ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder-zinc-500' : 'bg-white border-gray-300 text-gray-800'}`}
                 />
                 <button
                   onClick={() => setShowFilters(!showFilters)}
                   className={`px-2.5 py-1.5 rounded-lg text-xs transition-all flex items-center gap-1 ${showFilters || filters.length > 0
-                    ? 'bg-[#0054A6] text-white'
+                    ? 'bg-marca-primario text-white'
                     : isDark ? 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                   }`}
                 >
@@ -1193,7 +1193,7 @@ export function ClientePropuestaPage() {
                   <select
                     value={filterPeriodo}
                     onChange={(e) => setFilterPeriodo(e.target.value)}
-                    className={`px-2.5 py-1.5 border rounded-lg text-xs ${filterPeriodo ? 'bg-[#0054A6] text-white border-[#0054A6]' : isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'}`}
+                    className={`px-2.5 py-1.5 border rounded-lg text-xs ${filterPeriodo ? 'bg-marca-primario text-white border-marca-primario' : isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-gray-300 text-gray-700'}`}
                   >
                     <option value="">Todos los periodos</option>
                     {periodoOptions.map(p => (
@@ -1237,8 +1237,8 @@ export function ClientePropuestaPage() {
                   const fieldConfig = FILTER_FIELDS.find(f => f.field === filter.field);
                   const operatorConfig = FILTER_OPERATORS.find(o => o.value === filter.operator);
                   return (
-                    <div key={filter.id} className="flex items-center gap-1 px-2 py-1 bg-[#0054A6]/10 rounded-lg text-xs">
-                      <span className="text-[#0054A6]">{fieldConfig?.label || filter.field}</span>
+                    <div key={filter.id} className="flex items-center gap-1 px-2 py-1 bg-marca-primario/10 rounded-lg text-xs">
+                      <span className="text-marca-primario">{fieldConfig?.label || filter.field}</span>
                       <span className={isDark ? 'text-zinc-500' : 'text-gray-400'}>{operatorConfig?.label || filter.operator}</span>
                       <span className={`font-medium ${isDark ? 'text-white' : 'text-gray-800'}`}>{filter.value}</span>
                       <button onClick={() => setFilters(filters.filter(f => f.id !== filter.id))} className={`ml-1 hover:text-red-500 ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
@@ -1267,7 +1267,7 @@ export function ClientePropuestaPage() {
                       (document.getElementById('filter-value-client') as HTMLInputElement).value = '';
                     }
                   }}
-                  className="px-3 py-1 bg-[#0054A6] hover:bg-[#003B71] text-white rounded text-xs"
+                  className="px-3 py-1 bg-marca-primario hover:bg-marca-oscuro text-white rounded text-xs"
                 >Agregar</button>
                 {filters.length > 0 && (
                   <button onClick={() => setFilters([])} className={`px-3 py-1 rounded text-xs ${isDark ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-600'}`}>Limpiar</button>
@@ -1281,7 +1281,7 @@ export function ClientePropuestaPage() {
                   {/* Catorcena Header */}
                   <button
                     onClick={() => toggleResumen(catGroup.catorcena)}
-                    className="w-full px-5 py-3 flex items-center justify-between hover:bg-blue-50/50 transition-colors bg-[#0054A6]/5"
+                    className="w-full px-5 py-3 flex items-center justify-between hover:bg-blue-50/50 transition-colors bg-marca-primario/5"
                   >
                     <div className="flex items-center gap-3">
                       {(() => {
@@ -1300,11 +1300,11 @@ export function ClientePropuestaPage() {
                         );
                       })()}
                       {expandedResumen.has(catGroup.catorcena) ? (
-                        <ChevronDown className="h-4 w-4 text-[#0054A6]" />
+                        <ChevronDown className="h-4 w-4 text-marca-primario" />
                       ) : (
-                        <ChevronRight className="h-4 w-4 text-[#0054A6]/50" />
+                        <ChevronRight className="h-4 w-4 text-marca-primario/50" />
                       )}
-                      <span className="px-3 py-1 rounded-lg bg-[#0054A6]/10 text-[#0054A6] text-xs font-medium border border-[#0054A6]/20">
+                      <span className="px-3 py-1 rounded-lg bg-marca-primario/10 text-marca-primario text-xs font-medium border border-marca-primario/20">
                         {catGroup.catorcena}
                       </span>
                       {tipoPeriodo === 'mensual' && catGroup.fechaInicio && catGroup.fechaFin && (() => {
@@ -1331,15 +1331,15 @@ export function ClientePropuestaPage() {
                         </div>
                       )}
                       <div className="flex items-center gap-1.5 pl-2 border-l border-gray-200">
-                        <span className="text-[#7AB800] text-xs">Inversión:</span>
-                        <span className="text-[#7AB800] text-sm font-semibold">{formatCurrency(catGroup.totalInversion)}</span>
+                        <span className="text-marca-acento text-xs">Inversión:</span>
+                        <span className="text-marca-acento text-sm font-semibold">{formatCurrency(catGroup.totalInversion)}</span>
                       </div>
                     </div>
                   </button>
 
                   {/* Articulo Groups */}
                   {expandedResumen.has(catGroup.catorcena) && (
-                    <div className="pl-6 border-l-2 border-[#0054A6]/20 ml-5">
+                    <div className="pl-6 border-l-2 border-marca-primario/20 ml-5">
                       {catGroup.articulos.map((artGroup) => {
                         const artKey = `${catGroup.catorcena}|${artGroup.articulo}`;
                         return (
@@ -1364,9 +1364,9 @@ export function ClientePropuestaPage() {
                                   );
                                 })()}
                                 {expandedResumen.has(artKey) ? (
-                                  <ChevronDown className="h-3.5 w-3.5 text-[#7AB800]" />
+                                  <ChevronDown className="h-3.5 w-3.5 text-marca-acento" />
                                 ) : (
-                                  <ChevronRight className="h-3.5 w-3.5 text-[#7AB800]/50" />
+                                  <ChevronRight className="h-3.5 w-3.5 text-marca-acento/50" />
                                 )}
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className="text-[10px] text-gray-400">Plazas:</span>
@@ -1375,7 +1375,7 @@ export function ClientePropuestaPage() {
                                   ))}
                                   <span className="text-[10px] text-gray-400 ml-1">Formatos:</span>
                                   {artGroup.formatos.map(f => (
-                                    <span key={f} className="px-2 py-0.5 rounded text-[10px] font-medium border bg-blue-50 text-[#0054A6] border-blue-100">{f}</span>
+                                    <span key={f} className="px-2 py-0.5 rounded text-[10px] font-medium border bg-blue-50 text-marca-primario border-blue-100">{f}</span>
                                   ))}
                                   <span className="text-[10px] text-gray-400 ml-1">Tipo:</span>
                                   {artGroup.tipos.map(t => (
@@ -1390,7 +1390,7 @@ export function ClientePropuestaPage() {
                                 <span className="text-gray-400">{(artGroup.articulo || '').toUpperCase().startsWith('IN') ? 'Intercambio' : 'Renta'}: <span className="text-gray-700 font-medium">{artGroup.totalCaras}</span></span>
                                 {artGroup.totalBonificadas > 0 && <span className="text-cyan-600">Bonif: <span className="font-medium">{artGroup.totalBonificadas}</span></span>}
                                 <span className="text-amber-600">Tarifa: <span className="font-medium">{formatCurrency(artGroup.items[0] ? tarifaBruta(artGroup.items[0]) : 0)}</span></span>
-                                <span className="text-[#7AB800]">{formatCurrency(artGroup.totalInversion)}</span>
+                                <span className="text-marca-acento">{formatCurrency(artGroup.totalInversion)}</span>
                               </div>
                             </button>
 
@@ -1400,15 +1400,15 @@ export function ClientePropuestaPage() {
                                 <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
                                   <table className="w-full text-sm">
                                     <thead>
-                                      <tr className="bg-[#0054A6]/5">
+                                      <tr className="bg-marca-primario/5">
                                         <th className="px-3 py-2 w-8"></th>
-                                        <th className="px-3 py-2 text-left text-xs font-semibold text-[#0054A6]">Plaza</th>
-                                        <th className="px-3 py-2 text-left text-xs font-semibold text-[#0054A6]">Formato</th>
-                                        <th className="px-3 py-2 text-center text-xs font-semibold text-[#0054A6]">{artGroup.items.every(i => (i.mueble || '').toUpperCase().includes('PUENTE PEATONAL')) ? 'Puentes' : 'Caras'}</th>
-                                        <th className="px-3 py-2 text-right text-xs font-semibold text-[#0054A6]">Lat</th>
-                                        <th className="px-3 py-2 text-right text-xs font-semibold text-[#0054A6]">Long</th>
+                                        <th className="px-3 py-2 text-left text-xs font-semibold text-marca-primario">Plaza</th>
+                                        <th className="px-3 py-2 text-left text-xs font-semibold text-marca-primario">Formato</th>
+                                        <th className="px-3 py-2 text-center text-xs font-semibold text-marca-primario">{artGroup.items.every(i => (i.mueble || '').toUpperCase().includes('PUENTE PEATONAL')) ? 'Puentes' : 'Caras'}</th>
+                                        <th className="px-3 py-2 text-right text-xs font-semibold text-marca-primario">Lat</th>
+                                        <th className="px-3 py-2 text-right text-xs font-semibold text-marca-primario">Long</th>
                                         <th className="px-3 py-2 text-right text-xs font-semibold text-amber-600">Tarifa</th>
-                                        <th className="px-3 py-2 text-right text-xs font-semibold text-[#7AB800]">Inversion</th>
+                                        <th className="px-3 py-2 text-right text-xs font-semibold text-marca-acento">Inversion</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
@@ -1449,7 +1449,7 @@ export function ClientePropuestaPage() {
                                             <td className="px-3 py-2 text-right text-gray-400 text-xs font-mono">{item.latitud?.toFixed(6) || '-'}</td>
                                             <td className="px-3 py-2 text-right text-gray-400 text-xs font-mono">{item.longitud?.toFixed(6) || '-'}</td>
                                             <td className="px-3 py-2 text-right text-amber-600 text-xs">{formatCurrency(tarifaBruta(item))}</td>
-                                            <td className="px-3 py-2 text-right text-[#7AB800] font-medium text-xs">{formatCurrency(inv)}</td>
+                                            <td className="px-3 py-2 text-right text-marca-acento font-medium text-xs">{formatCurrency(inv)}</td>
                                           </tr>
                                         );
                                       })}
@@ -1472,7 +1472,7 @@ export function ClientePropuestaPage() {
         {!esUDC && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-            <h3 className="text-lg font-semibold mb-4 text-[#0054A6]">Reservas por Ciudad</h3>
+            <h3 className="text-lg font-semibold mb-4 text-marca-primario">Reservas por Ciudad</h3>
             {chartCiudades.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <BarChart data={chartCiudades} layout="vertical">
@@ -1494,7 +1494,7 @@ export function ClientePropuestaPage() {
           </div>
 
           <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-            <h3 className="text-lg font-semibold mb-4 text-[#0054A6]">Reservas por Tipo</h3>
+            <h3 className="text-lg font-semibold mb-4 text-marca-primario">Reservas por Tipo</h3>
             {chartFormatos.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <BarChart data={chartFormatos}>
@@ -1520,8 +1520,8 @@ export function ClientePropuestaPage() {
         {/* Map (oculto en UDC: aeropuerto sin geolocalización) */}
         <div className={`bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden ${esUDC ? 'hidden' : ''}`}>
           <div className="p-4 border-b border-gray-200 flex items-center gap-4 bg-gray-50">
-            <MapIcon className="h-5 w-5 text-[#0054A6]" />
-            <h3 className="text-lg font-semibold text-[#0054A6]">Mapa de Ubicaciones</h3>
+            <MapIcon className="h-5 w-5 text-marca-primario" />
+            <h3 className="text-lg font-semibold text-marca-primario">Mapa de Ubicaciones</h3>
             <div className="flex items-center gap-2 ml-auto">
               <select value={searchRange} onChange={(e) => setSearchRange(parseInt(e.target.value))} className="px-2 py-1.5 bg-white border border-gray-300 rounded-lg text-xs text-gray-700">
                 <option value={100}>100m</option>
@@ -1532,7 +1532,7 @@ export function ClientePropuestaPage() {
               </select>
               {isLoaded && (
                 <Autocomplete onLoad={(ac) => { autocompleteRef.current = ac; }} onPlaceChanged={handlePOIPlaceChanged} options={{ componentRestrictions: { country: 'mx' } }}>
-                  <input type="text" value={poiSearch} onChange={(e) => setPoiSearch(e.target.value)} placeholder="Buscar POI..." className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-sm w-48 focus:outline-none focus:ring-2 focus:ring-[#0054A6] text-gray-700" />
+                  <input type="text" value={poiSearch} onChange={(e) => setPoiSearch(e.target.value)} placeholder="Buscar POI..." className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-sm w-48 focus:outline-none focus:ring-2 focus:ring-marca-primario text-gray-700" />
                 </Autocomplete>
               )}
               {poiMarkers.length > 0 && (
@@ -1546,7 +1546,7 @@ export function ClientePropuestaPage() {
                 mapContainerStyle={{ width: '100%', height: '100%' }}
                 center={mapCenter}
                 zoom={12}
-                options={{ styles: IMU_MAP_STYLES, disableDefaultUI: true, zoomControl: true }}
+                options={{ styles: MAPA_ESTILOS, disableDefaultUI: true, zoomControl: true }}
                 onLoad={(map) => {
                   mapRef.current = map;
                   if (catorcenaFilteredInventario.length > 0) {
@@ -1574,7 +1574,7 @@ export function ClientePropuestaPage() {
                         // Prioridad: no vigente (gris) > origen en campaña > tipo de cara.
                         fillColor: esNoVigente(item) ? MAPA_GRIS
                           : origenColor(item, mostrarOrigen)
-                          || (String(item.tipo_de_cara).startsWith('Flujo') ? '#ef4444' : String(item.tipo_de_cara).startsWith('Contraflujo') ? '#3b82f6' : IMU_BLUE),
+                          || (String(item.tipo_de_cara).startsWith('Flujo') ? '#ef4444' : String(item.tipo_de_cara).startsWith('Contraflujo') ? '#3b82f6' : COLOR_PRIMARIO),
                         fillOpacity: esNoVigente(item) ? 0.75 : 0.9,
                         strokeColor: esNoVigente(item) ? '#6b7280' : '#ffffff',
                         strokeWeight: 2,
@@ -1588,7 +1588,7 @@ export function ClientePropuestaPage() {
                     onCloseClick={() => setSelectedMarker(null)}
                   >
                     <div className="p-2 min-w-[200px]" style={{ color: '#000' }}>
-                      <h4 className="font-bold text-sm mb-2" style={{ color: IMU_DARK }}>{selectedMarker.codigo_unico}</h4>
+                      <h4 className="font-bold text-sm mb-2" style={{ color: COLOR_OSCURO }}>{selectedMarker.codigo_unico}</h4>
                       <div className="text-xs space-y-1">
                         <p><strong>Plaza:</strong> {selectedMarker.plaza || 'N/A'}</p>
                         <p><strong>Tipo:</strong> {selectedMarker.tipo_de_cara || 'N/A'}</p>
@@ -1609,12 +1609,12 @@ export function ClientePropuestaPage() {
                   </InfoWindow>
                 )}
                 {poiMarkers.map(marker => (
-                  <Circle key={marker.id} center={marker.position} radius={marker.range} options={{ strokeColor: IMU_GREEN, strokeOpacity: 0.8, strokeWeight: 2, fillColor: IMU_GREEN, fillOpacity: 0.15 }} />
+                  <Circle key={marker.id} center={marker.position} radius={marker.range} options={{ strokeColor: COLOR_ACENTO, strokeOpacity: 0.8, strokeWeight: 2, fillColor: COLOR_ACENTO, fillOpacity: 0.15 }} />
                 ))}
               </GoogleMap>
             ) : (
               <div className="flex items-center justify-center h-full bg-gray-50">
-                <Loader2 className="h-8 w-8 animate-spin text-[#0054A6]" />
+                <Loader2 className="h-8 w-8 animate-spin text-marca-primario" />
               </div>
             )}
           </div>

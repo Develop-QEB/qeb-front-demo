@@ -9,6 +9,8 @@
 // conocido, intenta un fallback generico (clave: valor) en lugar de
 // devolver el JSON literal.
 
+import { etiquetarEstatusEnTexto } from './estatusLabels';
+
 interface Cambio {
   campo?: string;
   label?: string;
@@ -74,7 +76,12 @@ export const formatCircuito = (c: Record<string, unknown>): string => {
   return t.join(' · ');
 };
 
+// Muestra los estatus con su etiqueta visible (p.ej. 'Pase a ventas' → 'Confirmar venta').
 export function formatHistorialDetalles(detalles: string | null | undefined): string {
+  return etiquetarEstatusEnTexto(formatHistorialDetallesBase(detalles));
+}
+
+function formatHistorialDetallesBase(detalles: string | null | undefined): string {
   if (!detalles) return '';
   const s = String(detalles).trim();
   if (!s) return '';

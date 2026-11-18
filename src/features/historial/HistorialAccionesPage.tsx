@@ -12,6 +12,7 @@ import { useAuthStore } from '../../store/authStore';
 import { getPermissions } from '../../lib/permissions';
 import { useSocketHistorialAcciones } from '../../hooks/useSocket';
 import { formatHistorialDetalles, formatValue, isPlainObject, limpiarMotivo } from '../../lib/historial';
+import { etiquetarEstatusEnTexto } from '../../lib/estatusLabels';
 import { ActividadComercialBoard } from './ActividadComercialBoard';
 import { FiltroMultiple } from '../../components/FiltroMultiple';
 
@@ -37,7 +38,7 @@ const grupoColors: Record<string, { bg: string; text: string; darkBg: string; da
   'Flujo comercial': { bg: 'bg-purple-100', text: 'text-purple-700', darkBg: 'bg-purple-900/30', darkText: 'text-purple-300' },
   'Inventario y espacios': { bg: 'bg-orange-100', text: 'text-orange-700', darkBg: 'bg-orange-900/30', darkText: 'text-orange-300' },
   'Artes y producción': { bg: 'bg-pink-100', text: 'text-pink-700', darkBg: 'bg-pink-900/30', darkText: 'text-pink-300' },
-  'Operaciones SAP': { bg: 'bg-amber-100', text: 'text-amber-700', darkBg: 'bg-amber-900/30', darkText: 'text-amber-300' },
+  'Operaciones': { bg: 'bg-amber-100', text: 'text-amber-700', darkBg: 'bg-amber-900/30', darkText: 'text-amber-300' },
   'Mapa': { bg: 'bg-teal-100', text: 'text-teal-700', darkBg: 'bg-teal-900/30', darkText: 'text-teal-300' },
   'CRM y soporte': { bg: 'bg-green-100', text: 'text-green-700', darkBg: 'bg-green-900/30', darkText: 'text-green-300' },
   'Administración': { bg: 'bg-blue-100', text: 'text-blue-700', darkBg: 'bg-blue-900/30', darkText: 'text-blue-300' },
@@ -961,8 +962,8 @@ export function HistorialAccionesPage() {
                           {(obj.cambios as Record<string, unknown>[]).map((c, i) => (
                             <tr key={i} className={`border-t ${isDark ? 'border-zinc-700' : 'border-gray-200'}`}>
                               <td className={`px-3 py-2 font-medium ${headerText}`}>{formatValue(c.label ?? c.campo)}</td>
-                              <td className="px-3 py-2 text-red-400">{formatValue(c.antes) || '-'}</td>
-                              <td className="px-3 py-2 text-emerald-400">{formatValue(c.despues) || '-'}</td>
+                              <td className="px-3 py-2 text-red-400">{etiquetarEstatusEnTexto(formatValue(c.antes)) || '-'}</td>
+                              <td className="px-3 py-2 text-emerald-400">{etiquetarEstatusEnTexto(formatValue(c.despues)) || '-'}</td>
                             </tr>
                           ))}
                         </tbody>

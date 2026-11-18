@@ -216,7 +216,7 @@ export function ActividadComercialBoard({ isDark }: Props) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar por cliente, marca, descripción, responsable, CUIC, #ref..."
+              placeholder="Buscar por cliente, marca, descripción, responsable, ID Cliente, #ref..."
               className={`w-full rounded-lg border pl-9 pr-8 py-2 text-sm ${inputCls}`}
             />
             {search && (
@@ -274,7 +274,7 @@ export function ActividadComercialBoard({ isDark }: Props) {
                 <FiltroMultiple label="Asesores" icon={Users} options={opciones.asesores} selected={asesores} onChange={setAsesores} isDark={isDark} placeholder="Buscar asesor..." />
               </div>
               <div>
-                <label className={`text-xs font-medium mb-1 block ${subText}`}>CUIC</label>
+                <label className={`text-xs font-medium mb-1 block ${subText}`}>ID Cliente</label>
                 <div className="relative">
                   <Hash className={`absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 ${subText}`} />
                   <input
@@ -448,8 +448,7 @@ function TarjetaActividad({
   else if (c.marca) chips.push({ icon: Building2, text: c.marca });
   if (c.subtipo) chips.push({ icon: Tag, text: c.ref_id != null ? `${c.subtipo} #${c.ref_id}` : c.subtipo });
   if (c.catorcena || c.anio) chips.push({ icon: Layers, text: [c.catorcena ? `Cat ${c.catorcena}` : null, c.anio].filter(Boolean).join(' / ') });
-  if (c.base) chips.push({ icon: Tag, text: c.base });
-  if (tarea.cuic) chips.push({ icon: Hash, text: `CUIC ${tarea.cuic}` });
+  if (tarea.cuic) chips.push({ icon: Hash, text: `ID Cliente ${tarea.cuic}` });
 
   const sub = isDark ? 'text-zinc-500' : 'text-gray-400';
   const txt = isDark ? 'text-white' : 'text-gray-900';

@@ -62,12 +62,12 @@ export const MODO_DESCRIPCION: Record<ModoCapa, string> = {
   excluir: 'Se conservó solo el inventario fuera del radio o del polígono',
 };
 
-// Azul = incluir (cerca de), rojo IMU = excluir (lejos de). Ninguno choca con
+// Azul = incluir (cerca de), rojo = excluir (lejos de). Ninguno choca con
 // los colores de pines ya usados en compartir (verde seleccionado, gris no
 // vigente, azul/verde origen).
 export const MODO_COLOR: Record<ModoCapa, string> = {
   incluir: '#0EA5E9',
-  excluir: '#E4002B',
+  excluir: '#DC2626',
 };
 
 export const ORIGEN_CAPA_LABEL: Record<OrigenCapa, string> = {

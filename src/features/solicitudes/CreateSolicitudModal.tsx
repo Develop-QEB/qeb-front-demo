@@ -900,8 +900,8 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
   // State for forcing SAP refresh
   const [forceRefreshSap, setForceRefreshSap] = useState(0);
 
-  // SAP database filter for CUIC selector
-  const [sapDbFilter, setSapDbFilter] = useState<SapDatabase | 'ALL'>('ALL');
+  // Demo sin SAP: el selector de clientes no filtra por BD SAP.
+  const sapDbFilter = 'ALL' as SapDatabase | 'ALL';
 
   // Fetch CUIC data from local DB instead of SAP
   const { data: cuicDataRaw, isLoading: cuicLoading, refetch: refetchCuic, isFetching: cuicFetching } = useQuery({
@@ -2235,7 +2235,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
       const resolved = await clientesService.resolveByCuic(selectedCuic.CUIC, (selectedCuic as any).sap_database || null);
       resolvedClienteId = resolved.id;
     } catch (err) {
-      showToast(`No se pudo resolver cliente para CUIC ${selectedCuic.CUIC}. Verifica que exista en la tabla de clientes local.`, 'error');
+      showToast(`No se pudo resolver el cliente con ID ${selectedCuic.CUIC}. Verifica que exista en Clientes.`, 'error');
       isSubmittingRef.current = false;
       return;
     }
@@ -2418,9 +2418,6 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
         || cuicDataRaw.find(c => c.CUIC === solCuic);
       if (cuicItem) {
         setSelectedCuic(cuicItem);
-        if (cuicItem.sap_database) {
-          setSapDbFilter(cuicItem.sap_database as SapDatabase);
-        }
       }
 
       // Set campaign data - nombre_campania might come from cotizacion
@@ -2813,38 +2810,19 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
           {/* Step 1: Cliente */}
           {step === 1 && (
             <div className="space-y-6">
-              {/* CUIC Select - Shows Marca first, then CUIC + Producto */}
+              {/* Selector de cliente - muestra Marca y luego ID Cliente + Producto */}
               <div className="space-y-2">
                 <label className={`text-sm font-medium ${isDark ? 'text-zinc-300' : 'text-gray-700'} flex items-center gap-2`}>
                   <Building2 className="h-4 w-4 text-purple-400" />
-                  CUIC / Cliente
+                  Cliente
                 </label>
-                {/* SAP Database filter buttons */}
                 <div className="flex items-center gap-1.5">
-                  {/* UDC solo visible para roles de Aeropuerto (canVerUDC) */}
-                  {((permissions.canVerUDC ? ['ALL', 'CIMU', 'TRADE', 'UDC'] : ['ALL', 'CIMU', 'TRADE']) as (SapDatabase | 'ALL')[]).map(db => (
-                    <button
-                      key={db}
-                      type="button"
-                      onClick={() => { setSapDbFilter(db); setSelectedCuic(null); }}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                        sapDbFilter === db
-                          ? db === 'ALL' ? 'bg-purple-600 text-white border-purple-500'
-                          : db === 'CIMU' ? 'bg-blue-600 text-white border-blue-500'
-                          : db === 'UDC' ? 'bg-cyan-600 text-white border-cyan-500'
-                          : 'bg-emerald-600 text-white border-emerald-500'
-                          : isDark ? 'bg-zinc-800/60 text-zinc-400 border-zinc-700/50 hover:bg-zinc-800 hover:text-zinc-200' : 'bg-gray-50 text-gray-500 border-gray-200 hover:bg-gray-100 hover:text-gray-700'
-                      }`}
-                    >
-                      {db === 'ALL' ? 'Todos' : db}
-                    </button>
-                  ))}
-                  <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} ml-2`}>
+                  <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                     {cuicData?.length || 0} clientes
                   </span>
                 </div>
                 <SearchableSelect
-                  label="Seleccionar CUIC"
+                  label="Seleccionar cliente"
                   options={cuicData || []}
                   value={selectedCuic}
                   onChange={(cuic: SAPCuicItem) => {
@@ -2869,35 +2847,17 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                       <div className="flex-1">
                         <div className={`font-medium ${isDark ? 'text-white' : 'text-gray-900'}`}>{item.T2_U_Marca || 'Sin marca'}</div>
                         <div className={`text-xs ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
-                          {item.CUIC} | {item.T2_U_Producto || 'Sin producto'}
+                          ID {item.CUIC} | {item.T2_U_Producto || 'Sin producto'}
                         </div>
                       </div>
-                      {item.sap_database && (
-                        <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border flex-shrink-0 ${
-                          item.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
-                          item.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
-                          item.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                          item.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
-                          isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
-                        }`}>{item.sap_database}</span>
-                      )}
                     </div>
                   )}
                   renderSelected={(item) => (
                     <div className="text-left flex items-center gap-2">
                       <div className="flex-1">
                         <div className="font-medium">{item.T2_U_Marca || 'Sin marca'}</div>
-                        <div className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>{item.CUIC} | {item.T2_U_Producto || ''}</div>
+                        <div className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>ID {item.CUIC} | {item.T2_U_Producto || ''}</div>
                       </div>
-                      {item.sap_database && (
-                        <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border flex-shrink-0 ${
-                          item.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
-                          item.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
-                          item.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                          item.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
-                          isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
-                        }`}>{item.sap_database}</span>
-                      )}
                     </div>
                   )}
                 />
@@ -2910,18 +2870,9 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   <div className={`flex items-start justify-between mb-3 pb-3 border-b ${isDark ? 'border-zinc-700/50' : 'border-gray-200'}`}>
                     <div className="flex items-center gap-3">
                       <div>
-                        <span className="text-[10px] text-purple-400 uppercase tracking-wider">CUIC</span>
+                        <span className="text-[10px] text-purple-400 uppercase tracking-wider">ID Cliente</span>
                         <div className="text-xl font-bold text-purple-400">{selectedCuic.CUIC}</div>
                       </div>
-                      {selectedCuic.sap_database && (
-                        <span className={`text-[10px] font-semibold px-2 py-1 rounded-lg border ${
-                          selectedCuic.sap_database === 'CIMU' ? isDark ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' : 'bg-blue-50 text-blue-700 border-blue-200' :
-                          selectedCuic.sap_database === 'TEST' ? isDark ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-50 text-amber-700 border-amber-200' :
-                          selectedCuic.sap_database === 'TRADE' ? isDark ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                          selectedCuic.sap_database === 'UDC' ? isDark ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' : 'bg-cyan-50 text-cyan-700 border-cyan-200' :
-                          isDark ? 'bg-zinc-500/20 text-zinc-300 border-zinc-500/30' : 'bg-gray-50 text-gray-700 border-gray-200'
-                        }`}>{selectedCuic.sap_database}</span>
-                      )}
                     </div>
                     <div className="text-right">
                       <span className={`text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'} uppercase tracking-wider`}>Categoría</span>
@@ -4269,7 +4220,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
                   <h3 className={`text-sm font-semibold ${isDark ? 'text-zinc-400' : 'text-gray-500'} mb-3`}>Cliente</h3>
                   <div className="space-y-2">
                     <div className="flex justify-between">
-                      <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>CUIC:</span>
+                      <span className={`${isDark ? 'text-zinc-500' : 'text-gray-400'} text-sm`}>ID Cliente:</span>
                       <span className={`${isDark ? 'text-white' : 'text-gray-900'} text-sm`}>{selectedCuic?.CUIC || '-'}</span>
                     </div>
                     <div className="flex justify-between">
@@ -4487,7 +4438,7 @@ export function CreateSolicitudModal({ isOpen, onClose, editSolicitudId }: Props
             (() => {
               const blockNext = enforceStepLock && !isStepComplete(step);
               const missingHint = step === 1
-                ? 'Selecciona CUIC y al menos un asignado'
+                ? 'Selecciona un cliente y al menos un asignado'
                 : step === 2
                   ? 'Completa nombre, rango de fechas, descripcion y notas'
                   : step === 3

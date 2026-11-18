@@ -70,7 +70,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
   const [catorcenas, setCatorcenas] = useState<number[]>([]);
   const [catorcenaDropdownOpen, setCatorcenaDropdownOpen] = useState(false);
   const [estatusActividad, setEstatusActividad] = useState<'' | 'Abierto' | 'Activo' | 'Finalizado'>('Abierto');
-  const [base, setBase] = useState<'' | 'CIMU' | 'TRADE' | 'UDC'>('');
   // Feedback Jos 2026-11-04: Tipo Cliente (Lead/Cliente) y Tipo Actividad
   // (Llamada/Mail/Visita). Cuando tipoCliente === 'Cliente', el input Cliente
   // se convierte en autocomplete contra la BD, pero sigue permitiendo texto
@@ -100,7 +99,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
     // Default al crear nueva: 'Abierto' (feedback Jos 2026-10-19). En edicion,
     // el useEffect de abajo precarga el valor guardado.
     setEstatusActividad(editing ? '' : 'Abierto');
-    setBase('');
     setTipoCliente('');
     setTipoActividad('');
 
@@ -155,9 +153,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
         } else if (c.estatus_actividad === 'Cerrado') {
           setEstatusActividad('Finalizado');
         }
-        if (c.base === 'CIMU' || c.base === 'TRADE' || c.base === 'UDC') {
-          setBase(c.base);
-        }
         if (c.tipo_cliente === 'Lead' || c.tipo_cliente === 'Cliente') {
           setTipoCliente(c.tipo_cliente);
         }
@@ -211,13 +206,10 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
   // eligio "Cliente" en Tipo Cliente (feedback Jos 2026-11-04). Sigue siendo
   // texto libre — las sugerencias solo ayudan a elegir uno existente. Devuelve
   // combinaciones (cliente, marca) para que al elegir del dropdown se auto-
-  // rellene tambien el campo Marca (feedback Jos 2026-11-05) y Base por CUIC
-  // (feedback Jos 2026-11-06: "campo cliente que salga y detecte tambien cuic,
-  // segun el cuic ya tiene una Base correspondiente, si se selecciona uno que
-  // se llene la base"). Patron copiado del selector CUIC de CreateSolicitudModal.
+  // rellene tambien el campo Marca (feedback Jos 2026-11-05). Patron copiado
+  // del selector de cliente de CreateSolicitudModal.
   const [clienteDropdownOpen, setClienteDropdownOpen] = useState(false);
-  const [sapDbFilter, setSapDbFilter] = useState<'ALL' | 'CIMU' | 'TRADE' | 'UDC'>('ALL');
-  type ClienteOption = { cliente: string; marca: string | null; cuic: number | null; razon_social: string | null; sap_database: 'CIMU' | 'TRADE' | 'UDC' | null };
+  type ClienteOption = { cliente: string; marca: string | null; cuic: number | null; razon_social: string | null };
   const clientesSuggest = useQuery({
     queryKey: ['clientes-suggest-full'],
     queryFn: async () => {
@@ -237,9 +229,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
           const key = `${cuic ?? ''}||${nombre}||${marca || ''}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          const sdb = (c.sap_database || '').toUpperCase();
-          const sap_database = (sdb === 'CIMU' || sdb === 'TRADE' || sdb === 'UDC') ? (sdb as 'CIMU' | 'TRADE' | 'UDC') : null;
-          out.push({ cliente: nombre, marca, cuic, razon_social: c.T0_U_RazonSocial || null, sap_database });
+          out.push({ cliente: nombre, marca, cuic, razon_social: c.T0_U_RazonSocial || null });
         }
         return out;
       } catch {
@@ -251,20 +241,19 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
     retry: false,
   });
 
-  // Filtrado client-side: tab de base + busqueda por nombre/cuic. Max 50 visibles.
+  // Filtrado client-side: busqueda por nombre/ID cliente. Max 50 visibles.
   const clientesFiltrados = useMemo(() => {
     const data = clientesSuggest.data || [];
     const q = cliente.trim().toLowerCase();
-    const filtroTab = sapDbFilter === 'ALL' ? data : data.filter(c => c.sap_database === sapDbFilter);
     const filtroTexto = q
-      ? filtroTab.filter(c =>
+      ? data.filter(c =>
           c.cliente.toLowerCase().includes(q)
           || (c.cuic != null && String(c.cuic).includes(q))
           || (c.razon_social || '').toLowerCase().includes(q)
         )
-      : filtroTab;
+      : data;
     return filtroTexto.slice(0, 50);
-  }, [clientesSuggest.data, cliente, sapDbFilter]);
+  }, [clientesSuggest.data, cliente]);
 
   // Reemplaza el placeholder `#id` del chip en modo edición con el label real
   // en cuanto la query devuelve datos (fix al bug donde el chip quedaba como
@@ -333,7 +322,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
       catorcenas: catorcenas.length > 0 ? catorcenas : undefined,
       catorcena: catorcenas[0] ?? undefined,
       estatus_actividad: estatusActividad || undefined,
-      base: base || undefined,
       tipo_cliente: tipoCliente || undefined,
       tipo_actividad: tipoActividad || undefined,
     };
@@ -423,7 +411,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                     setAnio('');
                     setCatorcenas([]);
                     setEstatusActividad('Abierto');
-                    setBase('');
                   }}
                   className={`px-4 py-2 rounded-lg text-sm font-medium border ${isDark ? 'border-amber-500/40 text-amber-200 hover:bg-amber-500/10' : 'border-amber-400 text-amber-700 hover:bg-amber-50'}`}
                 >
@@ -632,23 +619,8 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                 />
                 {tipoCliente === 'Cliente' && clienteDropdownOpen && cliente.trim().length > 0 && (
                   <div className={`fixed inset-x-2 top-16 bottom-16 mt-0 w-auto max-w-none max-h-[calc(100dvh-5rem)] overflow-hidden rounded-lg border shadow-lg flex flex-col z-20 lg:absolute lg:inset-auto lg:top-full lg:left-0 lg:right-0 lg:bottom-auto lg:mt-1 lg:w-full lg:max-w-[calc(100vw-2rem)] lg:max-h-72 ${isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'}`}>
-                    {/* Tabs de base (feedback Jos 2026-11-06: como el selector de solicitudes) */}
+                    {/* Contador de coincidencias */}
                     <div className={`flex items-center gap-1 px-2 py-1.5 border-b ${isDark ? 'border-zinc-800 bg-zinc-900' : 'border-gray-100 bg-gray-50'}`}>
-                      {(['ALL', 'CIMU', 'TRADE', 'UDC'] as const).map(tab => (
-                        <button
-                          key={tab}
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => setSapDbFilter(tab)}
-                          className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                            sapDbFilter === tab
-                              ? (isDark ? 'bg-amber-500 text-black' : 'bg-amber-600 text-white')
-                              : (isDark ? 'text-zinc-400 hover:bg-zinc-800' : 'text-gray-500 hover:bg-gray-200')
-                          }`}
-                        >
-                          {tab === 'ALL' ? 'Todos' : tab}
-                        </button>
-                      ))}
                       <span className={`ml-auto text-[10px] ${isDark ? 'text-zinc-500' : 'text-gray-400'}`}>
                         {clientesFiltrados.length} de {clientesSuggest.data?.length ?? 0}
                       </span>
@@ -672,7 +644,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                         onClick={() => {
                           setCliente(opt.cliente);
                           if (opt.marca) setMarca(opt.marca);
-                          if (opt.sap_database) setBase(opt.sap_database);
                           setClienteDropdownOpen(false);
                         }}
                         className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center justify-between gap-2 ${
@@ -683,20 +654,11 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                         <div className="min-w-0">
                           <div className="font-medium truncate">{opt.cliente}</div>
                           <div className={`text-[10px] mt-0.5 truncate ${isDark ? 'text-zinc-500' : 'text-gray-500'}`}>
-                            {opt.cuic != null ? `CUIC ${opt.cuic}` : 'Sin CUIC'}
+                            {opt.cuic != null ? `ID Cliente ${opt.cuic}` : 'Sin ID Cliente'}
                             {opt.razon_social ? ` · ${opt.razon_social}` : ''}
                             {opt.marca ? ` · ${opt.marca}` : ''}
                           </div>
                         </div>
-                        {opt.sap_database && (
-                          <span className={`shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                            opt.sap_database === 'CIMU' ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')
-                            : opt.sap_database === 'TRADE' ? (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700')
-                            : (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700')
-                          }`}>
-                            {opt.sap_database}
-                          </span>
-                        )}
                       </button>
                     ))}
                     </div>
@@ -715,7 +677,7 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
             </div>
 
             {/* Clasificacion manual — ajuste feedback 2026-08-15 */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               <div>
                 <label className={labelCls}>Año</label>
                 <select
@@ -770,19 +732,6 @@ export function NuevaActividadComercialModal({ isOpen, onClose, editing }: Props
                   <option value="Abierto">Abierto</option>
                   <option value="Activo">Activo</option>
                   <option value="Finalizado">Finalizado</option>
-                </select>
-              </div>
-              <div>
-                <label className={labelCls}>Base</label>
-                <select
-                  className={inputCls}
-                  value={base}
-                  onChange={(e) => setBase(e.target.value as '' | 'CIMU' | 'TRADE' | 'UDC')}
-                >
-                  <option value="">—</option>
-                  <option value="CIMU">CIMU</option>
-                  <option value="TRADE">TRADE</option>
-                  <option value="UDC">UDC</option>
                 </select>
               </div>
             </div>

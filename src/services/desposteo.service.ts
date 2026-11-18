@@ -275,7 +275,7 @@ export const TIPO_NOTA_LABEL: Record<TipoNota, string> = {
   rechazo_gerente: 'Rechazo gerente',
   aprobacion_facturacion: 'Aprobado facturacion',
   rechazo_facturacion: 'Rechazado facturacion',
-  ejecucion: 'Ejecutado en SAP',
+  ejecucion: 'Ejecutado',
 };
 
 // Feature flag: si false, oculta el boton de solicitar desposteo.
