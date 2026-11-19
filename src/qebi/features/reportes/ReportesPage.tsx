@@ -1,0 +1,1911 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { BarChart3, CalendarClock, ChevronDown, Layers, SlidersHorizontal, Tag } from 'lucide-react';
+import {
+  Bar, BarChart, CartesianGrid, Cell, ComposedChart, LabelList, Legend, Line, Pie, PieChart,
+  ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts';
+import { Spinner } from '../../components/ui/spinner';
+import { LiveBadge } from '../../components/ui/LiveBadge';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
+import { useCloseOnRotate } from '../../hooks/useCloseOnRotate';
+import { MetricCard, ACCENTS } from '../../components/bi/MetricCard';
+import { TooltipChart } from '../../components/charts/TooltipChart';
+import { cn } from '../../lib/utils';
+import { formatCurrency } from '../../lib/format';
+import { chartInk } from '../../lib/chartTheme';
+import { useThemeStore } from '../../store/themeStore';
+import { getAsesores, getResumenVentas } from '../../services/resumenVentas.service';
+import { getImpacto } from '../../services/historial.service';
+import { getCampanias, getCatorcenas, getCiclo, getCicloTendencia, getDistribucion, getEmbudo, getOpciones, getPropuestasAutorizacion, getTarifas, getVentasPeriodo, getVentaTotal } from '../../services/reportes.service';
+import type { CatorcenaCal, Tarifas } from '../../services/reportes.service';
+import { asesorObjetivoDe, objetivoAnual, objetivoDe, useObjetivosStore } from '../../store/objetivosStore';
+import type { ResumenVentas } from '../../types/bi';
+import type { CampaniaDetalle, Ciclo, CicloTendenciaMes, ConteoMonto, Embudo, EtapaEmbudo, FiltrosReporte, Impacto, OpcionesReporte, Periodo, PropuestasAutMes } from '../../types/reportes';
+
+const ANIO = 2026;
+
+const CARD = cn(
+  'rounded-2xl border p-4 backdrop-blur-xl shadow-xl',
+  'border-purple-200/50 bg-white/90 shadow-purple-100/20',
+  'dark:border-purple-900/30 dark:bg-[#1a1025]/90 dark:shadow-purple-900/10'
+);
+const MESES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC'];
+const fmtM = (v: number) => (Math.abs(v) >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${(v / 1e3).toFixed(0)}k`);
+const nf = (n: number) => n.toLocaleString('es-MX');
+const fmtFecha = (iso: string) => new Date(iso).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' });
+// Semana ISO (1–53) de una fecha, alineada con la etiqueta "Semana N" del BI.
+function isoWeek(d: Date): number {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t.getTime() - yStart.getTime()) / 86400000 + 1) / 7);
+}
+const CardTitle = ({ children }: { children: ReactNode }) => (
+  <h3 className="mb-2 text-xs font-light tracking-wide text-purple-700 dark:text-purple-200">{children}</h3>
+);
+
+// Rampa morado → cyan para el funnel y acentos gráficos.
+const RAMP = ['#a855f7', '#8b5cf6', '#7c3aed', '#22d3ee', '#06b6d4', '#0891b2'];
+const DIGITAL_COLORS: Record<string, string> = { Digital: '#22d3ee', Tradicional: '#a855f7' };
+
+// ============================================================
+//  FUNNEL (cono) — trapecios centrados que se conectan
+// ============================================================
+function FunnelCono({ etapas }: { etapas: EtapaEmbudo[] }) {
+  const max = etapas[0]?.valor || 1;
+  return (
+    <div className="flex flex-col">
+      {etapas.map((e, i) => {
+        const topW = (e.valor / max) * 100;
+        const next = etapas[i + 1]?.valor ?? e.valor * 0.55;
+        const botRatio = e.valor ? next / e.valor : 0.55;
+        const clip = `polygon(0 0, 100% 0, ${(50 + (botRatio * 50)).toFixed(2)}% 100%, ${(50 - (botRatio * 50)).toFixed(2)}% 100%)`;
+        return (
+          <div key={e.nombre} className="flex items-center gap-3">
+            <span className="w-12 shrink-0 text-right text-sm font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">
+              {nf(e.valor)}
+            </span>
+            <div className="relative flex-1">
+              <div
+                className="mx-auto flex h-11 items-center justify-center text-[11px] font-semibold text-white/90"
+                style={{ width: `${Math.max(6, topW)}%`, clipPath: clip, background: RAMP[i % RAMP.length] }}
+              >
+                <span className="opacity-90">{e.pct}%</span>
+              </div>
+            </div>
+            <span className="w-32 shrink-0 text-left text-xs text-zinc-500 dark:text-zinc-400">{e.nombre}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Barra de progreso (ciclo de venta)
+function BarraCiclo({ label, dias, max, color }: { label: string; dias: number; max: number; color: string }) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <span className="text-zinc-600 dark:text-zinc-300">{label}</span>
+        <span className="font-semibold tabular-nums text-zinc-700 dark:text-zinc-200">{dias} días</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-purple-500/10">
+        <div className="h-full rounded-full" style={{ width: `${Math.max(4, (dias / (max || 1)) * 100)}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
+// Barras VERTICALES (misma data que BarrasDim, pero columnas) — para "monto por asesor".
+function BarrasDimV({ data, color, height }: { data: ConteoMonto[]; color: string; height?: number }) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+  const rows = data.slice(0, 10).map((d) => ({ ...d, corto: d.nombre.split(' ')[0].slice(0, 12) }));
+  return (
+    <ResponsiveContainer width="100%" height={height ?? 260}>
+      <BarChart data={rows} margin={{ top: 14, right: 8, left: 0, bottom: 4 }}>
+        <CartesianGrid stroke={ink.grid} vertical={false} />
+        <XAxis dataKey="corto" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} interval={0} />
+        <YAxis tickFormatter={(v) => fmtM(Number(v))} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={52} />
+        <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => formatCurrency(v)} />} />
+        <Bar dataKey="monto" fill={color} radius={[4, 4, 0, 0]} maxBarSize={40}>
+          <LabelList dataKey="monto" position="top" formatter={(v: unknown) => fmtM(Number(v))} fill={ink.label} fontSize={9} />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// Barras horizontales de distribución con etiqueta "$ · %" (para formato / tipo de movimiento).
+// `abs` da el largo (todas a la derecha), el color va por el signo del monto neto.
+function BarrasDistPct({ data, height }: { data: { nombre: string; monto: number; abs: number; etq: string }[]; height?: number }) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+  if (!data.length) return <p className="py-10 text-center text-xs text-zinc-400">Sin datos en el período</p>;
+  return (
+    <ResponsiveContainer width="100%" height={height ?? Math.max(180, data.length * 34)}>
+      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 104, left: 8, bottom: 4 }}>
+        <CartesianGrid stroke={ink.grid} horizontal={false} />
+        <XAxis type="number" tickFormatter={(v) => fmtM(Number(v))} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+        <YAxis type="category" dataKey="nombre" width={120} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+        <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => formatCurrency(v)} />} />
+        <Bar dataKey="abs" name="Monto" radius={[0, 4, 4, 0]} maxBarSize={20}>
+          {data.map((d, i) => <Cell key={i} fill={d.monto >= 0 ? '#22c55e' : '#f43f5e'} />)}
+          <LabelList dataKey="etq" position="right" fill={ink.label} fontSize={10} />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// Barras horizontales (distribución por dimensión)
+function BarrasDim({ data, color, height }: { data: ConteoMonto[]; color: string; height?: number }) {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+  const rows = data.slice(0, 7).map((d) => ({
+    ...d,
+    corto: d.nombre.length > 22 ? d.nombre.slice(0, 21) + '…' : d.nombre,
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={height ?? Math.max(180, rows.length * 34)}>
+      <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 62, left: 8, bottom: 4 }}>
+        <CartesianGrid stroke={ink.grid} horizontal={false} />
+        <XAxis type="number" tickFormatter={(v) => fmtM(Number(v))} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+        <YAxis type="category" dataKey="corto" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={130} />
+        <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => formatCurrency(v)} />} />
+        <Bar dataKey="monto" fill={color} radius={[0, 4, 4, 0]} maxBarSize={20}>
+          <LabelList dataKey="monto" position="right" formatter={(v: unknown) => fmtM(Number(v))} fill={ink.label} fontSize={10} />
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ============================================================
+//  EMBUDO (página completa)
+// ============================================================
+export function EmbudoPage() {
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+  const cargarObj = useObjetivosStore((s) => s.cargar);
+  const objetivos = useObjetivosStore((s) => s.objetivos);
+
+  const [emb, setEmb] = useState<Embudo | null>(null);
+  const [ciclo, setCiclo] = useState<Ciclo | null>(null);
+  const [camps, setCamps] = useState<CampaniaDetalle[] | null>(null);
+  const [plaza, setPlaza] = useState<ConteoMonto[]>([]);
+  const [digital, setDigital] = useState<ConteoMonto[]>([]);
+  const [mueble, setMueble] = useState<ConteoMonto[]>([]);
+  const [cliente, setCliente] = useState<ConteoMonto[]>([]);
+  const [asesor, setAsesor] = useState<ConteoMonto[]>([]);
+  const [porMes, setPorMes] = useState<{ etiqueta: string; monto: number; caras: number }[]>([]);
+  const [tarifas, setTarifas] = useState<Tarifas | null>(null);
+  const [error, setError] = useState(false);
+
+  const [statusFiltro, setStatusFiltro] = useState<'todos' | 'activas' | 'finalizadas'>('todos');
+  const [q, setQ] = useState('');
+
+  // Barra de filtros compartida (afecta toda la tab).
+  const [granularidad, setGranularidad] = useState<'mes' | 'anio'>('mes');
+  const [filtros, setFiltros] = useState<FiltrosReporte>({ anio: ANIO, mes: null, formato: null, mueble: null, plazas: [], clientes: [], asesores: [], bases: ['CIMU', 'TRADE'], tipos: ['RT', 'BF', 'IN'], muebles: ['PARABUS', 'COLUMNA'], digital: ['Tradicional', 'Digital'] });
+  const [opciones, setOpciones] = useState<OpcionesReporte>({ plaza: [], formato: [], mueble: [], cliente: [], asesor: [] });
+  const [tendencia, setTendencia] = useState<CicloTendenciaMes[]>([]);
+  const [propAut, setPropAut] = useState<PropuestasAutMes[]>([]);
+  const setF = (k: keyof FiltrosReporte, v: string | number | null) =>
+    setFiltros((f) => ({ ...f, [k]: v === '' ? null : v }));
+  const setArr = (k: 'plazas' | 'clientes' | 'asesores', arr: string[]) => setFiltros((f) => ({ ...f, [k]: arr }));
+  const toggleF = (k: CatKey, v: string) =>
+    setFiltros((f) => { const cur = (f[k] ?? []) as string[]; return { ...f, [k]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] }; });
+  const limpiar = () => { setGranularidad('mes'); setFiltros((f) => ({ anio: f.anio, mes: null, formato: null, mueble: null, plazas: [], clientes: [], asesores: [], bases: ['CIMU', 'TRADE'], tipos: ['RT', 'BF', 'IN'], muebles: ['PARABUS', 'COLUMNA'], digital: ['Tradicional', 'Digital'] })); };
+
+  const [tick, setTick] = useState(0); // re-carga en vivo con el WS
+  const estadoWS = useLiveRefresh(() => setTick((t) => t + 1));
+
+  // Opciones de los dropdowns (por año).
+  useEffect(() => { getOpciones(filtros.anio).then(setOpciones).catch(() => {}); }, [filtros.anio]);
+
+  // Datos de la tab: se recargan con cada cambio de filtros y con eventos del WS.
+  useEffect(() => {
+    cargarObj(filtros.anio);
+    const f = filtros;
+    Promise.all([
+      getEmbudo(f).then(setEmb),
+      getCiclo(f).then(setCiclo).catch(() => {}),
+      getCicloTendencia(f).then(setTendencia).catch(() => setTendencia([])),
+      getPropuestasAutorizacion(f).then(setPropAut).catch(() => setPropAut([])),
+      getCampanias(120, f).then(setCamps).catch(() => setCamps([])),
+      getDistribucion('plaza', f).then(setPlaza).catch(() => {}),
+      getDistribucion('digital', f).then(setDigital).catch(() => {}),
+      getDistribucion('mueble', f).then(setMueble).catch(() => {}),
+      getDistribucion('cliente', f).then(setCliente).catch(() => {}),
+      getDistribucion('asesor', f).then(setAsesor).catch(() => {}),
+      getVentasPeriodo('mes', f).then((rows) => {
+        const map = new Map(rows.map((r) => [r.periodo, r]));
+        setPorMes(MESES.map((etiqueta, i) => ({ etiqueta, monto: map.get(i + 1)?.monto ?? 0, caras: map.get(i + 1)?.caras ?? 0 })));
+      }).catch(() => {}),
+      getTarifas(f).then(setTarifas).catch(() => setTarifas(null)),
+    ]).catch(() => setError(true));
+  }, [filtros, cargarObj, tick]);
+
+  const montoTotal = useMemo(() => plaza.reduce((a, d) => a + d.monto, 0), [plaza]);
+  const anual = objetivoAnual(objetivos, ANIO);
+
+  if (error) return <p className="text-sm text-rose-500">No se pudo cargar el embudo.</p>;
+  if (!emb) return <div className="flex h-64 items-center justify-center"><Spinner size="lg" /></div>;
+
+  // El back a veces reporta totales.propuestas/campanias == solicitudes; usamos
+  // la progresión real del funnel (etapas) para los KPIs.
+  const etapaVal = (re: RegExp) => emb.etapas.find((e) => re.test(e.nombre.toLowerCase()))?.valor ?? 0;
+  const nSolic = emb.etapas[0]?.valor ?? emb.totales.solicitudes;
+  const nProp = etapaVal(/propuesta/) || emb.totales.propuestas;
+  const nCamp = etapaVal(/campañ|campan|activ/) || emb.totales.campanias;
+  const kpis = [
+    { titulo: 'Solicitudes', valor: nf(nSolic), sub: 'Registros creados' },
+    { titulo: 'Propuestas', valor: nf(nProp), sub: nSolic ? `${((nProp / nSolic) * 100).toFixed(1)}% de solicitudes` : '' },
+    { titulo: 'Campañas', valor: nf(nCamp), sub: nProp ? `${((nCamp / nProp) * 100).toFixed(1)}% de propuestas` : '' },
+    { titulo: 'Conversión global', valor: ciclo ? `${ciclo.conversionGlobalPct}%` : '—', sub: 'Solicitud → Campaña' },
+    { titulo: 'Monto vendido', valor: formatCurrency(montoTotal), sub: nCamp ? `Ticket prom. ${formatCurrency(Math.round(montoTotal / nCamp))}` : '' },
+    { titulo: 'Avance vs objetivo', valor: anual ? `${((montoTotal / anual) * 100).toFixed(1)}%` : '—', sub: anual ? `Meta ${fmtM(anual)}` : 'Sin objetivo capturado' },
+  ];
+
+  const campsFil = (camps ?? []).filter((c) => {
+    const s = (c.status ?? '').toLowerCase();
+    if (statusFiltro === 'activas' && !/aprob|iniciar|activ/.test(s)) return false;
+    if (statusFiltro === 'finalizadas' && !/final/.test(s)) return false;
+    return !q || `${c.nombre} ${c.cliente ?? ''} ${c.asesor ?? ''}`.toLowerCase().includes(q.toLowerCase());
+  });
+  const fmtF = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' }) : '—');
+  const cicloMax = Math.max(ciclo?.cicloTotalDias ?? 1, ...(ciclo?.etapas.map((e) => e.dias) ?? [1]));
+  const topCli = cliente.slice(0, 8);
+
+  const chipsEmbudo = [
+    filtros.mes ? MESES[filtros.mes - 1] : '', ...(filtros.plazas ?? []), ...(filtros.clientes ?? []), ...(filtros.asesores ?? []),
+  ].filter(Boolean) as string[];
+  const resumenEmbudo = chipsEmbudo.length
+    ? chipsEmbudo.slice(0, 2).join(', ') + (chipsEmbudo.length > 2 ? ` +${chipsEmbudo.length - 2}` : '')
+    : 'Todos';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end"><LiveBadge estado={estadoWS} /></div>
+      {/* Barra de filtros (fija al hacer scroll; colapsable en móvil) — afecta toda la tab */}
+      <BarraFiltros resumen={resumenEmbudo}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-2">
+          <SelectBox label="Granularidad" valor={granularidad} opciones={[['mes', 'Mes'], ['anio', 'Año']]} onSel={(v) => { setGranularidad(v as typeof granularidad); if (v === 'anio') setF('mes', null); }} />
+          <SelectBox label="Año" valor={String(filtros.anio)} opciones={ANIOS.map((a) => [String(a), String(a)])} onSel={(v) => setF('anio', Number(v))} />
+          {granularidad === 'mes' && (
+            <SelectBox label="Mes" valor={String(filtros.mes ?? 0)} opciones={[['0', 'Todos'], ...MESES.map((m, i) => [String(i + 1), m] as [string, string])]} onSel={(v) => setF('mes', Number(v) || null)} />
+          )}
+          <MultiSelectStr label="Plaza" opciones={opciones.plaza} sel={filtros.plazas ?? []} onChange={(v) => setArr('plazas', v)} />
+          <MultiSelectStr label="Cliente" opciones={opciones.cliente} sel={filtros.clientes ?? []} onChange={(v) => setArr('clientes', v)} />
+          <MultiSelectStr label="Asesor" opciones={opciones.asesor} sel={filtros.asesores ?? []} onChange={(v) => setArr('asesores', v)} />
+          <button onClick={limpiar} className="rounded-lg border border-purple-200/60 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-500/10 dark:border-purple-900/40 dark:text-purple-200">
+            Limpiar
+          </button>
+        </div>
+        <FiltrosCategoria bases={filtros.bases ?? []} tipos={filtros.tipos ?? []} muebles={filtros.muebles ?? []} digital={filtros.digital ?? []} onToggle={toggleF} />
+        {!(filtros.tipos ?? []).includes('IM') && (
+          <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">No incluye impresiones (activa "Impresión" para verlas).</p>
+        )}
+      </BarraFiltros>
+
+      {/* 6 KPI con barra de gradiente */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        {kpis.map((k, i) => (
+          <MetricCard key={k.titulo} titulo={k.titulo} valor={k.valor} sub={k.sub} accent={ACCENTS[i % ACCENTS.length]} />
+        ))}
+      </div>
+
+      {/* Funnel + Ciclo */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className={CARD}>
+          <CardTitle>Embudo de conversión</CardTitle>
+          <p className="mb-4 text-[11px] text-zinc-400">Conteo de registros por etapa de estatus alcanzada</p>
+          <FunnelCono etapas={emb.etapas} />
+        </div>
+
+        {ciclo && (
+          <div className={CARD}>
+            <CardTitle>Ciclo de venta</CardTitle>
+            <p className="mb-4 text-[11px] text-zinc-400">Tiempo promedio entre transiciones de estatus (días)</p>
+            <div className="space-y-4">
+              {ciclo.etapas.map((e, i) => (
+                <BarraCiclo key={e.de} label={`${e.de} → ${e.a}`} dias={e.dias} max={cicloMax} color={RAMP[i % RAMP.length]} />
+              ))}
+              <BarraCiclo label="Ciclo total (Solicitud → Campaña)" dias={ciclo.cicloTotalDias} max={cicloMax} color="#f59e0b" />
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3 border-t border-purple-100/40 pt-3 dark:border-purple-900/20">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-zinc-400">Conversión global</p>
+                <p className="text-xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{ciclo.conversionGlobalPct}%</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-zinc-400">Registros analizados</p>
+                <p className="text-xl font-semibold tabular-nums text-purple-700 dark:text-purple-200">{nf(ciclo.total)}</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Tendencia del ciclo de vida: días por etapa, por mes (del historial de estatus) */}
+      <div className={CARD}>
+        <CardTitle>Tendencia del ciclo de vida</CardTitle>
+        <p className="-mt-1 mb-2 text-[11px] text-zinc-400">
+          Días promedio por mes de creación · <span className="text-purple-500 dark:text-purple-300">Solicitud → Propuesta</span> (hasta &quot;Atendido&quot;) y <span className="text-emerald-500 dark:text-emerald-300">Propuesta → Campaña</span> — leído de los cambios de estatus del historial.
+        </p>
+        {tendencia.some((t) => t.n > 0) ? (
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={tendencia.filter((t) => t.n > 0).map((t) => ({ etiqueta: MESES[t.mes - 1], solProp: t.solProp, propAprob: t.propAprob, n: t.n }))} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke={ink.grid} vertical={false} />
+              <XAxis dataKey="etiqueta" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+              <YAxis tickFormatter={(v) => `${v}d`} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={40} />
+              <Tooltip content={<TooltipChart format={(v) => `${Math.round(v * 10) / 10} días`} />} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Line type="monotone" dataKey="solProp" name="Solicitud → Propuesta" stroke="#8b5cf6" strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+              <Line type="monotone" dataKey="propAprob" name="Propuesta → Campaña" stroke="#22c55e" strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="py-10 text-center text-xs text-zinc-400">Sin datos de ciclo para el alcance filtrado.</p>
+        )}
+      </div>
+
+      {/* Propuestas generadas por mes + % que requieren autorización de la Dirección General */}
+      <div className={CARD}>
+        <div className="mb-2 flex items-start justify-between gap-2">
+          <div>
+            <CardTitle>Propuestas y autorización de Dirección</CardTitle>
+            <p className="-mt-1 text-[11px] text-zinc-400">
+              Propuestas generadas por mes (<span className="text-cyan-500 dark:text-cyan-300">barras</span>) y % que requieren autorización de la Dirección General (<span className="text-amber-500 dark:text-amber-300">línea</span>).
+            </p>
+          </div>
+          {propAut.length > 0 && (() => {
+            const tp = propAut.reduce((a, p) => a + p.propuestas, 0);
+            const td = propAut.reduce((a, p) => a + p.conDG, 0);
+            return (
+              <div className="text-right">
+                <p className="text-lg font-semibold tabular-nums text-purple-700 dark:text-purple-200">{tp ? Math.round((td / tp) * 100) : 0}%</p>
+                <p className="text-[10px] text-zinc-400">{nf(td)} de {nf(tp)} con DG</p>
+              </div>
+            );
+          })()}
+        </div>
+        {propAut.length ? (
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={propAut} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke={ink.grid} vertical={false} />
+              <XAxis dataKey="etiqueta" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+              <YAxis yAxisId="prop" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={36} tickFormatter={(v) => nf(Number(v))} />
+              <YAxis yAxisId="pct" orientation="right" domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={40} />
+              <Tooltip content={<TooltipChart format={(v, n) => (n === '% requiere DG' ? `${Math.round(v)}%` : `${nf(v)} propuestas`)} />} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar yAxisId="prop" dataKey="propuestas" name="Propuestas" fill="#22d3ee" radius={[4, 4, 0, 0]} maxBarSize={30} />
+              <Line yAxisId="pct" type="monotone" dataKey="pctDG" name="% requiere DG" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 3 }} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="py-10 text-center text-xs text-zinc-400">Sin propuestas para el alcance filtrado.</p>
+        )}
+      </div>
+
+      {/* Tarifa promedio (QEB guarda UNA sola tarifa por cara: lista = cobrado, sin descuento) */}
+      <div className={CARD}>
+        <CardTitle>Tarifa promedio</CardTitle>
+        <p className="-mt-1 mb-3 text-[11px] text-zinc-400">Promedio por cara según el alcance filtrado</p>
+        <div className="grid grid-cols-2 gap-3">
+          <MetricCard titulo="Tarifa promedio por cara" valor={tarifas ? formatCurrency(tarifas.efectiva) : '…'} sub="Precio por cara" tono="neutral" accent={ACCENTS[0]} />
+          <MetricCard titulo="Total de caras" valor={tarifas ? nf(tarifas.caras) : '…'} sub="Caras del alcance filtrado" tono="neutral" accent={ACCENTS[3]} />
+        </div>
+      </div>
+
+      {/* Detalle de campañas */}
+      <div className={CARD}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <CardTitle>Detalle de campañas</CardTitle>
+            <p className="-mt-1 text-[11px] text-zinc-400">Registros con ID de campaña a lo largo del flujo Solicitud → Propuesta → Campaña.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1 rounded-full bg-purple-500/10 p-0.5">
+              {(['todos', 'activas', 'finalizadas'] as const).map((s) => (
+                <button key={s} onClick={() => setStatusFiltro(s)} className={cn('rounded-full px-3 py-0.5 text-xs font-medium capitalize', statusFiltro === s ? 'bg-white text-purple-700 shadow dark:bg-[#241633] dark:text-purple-200' : 'text-zinc-500')}>
+                  {s}
+                </button>
+              ))}
+            </div>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar…" className="w-44 rounded-full border border-purple-200/60 bg-white/70 px-3 py-1 text-xs outline-none dark:border-purple-900/40 dark:bg-[#1a1025]/70 dark:text-zinc-200" />
+          </div>
+        </div>
+        <div className="max-h-[420px] overflow-auto">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead className="sticky top-0 bg-white/90 dark:bg-[#1a1025]/90">
+              <tr className="text-left text-xs text-zinc-400">
+                <th className="py-1 pr-2">Campaña</th>
+                <th className="py-1 pr-2">Cliente</th>
+                <th className="py-1 pr-2">Asesor</th>
+                <th className="py-1 pr-2">Creación</th>
+                <th className="py-1 pr-2">Vigencia</th>
+                <th className="py-1 pr-2">Caras</th>
+                <th className="py-1 pr-2 text-right">Inversión</th>
+                <th className="py-1">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {campsFil.map((c) => (
+                <tr key={c.id} className="border-t border-purple-100/40 dark:border-purple-900/20">
+                  <td className="py-1.5 pr-2 font-medium text-zinc-700 dark:text-zinc-200">{c.nombre?.trim()}</td>
+                  <td className="max-w-[160px] truncate py-1.5 pr-2 text-zinc-500 dark:text-zinc-400">{c.cliente ?? '—'}</td>
+                  <td className="py-1.5 pr-2 text-zinc-500 dark:text-zinc-400">{c.asesor ?? '—'}</td>
+                  <td className="py-1.5 pr-2 text-xs text-zinc-500">{fmtF(c.fechaCreacion)}</td>
+                  <td className="py-1.5 pr-2 text-xs text-zinc-500">{fmtF(c.fechaInicio)} – {fmtF(c.fechaFin)}</td>
+                  <td className="py-1.5 pr-2 tabular-nums text-zinc-500 dark:text-zinc-400">{nf(c.totalCaras)}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums font-medium text-zinc-700 dark:text-zinc-200">{formatCurrency(c.monto)}</td>
+                  <td className="py-1.5"><span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', badgeStatus(c.status))}>{c.status ?? '—'}</span></td>
+                </tr>
+              ))}
+              {!campsFil.length && <tr><td colSpan={8} className="py-6 text-center text-xs text-zinc-400">Sin resultados</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Top clientes + Ranking asesores */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className={CARD}>
+          <CardTitle>Top clientes</CardTitle>
+          <p className="-mt-1 mb-2 text-[11px] text-zinc-400">Por monto cerrado en el período</p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-zinc-400">
+                <th className="py-1 pr-2">Cliente</th>
+                <th className="py-1 pr-2 text-right">Campañas</th>
+                <th className="py-1 pr-2 text-right">Monto</th>
+                <th className="py-1 text-right">Ticket prom.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topCli.map((c) => (
+                <tr key={c.nombre} className="border-t border-purple-100/40 dark:border-purple-900/20">
+                  <td className="max-w-[200px] truncate py-1.5 pr-2 text-zinc-700 dark:text-zinc-200">{c.nombre}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums text-zinc-500">{nf(c.n)}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums font-medium text-zinc-700 dark:text-zinc-200">{formatCurrency(c.monto)}</td>
+                  <td className="py-1.5 text-right tabular-nums text-zinc-500">{formatCurrency(c.n ? Math.round(c.monto / c.n) : 0)}</td>
+                </tr>
+              ))}
+              {!topCli.length && <tr><td colSpan={4} className="py-4 text-center text-xs text-zinc-400">Sin datos</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        <div className={CARD}>
+          <CardTitle>Ranking de asesores</CardTitle>
+          <p className="-mt-1 mb-2 text-[11px] text-zinc-400">Monto cerrado por asesor</p>
+          <BarrasDimV data={asesor} color="#8b5cf6" />
+        </div>
+      </div>
+
+      {/* Análisis gráfico */}
+      <p className="pt-1 text-xs font-semibold uppercase tracking-wide text-purple-700/70 dark:text-purple-300/60">Análisis gráfico</p>
+
+      <div className={CARD}>
+        <CardTitle>Tendencia por mes</CardTitle>
+        <p className="-mt-1 mb-2 text-[11px] text-zinc-400">Caras cerradas (barras) y monto vendido (línea)</p>
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={porMes} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke={ink.grid} vertical={false} />
+            <XAxis dataKey="etiqueta" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+            <YAxis yAxisId="caras" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={40} tickFormatter={(v) => nf(Number(v))} />
+            <YAxis yAxisId="monto" orientation="right" tickFormatter={fmtM} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={48} />
+            <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v, n) => (n === 'Monto' ? formatCurrency(v) : `${nf(v)} caras`)} />} />
+            <Bar yAxisId="caras" dataKey="caras" name="Caras" fill="#a855f7" radius={[4, 4, 0, 0]} maxBarSize={22} />
+            <Line yAxisId="monto" type="monotone" dataKey="monto" name="Monto" stroke="#22d3ee" strokeWidth={2.5} dot={{ r: 2.5 }} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className={CARD}>
+          <CardTitle>Monto por plaza</CardTitle>
+          <BarrasDim data={plaza} color="#8b5cf6" />
+        </div>
+        <div className={CARD}>
+          <CardTitle>Tradicional vs Digital</CardTitle>
+          <p className="-mt-1 mb-1 text-[11px] text-zinc-400">Distribución de monto por formato</p>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <Pie data={digital as unknown as Record<string, unknown>[]} dataKey="monto" nameKey="nombre" innerRadius={55} outerRadius={85} paddingAngle={2} stroke="none">
+                {digital.map((d) => <Cell key={d.nombre} fill={DIGITAL_COLORS[d.nombre] ?? '#8b5cf6'} />)}
+              </Pie>
+              <Tooltip content={<TooltipChart format={(v) => formatCurrency(v)} />} />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex justify-center gap-4">
+            {digital.map((d) => (
+              <span key={d.nombre} className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: DIGITAL_COLORS[d.nombre] ?? '#8b5cf6' }} />
+                {d.nombre} <b className="tabular-nums">{fmtM(d.monto)}</b>
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className={CARD}>
+          <CardTitle>Monto por tipo de mueble</CardTitle>
+          <BarrasDim data={mueble} color="#22d3ee" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FiltroGrupo({ opciones, valor, onSel }: { opciones: [string, string][]; valor: string; onSel: (v: string) => void }) {
+  return (
+    <div className="flex gap-1 rounded-full bg-purple-500/10 p-0.5">
+      {opciones.map(([v, label]) => (
+        <button key={v} onClick={() => onSel(v)} className={cn('rounded-full px-3 py-0.5 text-xs font-medium', valor === v ? 'bg-white text-purple-700 shadow dark:bg-[#241633] dark:text-purple-200' : 'text-zinc-500')}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---- Filtros por categoría (idénticos en Variaciones y Embudo) ----
+// 4 grupos de chips: Base, Tipo de artículo, Formato, Tradicional/Digital.
+// Vacío en cada grupo = "todos" (no filtra). Los valores son las claves que
+// entiende el back (bases=CIMU/TRADE/UDC, tipos=RT/BF/IN/IM, muebles=PARABUS/
+// COLUMNA/MACRO [Gran Formato=Mi Macro], digital=Tradicional/Digital).
+type CatKey = 'bases' | 'tipos' | 'muebles' | 'digital';
+const CAT_OPS: Record<CatKey, [string, string][]> = {
+  bases: [['CIMU', 'CIMU'], ['TRADE', 'Trade'], ['UDC', 'UDC']],
+  tipos: [['RT', 'Renta'], ['BF', 'Bonif.'], ['IN', 'Intercambio'], ['IM', 'Impresión']],
+  muebles: [['PARABUS', 'Parabús'], ['COLUMNA', 'Columna'], ['MACRO', 'Gran Formato']],
+  digital: [['Tradicional', 'Tradicional'], ['Digital', 'Digital']],
+};
+
+function ChipsGrupo({ label, ops, sel, onToggle }: { label: string; ops: [string, string][]; sel: string[]; onToggle: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
+      {ops.map(([v, l]) => (
+        <button key={v} type="button" onClick={() => onToggle(v)}
+          className={cn('rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors', sel.includes(v) ? 'bg-purple-500/20 text-purple-700 dark:text-purple-200' : 'bg-zinc-500/10 text-zinc-400')}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
+function FiltrosCategoria({ bases, tipos, muebles, digital, onToggle }: {
+  bases: string[]; tipos: string[]; muebles: string[]; digital: string[]; onToggle: (g: CatKey, v: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-2">
+      <ChipsGrupo label="Base" ops={CAT_OPS.bases} sel={bases} onToggle={(v) => onToggle('bases', v)} />
+      <ChipsGrupo label="Tipo de artículo" ops={CAT_OPS.tipos} sel={tipos} onToggle={(v) => onToggle('tipos', v)} />
+      <ChipsGrupo label="Formato" ops={CAT_OPS.muebles} sel={muebles} onToggle={(v) => onToggle('muebles', v)} />
+      <ChipsGrupo label="Tradicional / Digital" ops={CAT_OPS.digital} sel={digital} onToggle={(v) => onToggle('digital', v)} />
+    </div>
+  );
+}
+
+// Dropdown etiquetado (para la barra de filtros del jefe).
+// Dropdown de selección ÚNICA, con buscador arriba (para listas largas como
+// Cliente/Asesor) y el mismo estilo morado que los multi-select.
+function SelectBox({ label, valor, opciones, onSel }: { label: string; valor: string; opciones: [string, string][]; onSel: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', h);
+    return () => document.removeEventListener('pointerdown', h);
+  }, [open]);
+  useEffect(() => { if (!open) setQ(''); }, [open]); // limpia el buscador al cerrar
+  useCloseOnRotate(open, () => setOpen(false));
+  const actual = opciones.find(([v]) => v === valor)?.[1] ?? valor;
+  const conBuscador = opciones.length > 8; // solo listas largas (Cliente, Asesor, Plaza…)
+  const filtradas = q ? opciones.filter(([, l]) => l.toLowerCase().includes(q.toLowerCase())) : opciones;
+  return (
+    <div ref={ref} className="relative flex w-full items-center gap-1.5 text-xs sm:w-auto">
+      <span className="w-24 shrink-0 whitespace-nowrap text-zinc-500 dark:text-zinc-400 sm:w-auto">{label}</span>
+      <button
+        type="button" onClick={() => setOpen((v) => !v)}
+        className="flex min-w-0 flex-1 items-center justify-between gap-1 rounded-lg border border-purple-200/60 bg-white/80 px-2 py-1.5 text-xs text-zinc-700 shadow-sm outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#241633] dark:text-zinc-200 sm:max-w-[160px] sm:flex-none sm:py-1"
+      >
+        <span className="truncate">{actual}</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-40 mt-1 w-56 rounded-lg border border-purple-200/60 bg-white p-1 shadow-2xl dark:border-purple-900/40 dark:bg-[#241633]">
+          {conBuscador && (
+            <input
+              autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Buscar ${label.toLowerCase()}…`}
+              className="mb-1 w-full rounded-md border border-purple-200/60 bg-white/80 px-2 py-1.5 text-xs outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#1a1025] dark:text-zinc-200"
+            />
+          )}
+          <div className="max-h-56 overflow-auto">
+            {filtradas.map(([v, l]) => (
+              <button
+                key={v} type="button" onClick={() => { onSel(v); setOpen(false); }}
+                className={cn(
+                  'flex w-full items-center rounded px-2 py-1.5 text-left text-xs',
+                  v === valor ? 'bg-purple-500/15 font-medium text-purple-700 dark:text-purple-200' : 'text-zinc-700 hover:bg-purple-500/10 dark:text-zinc-200'
+                )}
+              >
+                <span className="truncate">{l}</span>
+              </button>
+            ))}
+            {!filtradas.length && <p className="px-2 py-2 text-[11px] text-zinc-400">Sin coincidencias</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Leyenda verde/rojo para las gráficas de variación neta.
+function LeyendaPosNeg() {
+  return (
+    <div className="flex items-center gap-3 text-[11px] text-zinc-500 dark:text-zinc-400">
+      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: '#22c55e' }} />Aumentó inversión</span>
+      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: '#f43f5e' }} />Redujo inversión</span>
+    </div>
+  );
+}
+
+// Años seleccionables.
+const ANIOS = [2026, 2025, 2024];
+
+// Dropdown de multi-selección con checkboxes (varios meses / catorcenas / semanas).
+function MultiSelect({ label, opciones, sel, onChange }: { label: string; opciones: [number, string][]; sel: number[]; onChange: (s: number[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', h);
+    return () => document.removeEventListener('pointerdown', h);
+  }, [open]);
+  useCloseOnRotate(open, () => setOpen(false));
+  const toggle = (v: number) => onChange(sel.includes(v) ? sel.filter((x) => x !== v) : [...sel, v].sort((a, b) => a - b));
+  const resumen = sel.length === 0 ? 'Todos' : sel.length === 1 ? (opciones.find((o) => o[0] === sel[0])?.[1] ?? '1') : `${sel.length} seleccionados`;
+  return (
+    <div ref={ref} className="relative flex w-full items-center gap-1.5 text-xs sm:w-auto">
+      <span className="w-24 shrink-0 whitespace-nowrap text-zinc-500 dark:text-zinc-400 sm:w-auto">{label}</span>
+      <button
+        type="button" onClick={() => setOpen((v) => !v)}
+        className="flex min-w-0 flex-1 items-center justify-between gap-1 rounded-lg border border-purple-200/60 bg-white/80 px-2 py-1.5 text-xs text-zinc-700 shadow-sm outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#241633] dark:text-zinc-200 sm:max-w-[170px] sm:flex-none sm:py-1"
+      >
+        <span className="truncate">{resumen}</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-40 mt-1 max-h-64 w-48 overflow-auto rounded-lg border border-purple-200/60 bg-white p-1 shadow-2xl dark:border-purple-900/40 dark:bg-[#241633]">
+          <button onClick={() => onChange([])} className="w-full px-2 py-1 text-left text-[11px] text-purple-600 hover:underline dark:text-purple-300">Limpiar (todos)</button>
+          {opciones.map(([v, l]) => (
+            <label key={v} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-zinc-700 hover:bg-purple-500/10 dark:text-zinc-200">
+              <input type="checkbox" checked={sel.includes(v)} onChange={() => toggle(v)} className="accent-purple-600" />
+              <span>{l}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Multi-selección de TEXTO con buscador (cliente, campaña, marca…).
+function MultiSelectStr({ label, opciones, sel, onChange }: { label: string; opciones: string[]; sel: string[]; onChange: (s: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', h);
+    return () => document.removeEventListener('pointerdown', h);
+  }, [open]);
+  useCloseOnRotate(open, () => setOpen(false));
+  const toggle = (v: string) => onChange(sel.includes(v) ? sel.filter((x) => x !== v) : [...sel, v]);
+  const resumen = sel.length === 0 ? 'Todos' : sel.length === 1 ? sel[0] : `${sel.length} seleccionados`;
+  const filtradas = q ? opciones.filter((o) => o.toLowerCase().includes(q.toLowerCase())) : opciones;
+  return (
+    <div ref={ref} className="relative flex w-full items-center gap-1.5 text-xs sm:w-auto">
+      <span className="w-24 shrink-0 whitespace-nowrap text-zinc-500 dark:text-zinc-400 sm:w-auto">{label}</span>
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex min-w-0 flex-1 items-center justify-between gap-1 rounded-lg border border-purple-200/60 bg-white/80 px-2 py-1.5 text-xs text-zinc-700 shadow-sm outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#241633] dark:text-zinc-200 sm:max-w-[190px] sm:flex-none sm:py-1">
+        <span className="truncate">{resumen}</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-40 mt-1 w-64 rounded-lg border border-purple-200/60 bg-white p-1 shadow-2xl dark:border-purple-900/40 dark:bg-[#241633]">
+          <input
+            autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar…"
+            className="mb-1 w-full rounded-md border border-purple-200/60 bg-white/80 px-2 py-1.5 text-xs outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#1a1025] dark:text-zinc-200"
+          />
+          <button onClick={() => onChange([])} className="w-full px-2 py-1 text-left text-[11px] text-purple-600 hover:underline dark:text-purple-300">Limpiar (todos)</button>
+          <div className="max-h-56 overflow-auto">
+            {filtradas.slice(0, 200).map((v) => (
+              <label key={v} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-zinc-700 hover:bg-purple-500/10 dark:text-zinc-200">
+                <input type="checkbox" checked={sel.includes(v)} onChange={() => toggle(v)} className="accent-purple-600" />
+                <span className="truncate">{v}</span>
+              </label>
+            ))}
+            {!filtradas.length && <p className="px-2 py-2 text-[11px] text-zinc-400">Sin coincidencias</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ¿La pantalla es "compacta"? = celular/tablet/iPad (puntero táctil en cualquier
+// orientación) O ventana angosta. Detectar por PUNTERO cubre el iPad landscape
+// (que es más ancho que 1024px y por breakpoint de ancho se veía como escritorio).
+function useEsCompacto(): boolean {
+  const Q = '(pointer: coarse), (max-width: 1023px)';
+  const [compacto, setCompacto] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(Q).matches : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(Q);
+    const on = () => setCompacto(mq.matches);
+    on();
+    mq.addEventListener?.('change', on);
+    window.addEventListener('resize', on);
+    return () => { mq.removeEventListener?.('change', on); window.removeEventListener('resize', on); };
+  }, []);
+  return compacto;
+}
+
+// Contenedor de la barra de filtros. En ESCRITORIO (puntero de mouse) queda pegado
+// (sticky) al hacer scroll y siempre abierto. En CELULAR y iPad (puntero táctil, en
+// cualquier orientación) es un panel colapsable que fluye con la página: arranca
+// cerrado y no se queda pegado tapando/empujando el contenido al hacer scroll.
+function BarraFiltros({ children, resumen }: { children: ReactNode; resumen?: ReactNode }) {
+  const compacto = useEsCompacto();
+  const [abierto, setAbierto] = useState(false);
+  useCloseOnRotate(abierto, () => setAbierto(false));
+  return (
+    <div className={cn(CARD, '!p-3', compacto ? 'relative z-20' : 'sticky z-20 top-[calc(var(--bi-header-h,104px)_+_8px)]')}>
+      {compacto && (
+        <button
+          onClick={() => setAbierto((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 text-xs font-medium text-purple-700 dark:text-purple-200"
+        >
+          <span className="flex items-center gap-1.5"><SlidersHorizontal className="h-4 w-4" /> Filtros</span>
+          <span className="flex min-w-0 items-center gap-2">
+            {resumen && <span className="truncate text-[11px] font-normal text-zinc-500 dark:text-zinc-400">{resumen}</span>}
+            <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', abierto && 'rotate-180')} />
+          </span>
+        </button>
+      )}
+      <div className={cn('space-y-3', compacto && (abierto ? 'mt-3' : 'hidden'))}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Barra divergente: se llena a la derecha si aumentó (verde), a la izquierda si redujo (rojo).
+function BarraDivergente({ label, valor, max }: { label: string; valor: number; max: number }) {
+  const pos = valor >= 0;
+  const w = (Math.abs(valor) / (max || 1)) * 50;
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-sm">
+        <span className="text-zinc-600 dark:text-zinc-300">{label}</span>
+        <span className={cn('font-semibold tabular-nums', pos ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>
+          {pos ? '+' : ''}{formatCurrency(valor)}
+        </span>
+      </div>
+      <div className="relative h-3 overflow-hidden rounded-full bg-purple-500/10">
+        <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-zinc-400/50" />
+        <div
+          className="absolute top-0 h-full rounded-full"
+          style={{ background: pos ? '#22c55e' : '#f43f5e', left: pos ? '50%' : `${50 - w}%`, width: `${w}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+//  VARIACIONES E IMPACTO
+// ============================================================
+export function VariacionesPage() {
+  const [imp, setImp] = useState<Impacto | null>(null);
+  const [error, setError] = useState(false);
+  const [anio, setAnio] = useState(ANIO);
+  const [granularidad, setGranularidad] = useState<'mes' | 'catorcena' | 'semana' | 'anio'>('mes');
+  const [mesesSel, setMesesSel] = useState<number[]>([]); // vacío = todos
+  const [semsSel, setSemsSel] = useState<number[]>([]);   // semanas ISO
+  const [catsSel, setCatsSel] = useState<number[]>([]);   // catorcenas
+  const [catCal, setCatCal] = useState<CatorcenaCal[]>([]); // calendario de catorcenas del año
+  const [plazasSel, setPlazasSel] = useState<string[]>([]);       // multi + búsqueda
+  const [digitalSel, setDigitalSel] = useState<string[]>(['Tradicional', 'Digital']); // default Trad+Digital (igual que BI)
+  const [muebleSel, setMuebleSel] = useState<string[]>(['PARABUS', 'COLUMNA']);       // default Parabús+Columna (igual que BI)
+  const [asesoresSel, setAsesoresSel] = useState<string[]>([]);   // multi + búsqueda
+  const [clientesSel, setClientesSel] = useState<string[]>([]);   // multi + búsqueda
+  const [campaniasSel, setCampaniasSel] = useState<string[]>([]); // multi + búsqueda
+  const [marcasSel, setMarcasSel] = useState<string[]>([]);       // multi + búsqueda
+  const [statusSel, setStatusSel] = useState<string[]>([]);       // estatus (ventas/pase a ventas)
+  const [idCampania, setIdCampania] = useState('');               // filtro por ID (texto)
+  const [campoFiltro, setCampoFiltro] = useState<'todos' | 'caras' | 'monto' | 'periodo' | 'eliminacion' | 'rechazo'>('todos');
+  const [direccion, setDireccion] = useState<'todas' | 'alzas' | 'bajas'>('todas');
+  const [verAnalisis, setVerAnalisis] = useState(true);         // desplegable "Ver más análisis" (abierto por default)
+  const [periodoSel, setPeriodoSel] = useState<number | null>(null); // bucket con click (drill-down)
+  const [basesSel, setBasesSel] = useState<string[]>(['CIMU', 'TRADE']); // default CIMU+Trade (valores reales de sap_database, en mayúsculas)
+  const [tiposArt, setTiposArt] = useState<string[]>(['RT', 'BF', 'IN']); // sin IM = sin impresiones por default
+  const [apsFiltro, setApsFiltro] = useState<'todos' | 'con' | 'sin'>('todos'); // posteado (con/sin APS)
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+
+  const [ventaTotal, setVentaTotal] = useState<number | null>(null);
+  const [ventaPrev, setVentaPrev] = useState<number | null>(null); // período inmediato anterior (para ▲/▼)
+  const [ventasPeriodo, setVentasPeriodo] = useState<Record<number, number>>({}); // venta V_APS por período (línea del chart)
+  const [tick, setTick] = useState(0); // se incrementa con cada evento del WS → re-carga en vivo
+  const estadoWS = useLiveRefresh(() => setTick((t) => t + 1));
+
+  useEffect(() => {
+    getImpacto(anio).then(setImp).catch(() => setError(true));
+    getCatorcenas(anio).then(setCatCal).catch(() => setCatCal([]));
+  }, [anio, tick]);
+
+  // Venta real del período (V_APS) según el alcance filtrado + comparación vs el
+  // período inmediato anterior (solo cuando hay un único período seleccionado).
+  useEffect(() => {
+    // NO reseteamos a null en cada corrida (el WS incrementa `tick` seguido y causaba
+    // el "brinco" de números a "…" y de vuelta). Stale-while-revalidate: se mantiene el
+    // valor previo hasta que llega el nuevo. `ventaPrev` sí se limpia si ya no aplica.
+    // V_APS filtra por un valor único; si hay varios seleccionados, la venta total
+    // muestra todos (el detalle sí se filtra en la tabla). Mismo criterio que cliente.
+    const uniq1 = (a: string[]) => (a.length === 1 ? a[0] : null);
+    const clienteUnico = uniq1(clientesSel);
+    const base: Partial<FiltrosReporte> = { anio, plaza: uniq1(plazasSel), digital: digitalSel, muebles: muebleSel, cliente: clienteUnico, asesor: uniq1(asesoresSel) };
+    const per: Partial<FiltrosReporte> =
+      granularidad === 'mes' ? { meses: mesesSel }
+      : granularidad === 'catorcena' ? { catorcenas: catsSel }
+      : granularidad === 'semana' ? { semanas: semsSel }
+      : {};
+    getVentaTotal({ ...base, ...per }).then(setVentaTotal).catch(() => setVentaTotal(null));
+
+    // Período previo: único valor seleccionado y > 1.
+    const uno = granularidad === 'mes' && mesesSel.length === 1 ? { key: 'meses' as const, v: mesesSel[0] }
+      : granularidad === 'catorcena' && catsSel.length === 1 ? { key: 'catorcenas' as const, v: catsSel[0] }
+      : granularidad === 'semana' && semsSel.length === 1 ? { key: 'semanas' as const, v: semsSel[0] }
+      : null;
+    if (uno && uno.v > 1) {
+      getVentaTotal({ ...base, [uno.key]: [uno.v - 1] }).then(setVentaPrev).catch(() => setVentaPrev(null));
+    } else {
+      setVentaPrev(null); // ya no aplica comparación vs previo → limpiar (evita valor viejo)
+    }
+
+    // Venta real V_APS por período (para la línea de "Venta neta total" del chart).
+    const uni = granularidad === 'anio' ? 'mes' : granularidad;
+    getVentasPeriodo(uni as Periodo, { ...base, ...per })
+      .then((rows) => setVentasPeriodo(Object.fromEntries(rows.map((r) => [r.periodo, r.monto]))))
+      .catch(() => setVentasPeriodo({}));
+  }, [anio, granularidad, mesesSel, catsSel, semsSel, plazasSel, digitalSel, muebleSel, clientesSel, asesoresSel, tick]);
+
+  // Opciones de los dropdowns, derivadas del universo de ediciones del año.
+  const opciones = useMemo(() => {
+    const ed = imp?.ediciones ?? [];
+    const uniq = (get: (e: Impacto['ediciones'][number]) => (string | null | undefined)[]) =>
+      [...new Set(ed.flatMap(get).filter((v): v is string => !!v && !!v.trim()))].sort((a, b) => a.localeCompare(b));
+    return {
+      plazas: uniq((e) => e.plazas ?? []),
+      formatos: uniq((e) => e.formatos ?? []),
+      muebles: uniq((e) => e.muebles ?? []),
+      clientes: uniq((e) => [e.cliente]),
+      asesores: uniq((e) => [e.asesor]),
+      campanias: uniq((e) => [e.campania]),
+      marcas: uniq((e) => [e.marca]),
+      status: uniq((e) => [e.status]),
+      bases: uniq((e) => [e.base]),
+    };
+  }, [imp]);
+
+  if (error) return <p className="text-sm text-rose-500">No se pudo cargar el impacto.</p>;
+  if (!imp) return <div className="flex h-64 items-center justify-center"><Spinner size="lg" /></div>;
+
+  const signo = (e: Impacto['ediciones'][number]) => ((e.monto ?? 0) !== 0 ? (e.monto ?? 0) : e.caras);
+
+  // Semanas ISO presentes en las ediciones del año (para el dropdown de Semana).
+  const semanasDisp = [...new Set(imp.ediciones.map((e) => isoWeek(new Date(e.fecha))))].sort((a, b) => a - b);
+
+  // Catorcena (según el calendario QEB) a la que pertenece una fecha de edición.
+  const catDe = (fecha: string): number => {
+    const t = new Date(fecha).getTime();
+    for (const c of catCal) {
+      const ini = c.ini ? new Date(c.ini).getTime() : null;
+      const fin = c.fin ? new Date(c.fin).getTime() + 86399999 : null; // incluye el día fin
+      if (ini != null && fin != null && t >= ini && t <= fin) return c.catorcena;
+    }
+    return 0;
+  };
+  const catorcenasDisp = [...new Set(imp.ediciones.map((e) => catDe(e.fecha)).filter((c) => c > 0))].sort((a, b) => a - b);
+
+  const limpiar = () => {
+    setGranularidad('mes'); setMesesSel([]); setSemsSel([]); setCatsSel([]); setPlazasSel([]); setDigitalSel(['Tradicional', 'Digital']); setMuebleSel(['PARABUS', 'COLUMNA']);
+    setClientesSel([]); setCampaniasSel([]); setMarcasSel([]); setStatusSel([]); setIdCampania(''); setAsesoresSel([]); setCampoFiltro('todos'); setDireccion('todas');
+    setBasesSel(['CIMU', 'TRADE']); setTiposArt(['RT', 'BF', 'IN']); setApsFiltro('todos');
+  };
+  // Toggle de los 4 grupos de categoría (mismos que en Embudo).
+  const toggleCat = (g: CatKey, v: string) => {
+    const setr = g === 'bases' ? setBasesSel : g === 'tipos' ? setTiposArt : g === 'muebles' ? setMuebleSel : setDigitalSel;
+    setr((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
+  };
+
+  // Filtros: período, plaza/formato/mueble/asesor, cliente/campaña/marca (multi),
+  // ID de campaña, campo editado y dirección.
+  const idq = idCampania.trim();
+  // Filtro BASE = todos los filtros MENOS el de periodo. `filAnio` = año completo
+  // (el ancla absoluta de "venta acumulada"); `fil` = + filtro de periodo (vista normal).
+  const pasaBase = (e: Impacto['ediciones'][number]) => {
+    if (campoFiltro === 'caras' && !e.cambioCaras) return false;
+    if (campoFiltro === 'monto' && !e.cambioTarifa) return false; // "Tarifa" = cambió la tarifa PÚBLICA (no cualquier inversión)
+    if (campoFiltro === 'periodo' && e.tipoEdicion !== 'Cambio de periodo') return false;
+    if (campoFiltro === 'eliminacion' && e.tipoEdicion !== 'Eliminar circuito') return false;
+    if (campoFiltro === 'rechazo' && e.tipoEdicion !== 'Rechazo') return false;
+    // Las campañas rechazadas/canceladas SOLO se ven en el filtro "Rechazadas";
+    // en las demás vistas se aíslan para no inflar bajas/totales de ediciones.
+    if (campoFiltro !== 'rechazo' && e.tipoEdicion === 'Rechazo') return false;
+    // BASE (CIMU/Trade/UDC) — de solicitud.sap_database. Solo oculta bases CONOCIDAS
+    // fuera de la selección (las de base desconocida no se ocultan, para no perder datos).
+    if (basesSel.length && e.base && !basesSel.some((b) => b.toUpperCase() === (e.base as string).toUpperCase())) return false;
+    // Tipo de artículo por prefijo del código (RT/BF/IN/IM). Las ediciones sin artículo no se filtran.
+    if (tiposArt.length && (e.articulos?.length) && !e.articulos.some((a) => tiposArt.includes((a.split('-')[0] || '').toUpperCase()))) return false;
+    // Posteado (APS): con/sin APS asignado.
+    if (apsFiltro === 'con' && !e.tieneAps) return false;
+    if (apsFiltro === 'sin' && e.tieneAps) return false;
+    // Plaza/Trad-Digital/Formato: SOLO filtran eventos que SÍ tienen ese atributo. Un
+    // "Cambio de periodo" o un rechazo no editan caras → no traen mueble/formato/plaza;
+    // no deben ocultarse por esos filtros (igual que el de tipo de artículo).
+    if (plazasSel.length && (e.plazas?.length) && !e.plazas.some((p) => plazasSel.includes(p))) return false;
+    if (digitalSel.length && (e.formatos?.length) && !e.formatos.some((f) => digitalSel.some((d) => f.toLowerCase() === d.toLowerCase()))) return false;
+    if (muebleSel.length && (e.muebles?.length) && !e.muebles.some((m) => muebleSel.some((k) => m.toUpperCase().includes(k)))) return false;
+    if (clientesSel.length && !(e.cliente && clientesSel.includes(e.cliente))) return false;
+    if (campaniasSel.length && !(e.campania && campaniasSel.includes(e.campania))) return false;
+    if (marcasSel.length && !(e.marca && marcasSel.includes(e.marca))) return false;
+    if (statusSel.length && !(e.status && statusSel.includes(e.status))) return false;
+    if (idq && !String(e.refId ?? '').includes(idq)) return false;
+    if (asesoresSel.length && !(e.asesor && asesoresSel.includes(e.asesor))) return false;
+    const s = signo(e);
+    if (direccion === 'alzas' && s <= 0) return false;
+    if (direccion === 'bajas' && s >= 0) return false;
+    return true;
+  };
+  const enPeriodo = (e: Impacto['ediciones'][number]) => {
+    if (granularidad === 'mes' && mesesSel.length && !mesesSel.includes(new Date(e.fecha).getMonth() + 1)) return false;
+    if (granularidad === 'semana' && semsSel.length && !semsSel.includes(isoWeek(new Date(e.fecha)))) return false;
+    if (granularidad === 'catorcena' && catsSel.length && !catsSel.includes(catDe(e.fecha))) return false;
+    return true;
+  };
+  const filAnio = imp.ediciones.filter(pasaBase);
+  const fil = filAnio.filter(enPeriodo);
+
+  const alzas = fil.filter((e) => (e.monto ?? 0) > 0);
+  const bajas = fil.filter((e) => (e.monto ?? 0) < 0);
+  const sumAlzas = alzas.reduce((a, e) => a + (e.monto ?? 0), 0);
+  const sumBajas = bajas.reduce((a, e) => a + (e.monto ?? 0), 0);
+  const total = fil.reduce((a, e) => a + (e.monto ?? 0), 0);
+  const promedio = fil.length ? total / fil.length : 0;
+  const campaniasEditadas = new Set(fil.map((e) => e.campania ?? e.refId)).size;
+
+  // KPI "Venta neta total" (V_APS) + comparación ▲/▼ vs período previo.
+  const ventaDeltaPct = ventaTotal != null && ventaPrev != null && ventaPrev !== 0 ? ((ventaTotal - ventaPrev) / ventaPrev) * 100 : null;
+  const ventaTotalKpi = {
+    titulo: 'Venta acumulada total',
+    valor: ventaTotal == null ? '…' : formatCurrency(ventaTotal),
+    sub: ventaDeltaPct != null
+      ? `${ventaDeltaPct >= 0 ? '▲ +' : '▼ '}${ventaDeltaPct.toFixed(1)}% vs período previo`
+      : 'Venta acumulada por período',
+    tono: ventaDeltaPct == null ? ('neutral' as const) : ventaDeltaPct >= 0 ? ('up' as const) : ('down' as const),
+    accent: ACCENTS[5],
+  };
+
+  const kpis = [
+    { titulo: 'Ediciones registradas', valor: nf(fil.length), sub: `${campaniasEditadas} campañas afectadas`, tono: 'neutral' as const, accent: ACCENTS[0] },
+    { titulo: 'Variación neta', valor: `${total >= 0 ? '+' : ''}${formatCurrency(total)}`, sub: 'Impacto total en inversión', tono: total >= 0 ? 'up' as const : 'down' as const, accent: ACCENTS[1] },
+    { titulo: 'Impacto promedio', valor: `${promedio >= 0 ? '+' : ''}${formatCurrency(promedio)}`, sub: 'Magnitud por edición', tono: promedio >= 0 ? 'up' as const : 'down' as const, accent: ACCENTS[2] },
+    { titulo: 'Alzas', valor: `+${formatCurrency(sumAlzas)}`, sub: `${alzas.length} ediciones al alza`, tono: 'up' as const, accent: ACCENTS[3] },
+    { titulo: 'Bajas', valor: formatCurrency(sumBajas), sub: `${bajas.length} ediciones a la baja`, tono: 'down' as const, accent: ACCENTS[4] },
+    ventaTotalKpi,
+  ];
+
+  // Alzas vs bajas por período (mes/semana/catorcena según granularidad): barra
+  // verde hacia arriba (subió) y roja hacia abajo (bajó), con línea de cero.
+  const unidad = granularidad === 'semana' ? 'semana' : granularidad === 'catorcena' ? 'catorcena' : 'mes';
+  const bucketDe = (e: Impacto['ediciones'][number]) =>
+    unidad === 'semana' ? isoWeek(new Date(e.fecha)) : unidad === 'catorcena' ? catDe(e.fecha) : new Date(e.fecha).getMonth() + 1;
+  const etiquetaBucket = (b: number) => (unidad === 'semana' ? `Sem ${b}` : unidad === 'catorcena' ? `Cat ${b}` : MESES[b - 1]);
+  const porPeriodo = new Map<number, { alzas: number; bajas: number }>();
+  for (const e of fil) {
+    const b = bucketDe(e);
+    const x = porPeriodo.get(b) ?? { alzas: 0, bajas: 0 };
+    const v = e.monto ?? 0;
+    if (v > 0) x.alzas += v; else if (v < 0) x.bajas += v;
+    porPeriodo.set(b, x);
+  }
+  // Unión de períodos: los que tienen ediciones + los que tienen venta V_APS.
+  const clavesPeriodo = [...new Set<number>([...porPeriodo.keys(), ...Object.keys(ventasPeriodo).map(Number)])]
+    .filter((b) => Number.isFinite(b) && b > 0)
+    .sort((a, b) => a - b);
+  const barrasMes = clavesPeriodo.map((b) => {
+    const v = porPeriodo.get(b) ?? { alzas: 0, bajas: 0 };
+    return { mes: etiquetaBucket(b), bucket: b, alzas: v.alzas, bajas: v.bajas, neta: v.alzas + v.bajas, ventaTotal: ventasPeriodo[b] ?? 0 };
+  });
+  const filas = fil;
+
+  // Clientes con más ajuste (variación neta absoluta).
+  const porCliente = new Map<string, { edic: number; monto: number }>();
+  for (const e of fil) {
+    const c = e.cliente ?? '—';
+    const x = porCliente.get(c) ?? { edic: 0, monto: 0 };
+    x.edic++; x.monto += e.monto ?? 0;
+    porCliente.set(c, x);
+  }
+  const clientesTop = [...porCliente.entries()]
+    .map(([nombre, v]) => ({ nombre, ...v }))
+    .sort((a, b) => Math.abs(b.monto) - Math.abs(a.monto))
+    .slice(0, 8);
+
+  // Aporte por tipo de edición: descomposición precio/volumen del delta de $.
+  // efecto caras = Δcaras × tarifa_antes ; efecto tarifa = Δinversión − efecto caras.
+  let aporteCaras = 0, aporteTarifa = 0;
+  for (const e of fil) {
+    const { carasAntes: cA, carasDespues: cD, invAntes: iA, invDespues: iD } = e;
+    if (cA != null && cD != null && iA != null && iD != null && cA > 0) {
+      const efCaras = (cD - cA) * (iA / cA);
+      aporteCaras += efCaras;
+      aporteTarifa += (iD - iA) - efCaras;
+    } else if (iA != null && iD != null) {
+      aporteTarifa += iD - iA; // sólo cambió tarifa/costo (caras iguales)
+    } else if (e.monto != null) {
+      aporteTarifa += e.monto; // fallback
+    }
+  }
+  const maxAporte = Math.max(Math.abs(aporteCaras), Math.abs(aporteTarifa), 1);
+
+
+  // Variación neta por asesor (una barra por asesor, verde/rojo según signo).
+  const porAsesor = new Map<string, number>();
+  for (const e of fil) { if (!e.asesor) continue; porAsesor.set(e.asesor, (porAsesor.get(e.asesor) ?? 0) + (e.monto ?? 0)); }
+  const asesorNeto = [...porAsesor.entries()]
+    .map(([nombre, monto]) => ({ nombre, corto: nombre.split(' ')[0], monto }))
+    .filter((x) => x.monto !== 0)
+    .sort((a, b) => Math.abs(b.monto) - Math.abs(a.monto))
+    .slice(0, 10)
+    .sort((a, b) => b.monto - a.monto);
+
+  // Variación neta por plaza (el monto de una edición se reparte entre sus plazas).
+  const porPlaza = new Map<string, number>();
+  for (const e of fil) {
+    const ps = e.plazas ?? [];
+    if (!ps.length) continue;
+    const share = (e.monto ?? 0) / ps.length;
+    for (const p of ps) porPlaza.set(p, (porPlaza.get(p) ?? 0) + share);
+  }
+  const plazaNeto = [...porPlaza.entries()]
+    .map(([nombre, monto]) => ({ nombre, monto }))
+    .filter((x) => x.monto !== 0)
+    .sort((a, b) => b.monto - a.monto);
+
+  // Distribución en $ y % por FORMATO (mueble: PARABÚS/COLUMNA/…) y por TIPO DE MOVIMIENTO
+  // (Alza/Baja de caras, Tarifa, Cambio de periodo, Eliminación, Rechazo). El % es la
+  // participación sobre el total absoluto; el signo (verde/rojo) dice si sumó o restó inversión.
+  const aDist = (m: Map<string, number>) => {
+    const tot = [...m.values()].reduce((a, v) => a + Math.abs(v), 0) || 1;
+    return [...m.entries()]
+      .map(([nombre, monto]) => {
+        const pct = Math.round((Math.abs(monto) / tot) * 100);
+        return { nombre, monto, abs: Math.abs(monto), etq: `${fmtM(monto)} · ${pct}%` };
+      })
+      .filter((x) => x.monto !== 0)
+      .sort((a, b) => b.abs - a.abs)
+      .slice(0, 8);
+  };
+
+  const porFormato = new Map<string, number>();
+  for (const e of fil) {
+    const ms = e.muebles ?? [];
+    if (!ms.length) continue;
+    const share = (e.monto ?? 0) / ms.length; // reparte el monto entre los muebles tocados
+    for (const m of ms) porFormato.set(m, (porFormato.get(m) ?? 0) + share);
+  }
+  const formatoDist = aDist(porFormato);
+
+  const porTipoMov = new Map<string, number>();
+  for (const e of fil) { const t = e.tipoEdicion ?? 'Otro'; porTipoMov.set(t, (porTipoMov.get(t) ?? 0) + (e.monto ?? 0)); }
+  const tipoMovDist = aDist(porTipoMov);
+
+  // Rango de fechas de las ediciones mostradas (para encabezados "variación realizada del … al …").
+  const fFilVista = fil.map((e) => new Date(e.fecha).getTime()).filter((t) => Number.isFinite(t));
+  const rangoIni = fFilVista.length ? new Date(Math.min(...fFilVista)).toISOString() : null;
+  const rangoFin = fFilVista.length ? new Date(Math.max(...fFilVista)).toISOString() : null;
+  const rangoTexto = rangoIni
+    ? `Variación realizada del ${fmtFecha(rangoIni)}${rangoFin && rangoFin.slice(0, 10) !== rangoIni.slice(0, 10) ? ` al ${fmtFecha(rangoFin)}` : ''}`
+    : 'Variación del período seleccionado';
+
+  // Drill-down: al hacer click en un período (barra), desglose de su variación por campaña.
+  const periodoSelValido = periodoSel != null && clavesPeriodo.includes(periodoSel) ? periodoSel : null;
+  const drillCamps = (() => {
+    if (periodoSelValido == null) return [] as { nombre: string; alzas: number; bajas: number; edic: number; neto: number }[];
+    const m = new Map<string, { alzas: number; bajas: number; edic: number }>();
+    for (const e of fil) {
+      if (bucketDe(e) !== periodoSelValido) continue;
+      const k = e.campania ?? (e.refId ? `#${e.refId}` : '—');
+      const x = m.get(k) ?? { alzas: 0, bajas: 0, edic: 0 };
+      const v = e.monto ?? 0;
+      if (v > 0) x.alzas += v; else if (v < 0) x.bajas += v;
+      x.edic++;
+      m.set(k, x);
+    }
+    return [...m.entries()].map(([nombre, v]) => ({ nombre, ...v, neto: v.alzas + v.bajas }))
+      .sort((a, b) => Math.abs(b.neto) - Math.abs(a.neto));
+  })();
+
+  // Resumen compacto de filtros activos (para la barra colapsada en móvil).
+  const periodoLabels = granularidad === 'mes' ? mesesSel.map((m) => MESES[m - 1])
+    : granularidad === 'catorcena' ? catsSel.map((c) => `Cat ${c}`)
+    : granularidad === 'semana' ? semsSel.map((w) => `Sem ${w}`) : [];
+  const chipsActivos = [
+    ...periodoLabels, ...plazasSel, ...digitalSel, ...muebleSel, ...asesoresSel,
+    ...clientesSel, ...campaniasSel, ...marcasSel, ...statusSel, ...basesSel, idq ? `ID ${idq}` : '',
+    campoFiltro !== 'todos' ? campoFiltro : '', direccion !== 'todas' ? direccion : '',
+    apsFiltro !== 'todos' ? `APS: ${apsFiltro}` : '', !tiposArt.includes('IM') ? 'sin impresiones' : '',
+  ].filter(Boolean) as string[];
+  const resumenFiltros = chipsActivos.length
+    ? chipsActivos.slice(0, 2).join(', ') + (chipsActivos.length > 2 ? ` +${chipsActivos.length - 2}` : '')
+    : 'Todos';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          Cada registro proviene del historial de acciones: una edición de caras o tarifa que modificó la inversión de una campaña ya creada (venta cerrada).
+          Los montos se cuentan por <b>fecha en que se hizo la edición</b> (no por el periodo de venta de la campaña).
+        </p>
+        <LiveBadge estado={estadoWS} />
+      </div>
+
+      <BarraFiltros resumen={resumenFiltros}>
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-2">
+          <SelectBox label="Granularidad" valor={granularidad} opciones={[['mes', 'Mes'], ['catorcena', 'Catorcena'], ['semana', 'Semana'], ['anio', 'Año']]} onSel={(v) => setGranularidad(v as typeof granularidad)} />
+          <SelectBox label="Año" valor={String(anio)} opciones={ANIOS.map((a) => [String(a), String(a)])} onSel={(v) => setAnio(Number(v))} />
+          {granularidad === 'mes' && (
+            <MultiSelect label="Mes" opciones={MESES.map((m, i) => [i + 1, m] as [number, string])} sel={mesesSel} onChange={setMesesSel} />
+          )}
+          {granularidad === 'catorcena' && (
+            <MultiSelect label="Catorcena" opciones={catorcenasDisp.map((c) => [c, `Cat ${c}`] as [number, string])} sel={catsSel} onChange={setCatsSel} />
+          )}
+          {granularidad === 'semana' && (
+            <MultiSelect label="Semana" opciones={semanasDisp.map((w) => [w, `Sem ${w}`] as [number, string])} sel={semsSel} onChange={setSemsSel} />
+          )}
+          <MultiSelectStr label="Plaza" opciones={opciones.plazas} sel={plazasSel} onChange={setPlazasSel} />
+          <MultiSelectStr label="Asesor" opciones={opciones.asesores} sel={asesoresSel} onChange={setAsesoresSel} />
+          <MultiSelectStr label="Cliente" opciones={opciones.clientes} sel={clientesSel} onChange={setClientesSel} />
+          <MultiSelectStr label="Campaña" opciones={opciones.campanias} sel={campaniasSel} onChange={setCampaniasSel} />
+          <MultiSelectStr label="Marca" opciones={opciones.marcas} sel={marcasSel} onChange={setMarcasSel} />
+          <MultiSelectStr label="Estatus" opciones={opciones.status} sel={statusSel} onChange={setStatusSel} />
+          <label className="flex w-full items-center gap-1.5 text-xs sm:w-auto">
+            <span className="w-24 shrink-0 whitespace-nowrap text-zinc-500 dark:text-zinc-400 sm:w-auto">ID campaña</span>
+            <input value={idCampania} onChange={(e) => setIdCampania(e.target.value)} inputMode="numeric" placeholder="Ej. 81220"
+              className="min-w-0 flex-1 rounded-lg border border-purple-200/60 bg-white/80 px-2 py-1.5 text-xs text-zinc-700 shadow-sm outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#241633] dark:text-zinc-200 sm:max-w-[110px] sm:py-1" />
+          </label>
+          <button onClick={limpiar} className="rounded-lg border border-purple-200/60 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-500/10 dark:border-purple-900/40 dark:text-purple-200">
+            Limpiar
+          </button>
+        </div>
+        <FiltrosCategoria bases={basesSel} tipos={tiposArt} muebles={muebleSel} digital={digitalSel} onToggle={toggleCat} />
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Movimiento</span>
+            <FiltroGrupo opciones={[['todos', 'Todos'], ['caras', 'Caras'], ['monto', 'Tarifa'], ['periodo', 'Cambio de periodo'], ['eliminacion', 'Eliminación'], ['rechazo', 'Rechazadas']]} valor={campoFiltro} onSel={(v) => setCampoFiltro(v as typeof campoFiltro)} />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Dirección</span>
+            <FiltroGrupo opciones={[['todas', 'Todas'], ['alzas', 'Alzas'], ['bajas', 'Bajas']]} valor={direccion} onSel={(v) => setDireccion(v as typeof direccion)} />
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">APS</span>
+            <FiltroGrupo opciones={[['todos', 'Todos'], ['con', 'Con APS'], ['sin', 'Sin APS']]} valor={apsFiltro} onSel={(v) => setApsFiltro(v as typeof apsFiltro)} />
+          </div>
+        </div>
+        <p className="text-[11px] text-zinc-400">
+          Plaza · Formato · Tradicional/Digital corresponden a las caras exactas que se editaron en cada registro (por circuito/cara del historial). Gran Formato = Mi Macro.
+          {!tiposArt.includes('IM') && <span className="ml-1 font-medium text-amber-600 dark:text-amber-400">· No incluye impresiones (activa "Impresión" para verlas).</span>}
+        </p>
+      </BarraFiltros>
+
+      {/* Historial de ediciones (movido hasta arriba) */}
+      <div className={CARD}>
+        <div className="mb-3">
+          <CardTitle>Historial de ediciones</CardTitle>
+          <p className="-mt-1 text-[11px] text-zinc-400">Audit log con campaña, tipo, quién editó y el impacto en inversión · {filas.length} registros</p>
+        </div>
+        <div className="max-h-[460px] overflow-auto">
+          <table className="w-full min-w-[1140px] text-sm">
+            <thead className="sticky top-0 bg-white/90 dark:bg-[#1a1025]/90">
+              <tr className="text-left text-xs text-zinc-400">
+                <th className="py-1 pr-2">Fecha</th>
+                <th className="py-1 pr-2">Tipo</th>
+                <th className="py-1 pr-2">Campaña</th>
+                <th className="py-1 pr-2">ID</th>
+                <th className="py-1 pr-2">Artículo</th>
+                <th className="py-1 pr-2">Plaza</th>
+                <th className="py-1 pr-2">Formato</th>
+                <th className="py-1 pr-2">Usuario</th>
+                <th className="py-1 pr-2">Campo</th>
+                <th className="py-1 pr-2">Cantidad (antes → después)</th>
+                <th className="py-1 pr-2">Inversión (antes → después)</th>
+                <th className="py-1 text-right">Δ Inversión</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((e) => {
+                const esPeriodo = e.tipoEdicion === 'Cambio de periodo';
+                const esElim = e.tipoEdicion === 'Eliminar circuito' || e.tipoEdicion === 'Baja de reservas';
+                const esRechazo = e.tipoEdicion === 'Rechazo';
+                const unidadCant = e.unidad === 'impresiones' ? 'Impresiones' : 'Caras';
+                const campos: { label: string; tono: string }[] = [];
+                if (e.cambioCaras) campos.push({ label: unidadCant, tono: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300' });
+                if (e.cambioTarifa) campos.push({ label: 'Tarifa', tono: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' });
+                if (esPeriodo) campos.push({ label: 'Periodo', tono: 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300' });
+                if (esElim) campos.push({ label: 'Eliminación', tono: 'bg-rose-500/15 text-rose-700 dark:text-rose-300' });
+                if (esRechazo) campos.push({ label: 'Rechazo', tono: 'bg-rose-500/15 text-rose-700 dark:text-rose-300' });
+                const art = (e.articulos ?? []).join(', ');
+                const plaza = (e.plazas ?? []).join(', ');
+                const fmt = e.formatoDetalle || (e.muebles ?? []).join(', ') || (e.formatos ?? []).join(', ');
+                return (
+                  <tr key={e.id} className="border-t border-purple-100/40 dark:border-purple-900/20">
+                    <td className="py-1.5 pr-2 text-xs text-zinc-500">{new Date(e.fecha).toLocaleDateString('es-MX', { day: '2-digit', month: 'short' })}</td>
+                    <td className="py-1.5 pr-2"><span className={cn('whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium', tipoBadge(e.tipoEdicion))}>{e.tipoEdicion ?? '—'}</span></td>
+                    <td className="max-w-[150px] truncate py-1.5 pr-2 font-medium text-zinc-700 dark:text-zinc-200">{e.campania ?? '—'}</td>
+                    <td className="py-1.5 pr-2 text-xs tabular-nums">
+                      {e.refId ? (
+                        <a href={`https://app.qeb.mx/campanas/detail/${e.refId}`} target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline dark:text-purple-300" title="Abrir campaña en app.qeb.mx">{e.refId}</a>
+                      ) : <span className="text-zinc-400">—</span>}
+                    </td>
+                    <td className="max-w-[130px] truncate py-1.5 pr-2 text-xs text-zinc-500 dark:text-zinc-400" title={art}>{art || '—'}</td>
+                    <td className="max-w-[120px] truncate py-1.5 pr-2 text-xs text-zinc-500 dark:text-zinc-400" title={plaza}>{plaza || '—'}</td>
+                    <td className="max-w-[120px] truncate py-1.5 pr-2 text-xs text-zinc-500 dark:text-zinc-400" title={fmt}>{fmt || '—'}</td>
+                    <td className="max-w-[130px] truncate py-1.5 pr-2 text-zinc-500 dark:text-zinc-400">{e.usuario ?? '—'}</td>
+                    <td className="py-1.5 pr-2">
+                      <span className="flex gap-1">
+                        {campos.length ? campos.map((c) => (
+                          <span key={c.label} className={cn('whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium', c.tono)}>{c.label}</span>
+                        )) : <span className="text-xs text-zinc-400">—</span>}
+                      </span>
+                    </td>
+                    {/* Cantidad: caras y/o tarifa pública (ambas si cambiaron juntas) / $ eliminado / periodo. */}
+                    <td className="py-1.5 pr-2 text-xs tabular-nums">
+                      {esRechazo ? (
+                        <span className="text-rose-600 dark:text-rose-400">
+                          {Math.abs(e.caras) > 0 ? `${Math.abs(e.caras)} caras rechazadas` : 'Campaña rechazada'}
+                        </span>
+                      ) : esElim ? (
+                        <span className="text-zinc-600 dark:text-zinc-300">
+                          {e.monto != null && e.monto !== 0 ? formatCurrency(Math.abs(e.monto)) : `${Math.abs(e.caras)}`}
+                          <span className="mx-1 text-zinc-400">→</span>{e.monto != null && e.monto !== 0 ? '$0' : '0'}
+                        </span>
+                      ) : (e.cambioCaras || e.cambioTarifa) ? (
+                        <div className="flex flex-col gap-0.5">
+                          {e.cambioCaras && e.carasAntes != null && (
+                            <span className="text-zinc-600 dark:text-zinc-300">
+                              <span className="mr-1 inline-flex items-center gap-0.5 text-[10px] font-semibold uppercase text-cyan-600 dark:text-cyan-400"><Layers className="h-3 w-3" />Caras</span>{e.carasAntes} <span className="text-zinc-400">→</span> {e.carasDespues}
+                              <span className={cn('ml-1', e.caras > 0 ? 'text-emerald-600 dark:text-emerald-400' : e.caras < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-400')}>({e.caras > 0 ? '+' : ''}{e.caras})</span>
+                            </span>
+                          )}
+                          {e.cambioTarifa && e.tarifaAntes != null && (
+                            <span className="text-zinc-600 dark:text-zinc-300">
+                              <span className="mr-1 inline-flex items-center gap-0.5 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-400"><Tag className="h-3 w-3" />Tarifa</span>{formatCurrency(e.tarifaAntes)} <span className="text-zinc-400">→</span> {formatCurrency(e.tarifaDespues ?? 0)}
+                            </span>
+                          )}
+                        </div>
+                      ) : e.carasAntes != null ? (
+                        <span className="text-zinc-600 dark:text-zinc-300">
+                          {e.carasAntes} <span className="text-zinc-400">→</span> {e.carasDespues}
+                          <span className={cn('ml-1', e.caras > 0 ? 'text-emerald-600 dark:text-emerald-400' : e.caras < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-400')}>({e.caras > 0 ? '+' : ''}{e.caras})</span>
+                        </span>
+                      ) : esPeriodo ? (
+                        (e.periodoAntes || e.periodoDespues) ? (
+                          <span className="text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
+                            <span className="mr-1 inline-flex items-center gap-0.5 text-[10px] font-semibold uppercase text-indigo-600 dark:text-indigo-400"><CalendarClock className="h-3 w-3" />Periodo</span>{e.periodoAntes ?? '—'} <span className="text-zinc-400">→</span> {e.periodoDespues ?? '—'}
+                            {e.periodoAntes && e.periodoAntes === e.periodoDespues && <span className="ml-1 text-[10px] italic text-zinc-400">(mismas fechas)</span>}
+                          </span>
+                        ) : <span className="text-zinc-400" title="Este registro es anterior a que QEB empezara a guardar el periodo antes/después">modificado</span>
+                      ) : <span className="text-zinc-400">—</span>}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs tabular-nums">
+                      {e.invAntes != null ? (
+                        <span className="text-zinc-600 dark:text-zinc-300">{fmtM(e.invAntes)} <span className="text-zinc-400">→</span> {fmtM(e.invDespues ?? 0)}</span>
+                      ) : esElim && e.monto ? (
+                        <span className="text-zinc-600 dark:text-zinc-300">{fmtM(Math.abs(e.monto))} <span className="text-zinc-400">→</span> $0</span>
+                      ) : <span className="text-zinc-400">—</span>}
+                    </td>
+                    {esPeriodo ? (
+                      // Cambio de periodo: monto NEUTRAL (traslada, no suma ni resta), sin signo.
+                      // El monto trasladado = inversión total de la campaña (invAntes, derivado en el back).
+                      <td className="py-1.5 text-right tabular-nums text-zinc-500 dark:text-zinc-400">
+                        {(() => {
+                          const t = e.monto != null && e.monto !== 0 ? Math.abs(e.monto) : (e.invAntes ?? null);
+                          return t != null ? (
+                            <span title="Monto trasladado (la inversión no cambia, solo de periodo)">{formatCurrency(t)}</span>
+                          ) : '—';
+                        })()}
+                      </td>
+                    ) : (
+                      <td className={cn('py-1.5 text-right tabular-nums font-medium', (e.monto ?? 0) > 0 ? 'text-emerald-600 dark:text-emerald-400' : (e.monto ?? 0) < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-400')}>
+                        {e.monto ? `${e.monto > 0 ? '+' : ''}${formatCurrency(e.monto)}` : '—'}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+              {!filas.length && <tr><td colSpan={12} className="py-6 text-center text-xs text-zinc-400">Sin ediciones en el período</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        {kpis.map((k) => (
+          <MetricCard key={k.titulo} titulo={k.titulo} valor={k.valor} sub={k.sub} tono={k.tono} accent={k.accent} />
+        ))}
+      </div>
+
+      <div className={CARD}>
+        <CardTitle>Variación de inversión por {unidad}</CardTitle>
+        <p className="-mt-1 mb-2 text-[11px] text-zinc-400">Alzas y bajas de ediciones; la línea ámbar es el efecto neto · <span className="text-purple-500 dark:text-purple-300">clic en un {unidad} para ver su desglose</span></p>
+        <ResponsiveContainer width="100%" height={300}>
+          <ComposedChart data={barrasMes} stackOffset="sign" margin={{ top: 8, right: 8, left: 0, bottom: 4 }}
+            onClick={(s: unknown) => { const b = (s as { activePayload?: { payload?: { bucket?: number } }[] })?.activePayload?.[0]?.payload?.bucket; if (b != null) setPeriodoSel((p) => (p === b ? null : b)); }}
+            className="cursor-pointer">
+            <CartesianGrid stroke={ink.grid} vertical={false} />
+            <XAxis dataKey="mes" tick={{ fill: ink.axis, fontSize: 11 }} tickLine={false} axisLine={false} />
+            <YAxis tickFormatter={fmtM} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={52} />
+            <Tooltip cursor={{ fill: ink.cursor }} content={
+              <TooltipChart format={(v) => `${v >= 0 ? '+' : ''}${formatCurrency(v)}`} />
+            } />
+            <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{ fontSize: 11, paddingBottom: 8 }} />
+            <ReferenceLine y={0} stroke={ink.axis} />
+            <Bar dataKey="alzas" name="Alzas" stackId="v" fill="#22c55e" radius={[3, 3, 0, 0]} maxBarSize={46} />
+            <Bar dataKey="bajas" name="Bajas" stackId="v" fill="#f43f5e" radius={[0, 0, 3, 3]} maxBarSize={46} />
+            <Line type="monotone" dataKey="neta" name="Neta (ediciones)" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 3, fill: '#f59e0b', stroke: '#f59e0b' }} activeDot={{ r: 5 }} />
+          </ComposedChart>
+        </ResponsiveContainer>
+        <p className="mt-1 text-center text-[11px] text-zinc-400">
+          Verde arriba = subió inversión · rojo abajo = bajó · línea ámbar (Neta) = efecto neto del período (alzas + bajas)
+        </p>
+      </div>
+
+      {/* Desglose del período con click (drill-down): cómo se reparte su variación por campaña. */}
+      {periodoSelValido != null && (
+        <div className={cn(CARD, 'border-purple-300/60 ring-1 ring-purple-300/40')}>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div>
+              <CardTitle>Desglose de {etiquetaBucket(periodoSelValido)}</CardTitle>
+              <p className="-mt-1 text-[11px] text-zinc-400">Cómo se reparte la variación de ese {unidad} · {drillCamps.length} campaña(s)</p>
+            </div>
+            <button onClick={() => setPeriodoSel(null)} className="shrink-0 rounded-lg border border-purple-200/60 px-2.5 py-1 text-[11px] font-medium text-purple-700 hover:bg-purple-500/10 dark:border-purple-900/40 dark:text-purple-200">Cerrar</button>
+          </div>
+          <div className="max-h-64 overflow-auto">
+            <table className="w-full min-w-[520px] text-sm">
+              <thead className="sticky top-0 bg-white/90 dark:bg-[#1a1025]/90">
+                <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400">
+                  <th className="py-1 pr-2 font-medium">Campaña</th>
+                  <th className="py-1 pr-2 text-center font-medium">Edic.</th>
+                  <th className="py-1 pr-2 text-right font-medium">Alzas</th>
+                  <th className="py-1 pr-2 text-right font-medium">Bajas</th>
+                  <th className="py-1 text-right font-medium">Neta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {drillCamps.map((c) => (
+                  <tr key={c.nombre} className="border-t border-purple-100/40 dark:border-purple-900/20">
+                    <td className="max-w-[240px] truncate py-1.5 pr-2 font-medium text-zinc-700 dark:text-zinc-200">{c.nombre}</td>
+                    <td className="py-1.5 pr-2 text-center tabular-nums text-zinc-500 dark:text-zinc-400">{c.edic}</td>
+                    <td className="py-1.5 pr-2 text-right tabular-nums text-emerald-600 dark:text-emerald-400">{c.alzas ? `+${formatCurrency(c.alzas)}` : '—'}</td>
+                    <td className="py-1.5 pr-2 text-right tabular-nums text-rose-600 dark:text-rose-400">{c.bajas ? formatCurrency(c.bajas) : '—'}</td>
+                    <td className={cn('py-1.5 text-right tabular-nums font-semibold', c.neto > 0 ? 'text-emerald-600 dark:text-emerald-400' : c.neto < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-400')}>{c.neto ? `${c.neto > 0 ? '+' : ''}${formatCurrency(c.neto)}` : '—'}</td>
+                  </tr>
+                ))}
+                {!drillCamps.length && <tr><td colSpan={5} className="py-4 text-center text-xs text-zinc-400">Sin ediciones en {etiquetaBucket(periodoSelValido)}</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Ver más análisis — desplegable con el detalle (clientes, tipo, asesor, plaza). */}
+      <button
+        onClick={() => setVerAnalisis((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 rounded-xl border border-purple-300/50 bg-purple-500/5 px-4 py-2.5 text-sm font-semibold text-purple-700 transition-colors hover:bg-purple-500/10 dark:border-purple-800/40 dark:text-purple-200"
+      >
+        <span className="flex flex-wrap items-center gap-2">
+          <BarChart3 className="h-4 w-4 shrink-0" /> {verAnalisis ? 'Ver menos análisis' : 'Ver más análisis'}
+          <span className="text-[11px] font-normal text-zinc-400">· {rangoTexto}</span>
+        </span>
+        <ChevronDown className={cn('h-4 w-4 shrink-0 transition-transform', verAnalisis && 'rotate-180')} />
+      </button>
+
+      {verAnalisis && (
+      <div className="space-y-3">
+      <div className="grid gap-3 lg:grid-cols-2">
+        {/* Clientes con más ajuste */}
+        <div className={CARD}>
+          <CardTitle>Clientes con más ajuste</CardTitle>
+          <p className="-mt-1 mb-2 text-[11px] text-zinc-400">Mayor variación neta absoluta</p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-400">
+                <th className="py-1 pr-2 font-medium">Cliente</th>
+                <th className="py-1 pr-2 text-center font-medium">Edic.</th>
+                <th className="py-1 text-right font-medium">Variación</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clientesTop.map((c) => (
+                <tr key={c.nombre} className="border-t border-purple-100/40 dark:border-purple-900/20">
+                  <td className="max-w-[220px] truncate py-1.5 pr-2 font-medium text-zinc-700 dark:text-zinc-200">{c.nombre}</td>
+                  <td className="py-1.5 pr-2 text-center tabular-nums text-zinc-500 dark:text-zinc-400">{c.edic}</td>
+                  <td className={cn('py-1.5 text-right tabular-nums font-semibold', c.monto > 0 ? 'text-emerald-600 dark:text-emerald-400' : c.monto < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-zinc-400')}>
+                    {c.monto ? `${c.monto > 0 ? '+' : ''}${formatCurrency(c.monto)}` : '—'}
+                  </td>
+                </tr>
+              ))}
+              {!clientesTop.length && <tr><td colSpan={3} className="py-6 text-center text-xs text-zinc-400">Sin ajustes en el período</td></tr>}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Aporte por tipo de edición */}
+        <div className={CARD}>
+          <CardTitle>Aporte por tipo de edición</CardTitle>
+          <p className="-mt-1 mb-4 text-[11px] text-zinc-400">¿La variación viene de mover caras o de mover tarifa?</p>
+          <div className="space-y-4">
+            <BarraDivergente label="Cambios en número de caras" valor={aporteCaras} max={maxAporte} />
+            <BarraDivergente label="Cambios en tarifa" valor={aporteTarifa} max={maxAporte} />
+          </div>
+          <p className="mt-4 text-[11px] text-zinc-400">
+            Barra a la derecha = la edición aumentó inversión; a la izquierda = la redujo.
+          </p>
+        </div>
+      </div>
+
+      {/* Análisis gráfico: variación neta por asesor + por plaza */}
+      <div>
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-400">Análisis gráfico</p>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {/* Variación neta por asesor */}
+          <div className={CARD}>
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <div>
+                <CardTitle>Variación neta por asesor</CardTitle>
+                <p className="-mt-1 text-[11px] text-zinc-400">Quién genera más ajustes de inversión (± tras crear)</p>
+              </div>
+              <LeyendaPosNeg />
+            </div>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={asesorNeto} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+                <CartesianGrid stroke={ink.grid} vertical={false} />
+                <XAxis dataKey="corto" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} interval={0} />
+                <YAxis tickFormatter={fmtM} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={52} />
+                <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => `${v >= 0 ? '+' : ''}${formatCurrency(v)}`} />} />
+                <ReferenceLine y={0} stroke={ink.axis} />
+                <Bar dataKey="monto" name="Variación neta" radius={[3, 3, 0, 0]} maxBarSize={46}>
+                  {asesorNeto.map((d, i) => <Cell key={i} fill={d.monto >= 0 ? '#22c55e' : '#f43f5e'} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            {!asesorNeto.length && <p className="py-6 text-center text-xs text-zinc-400">Sin ajustes en el período</p>}
+          </div>
+
+          {/* Variación neta por plaza */}
+          <div className={CARD}>
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <div>
+                <CardTitle>Variación neta por plaza</CardTitle>
+                <p className="-mt-1 text-[11px] text-zinc-400">Dónde se concentran los ajustes de inversión</p>
+              </div>
+              <LeyendaPosNeg />
+            </div>
+            <ResponsiveContainer width="100%" height={Math.max(220, plazaNeto.length * 30)}>
+              <BarChart data={plazaNeto} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>
+                <CartesianGrid stroke={ink.grid} horizontal={false} />
+                <XAxis type="number" tickFormatter={fmtM} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+                <YAxis type="category" dataKey="nombre" width={92} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+                <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => `${v >= 0 ? '+' : ''}${formatCurrency(v)}`} />} />
+                <ReferenceLine x={0} stroke={ink.axis} />
+                <Bar dataKey="monto" name="Variación neta" radius={[0, 3, 3, 0]} maxBarSize={22}>
+                  {plazaNeto.map((d, i) => <Cell key={i} fill={d.monto >= 0 ? '#22c55e' : '#f43f5e'} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            {!plazaNeto.length && <p className="py-6 text-center text-xs text-zinc-400">Sin ajustes en el período</p>}
+          </div>
+
+          {/* Distribución por formato (mueble) — $ y % */}
+          <div className={CARD}>
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <div>
+                <CardTitle>Distribución por formato</CardTitle>
+                <p className="-mt-1 text-[11px] text-zinc-400">Participación en $ y % de la variación</p>
+              </div>
+              <LeyendaPosNeg />
+            </div>
+            <BarrasDistPct data={formatoDist} />
+          </div>
+
+          {/* Distribución por tipo de movimiento — $ y % */}
+          <div className={CARD}>
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <div>
+                <CardTitle>Distribución por tipo de movimiento</CardTitle>
+                <p className="-mt-1 text-[11px] text-zinc-400">Participación en $ y % de la variación</p>
+              </div>
+              <LeyendaPosNeg />
+            </div>
+            <BarrasDistPct data={tipoMovDist} />
+          </div>
+        </div>
+      </div>
+      </div>
+      )}
+
+    </div>
+  );
+}
+
+// ============================================================
+//  OBJETIVOS
+// ============================================================
+export function ObjetivosPage() {
+  const [modo, setModo] = useState<'definir' | 'avance'>('definir');
+  const cargar = useObjetivosStore((s) => s.cargar);
+  useEffect(() => {
+    cargar(ANIO);
+  }, [cargar]);
+  return (
+    <div className="space-y-4">
+      <div className="flex w-fit gap-1 rounded-lg bg-purple-500/10 p-1">
+        {(['definir', 'avance'] as const).map((m) => (
+          <button key={m} onClick={() => setModo(m)} className={cn('rounded-md px-4 py-1 text-xs font-medium', modo === m ? 'bg-white text-purple-700 shadow dark:bg-[#241633] dark:text-purple-200' : 'text-zinc-500')}>
+            {m === 'definir' ? 'Definir objetivos' : 'Avance'}
+          </button>
+        ))}
+      </div>
+      {modo === 'definir' ? <DefinirObjetivos /> : <AvanceObjetivos />}
+    </div>
+  );
+}
+
+function DefinirObjetivos() {
+  const objetivos = useObjetivosStore((s) => s.objetivos);
+  const asesoresObj = useObjetivosStore((s) => s.asesores);
+  const setObjetivo = useObjetivosStore((s) => s.setObjetivo);
+  const setObjetivosBulk = useObjetivosStore((s) => s.setObjetivosBulk);
+  const setAsesor = useObjetivosStore((s) => s.setAsesor);
+  const limpiarAnio = useObjetivosStore((s) => s.limpiarAnio);
+  const limpiarAsesores = useObjetivosStore((s) => s.limpiarAsesores);
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+
+  const [ventas, setVentas] = useState<ResumenVentas | null>(null);
+  const [asesores, setAsesores] = useState<readonly string[]>([]);
+  const [sharesReal, setSharesReal] = useState<Record<string, number>>({});
+  const [anualTarget, setAnualTarget] = useState('');
+  const [captura, setCaptura] = useState<'pct' | 'monto'>('pct');
+
+  useEffect(() => {
+    getResumenVentas({ base: null, asesor: null, cliente: null, anio: ANIO, mes: null }).then(setVentas).catch(() => {});
+    getAsesores().then(setAsesores).catch(() => {});
+    getDistribucion('asesor').then((d) => {
+      const tot = d.reduce((a, x) => a + x.monto, 0) || 1;
+      const m: Record<string, number> = {};
+      for (const x of d) m[x.nombre] = x.monto / tot;
+      setSharesReal(m);
+    }).catch(() => {});
+  }, []);
+
+  const realMes = useMemo(() => {
+    const map = new Map((ventas?.ventasMensuales ?? []).map((m) => [m.mes, m.aps]));
+    return MESES.map((_, i) => map.get(i + 1) ?? 0);
+  }, [ventas]);
+
+  const anual = objetivoAnual(objetivos, ANIO);
+  const realAcum = realMes.reduce((a, b) => a + b, 0);
+
+  const regenerar = () => {
+    const total = (Number(anualTarget) || 0) * 1e6;
+    if (total <= 0) return;
+    const sum = realMes.reduce((a, b) => a + b, 0);
+    const shape = sum > 0 ? realMes.map((v) => v / sum) : realMes.map(() => 1 / 12);
+    setObjetivosBulk(ANIO, shape.map((s) => Math.round(total * s)));
+  };
+
+  const repartirPorVentas = () => {
+    for (const a of asesores) setAsesor(ANIO, a, Math.round(anual * (sharesReal[a] ?? 0)));
+  };
+
+  const filas = MESES.map((etiqueta, i) => ({ mes: i + 1, etiqueta, objetivo: objetivoDe(objetivos, ANIO, i + 1), real: realMes[i] }));
+  const sumAsesores = asesores.reduce((a, x) => a + asesorObjetivoDe(asesoresObj, ANIO, x), 0);
+  const cuadra = anual > 0 && Math.abs(sumAsesores - anual) < 1;
+
+  return (
+    <div className="space-y-4">
+      {/* Resumen */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <MetricCard titulo="Objetivo anual" valor={formatCurrency(anual)} sub="Suma de los 12 meses" accent="purple" />
+        <MetricCard titulo="Real acumulado" valor={formatCurrency(realAcum)} sub="Ventas del período" accent="cyan" tono="up" />
+        <MetricCard titulo="Avance" valor={anual ? `${((realAcum / anual) * 100).toFixed(1)}%` : '—'} sub="Real / objetivo anual" accent="green" />
+        <MetricCard titulo="Brecha" valor={anual ? formatCurrency(realAcum - anual) : '—'} sub="Falta para la meta" accent="pink" tono={realAcum >= anual ? 'up' : 'down'} />
+      </div>
+
+      {/* PASO 1 */}
+      <div className={CARD}>
+        <h3 className="mb-1 text-sm font-semibold text-purple-700 dark:text-purple-200">Paso 1 · Objetivo global (mensual)</h3>
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">Captura la meta de cada mes; el objetivo anual se suma solo. O escribe un anual y repártelo según la estacionalidad de las ventas reales.</p>
+        <div className="mb-3 flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] text-zinc-400">Objetivo anual (MDP)</span>
+            <input type="number" min="0" value={anualTarget} onChange={(e) => setAnualTarget(e.target.value)} placeholder="0" className="w-32 rounded-md border border-purple-200/60 bg-white/70 px-2 py-1 text-right tabular-nums outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#1a1025]/70 dark:text-zinc-200" />
+          </label>
+          <button onClick={regenerar} className="rounded-md bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-500/25 dark:text-purple-300">Regenerar según estacionalidad</button>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">Anual actual: <b className="tabular-nums text-purple-700 dark:text-purple-200">{formatCurrency(anual)}</b></span>
+          <button onClick={() => limpiarAnio(ANIO)} className="ml-auto rounded-md bg-purple-500/10 px-2 py-1 text-xs text-purple-700 hover:bg-purple-500/20 dark:text-purple-300">Limpiar</button>
+        </div>
+        <ResponsiveContainer width="100%" height={190}>
+          <BarChart data={filas} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke={ink.grid} vertical={false} />
+            <XAxis dataKey="etiqueta" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} />
+            <YAxis tickFormatter={fmtM} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={40} />
+            <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => formatCurrency(v)} />} />
+            <Bar dataKey="objetivo" name="Objetivo" fill="#8b5cf6" opacity={0.35} radius={[4, 4, 0, 0]} maxBarSize={16} />
+            <Bar dataKey="real" name="Real" fill="#8b5cf6" radius={[4, 4, 0, 0]} maxBarSize={16} />
+          </BarChart>
+        </ResponsiveContainer>
+        <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+          {filas.map((f) => (
+            <label key={f.mes} className="flex flex-col gap-0.5">
+              <span className="text-[11px] text-zinc-400">{f.etiqueta} (MDP)</span>
+              <input type="number" min="0" step="0.1" value={f.objetivo ? f.objetivo / 1e6 : ''} placeholder="0" onChange={(e) => setObjetivo(ANIO, f.mes, Math.max(0, Number(e.target.value) || 0) * 1e6)} className="rounded-md border border-purple-200/60 bg-white/70 px-2 py-0.5 text-right tabular-nums outline-none focus:border-purple-400 dark:border-purple-900/40 dark:bg-[#1a1025]/70 dark:text-zinc-200" />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* PASO 2 */}
+      <div className={CARD}>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-purple-700 dark:text-purple-200">Paso 2 · Reparto por asesor</h3>
+          <div className="flex items-center gap-2">
+            <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', cuadra ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-zinc-500/10 text-zinc-500')}>
+              {cuadra ? 'Cuadra ✓' : anual ? `${((sumAsesores / anual) * 100).toFixed(0)}%` : '—'}
+            </span>
+            <div className="flex gap-1 rounded-full bg-purple-500/10 p-0.5">
+              {(['pct', 'monto'] as const).map((c) => (
+                <button key={c} onClick={() => setCaptura(c)} className={cn('rounded-full px-3 py-0.5 text-xs font-medium', captura === c ? 'bg-white text-purple-700 shadow dark:bg-[#241633] dark:text-purple-200' : 'text-zinc-500')}>
+                  {c === 'pct' ? 'Por %' : 'Por monto'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">Distribuye el objetivo anual ({formatCurrency(anual)}) entre el equipo. La otra columna se calcula sola.</p>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <button onClick={repartirPorVentas} disabled={!anual} className="rounded-md bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-500/25 disabled:opacity-40 dark:text-purple-300">Repartir según ventas</button>
+          <button onClick={() => limpiarAsesores(ANIO)} className="rounded-md bg-purple-500/10 px-2 py-1 text-xs text-purple-700 hover:bg-purple-500/20 dark:text-purple-300">Limpiar reparto</button>
+          <span className={cn('ml-auto text-xs', cuadra ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400')}>
+            Repartido: {formatCurrency(sumAsesores)} / {formatCurrency(anual)}{anual ? ` · restante ${formatCurrency(anual - sumAsesores)}` : ''}
+          </span>
+        </div>
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full min-w-[440px] text-sm">
+            <thead className="sticky top-0 bg-white/90 dark:bg-[#1a1025]/90">
+              <tr className="text-left text-xs text-zinc-400">
+                <th className="py-1 pr-2">Asesor</th>
+                <th className="py-1 pr-2">%</th>
+                <th className="py-1 pr-2">Monto (MDP)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {asesores.map((a) => {
+                const monto = asesorObjetivoDe(asesoresObj, ANIO, a);
+                const pct = anual ? (monto / anual) * 100 : 0;
+                return (
+                  <tr key={a} className="border-t border-purple-100/40 dark:border-purple-900/20">
+                    <td className="py-1 pr-2 text-zinc-600 dark:text-zinc-300">{a}</td>
+                    <td className="py-1 pr-2">
+                      {captura === 'pct' ? (
+                        <input type="number" min="0" step="0.1" value={pct ? Number(pct.toFixed(1)) : ''} placeholder="0" onChange={(e) => setAsesor(ANIO, a, Math.round(anual * (Math.max(0, Number(e.target.value) || 0) / 100)))} className="w-16 rounded-md border border-purple-200/60 bg-white/70 px-1.5 py-0.5 text-right tabular-nums outline-none dark:border-purple-900/40 dark:bg-[#1a1025]/70 dark:text-zinc-200" />
+                      ) : (
+                        <span className="tabular-nums text-zinc-500">{pct.toFixed(1)}%</span>
+                      )}
+                    </td>
+                    <td className="py-1 pr-2">
+                      {captura === 'monto' ? (
+                        <input type="number" min="0" step="0.1" value={monto ? monto / 1e6 : ''} placeholder="0" onChange={(e) => setAsesor(ANIO, a, Math.max(0, Number(e.target.value) || 0) * 1e6)} className="w-24 rounded-md border border-purple-200/60 bg-white/70 px-1.5 py-0.5 text-right tabular-nums outline-none dark:border-purple-900/40 dark:bg-[#1a1025]/70 dark:text-zinc-200" />
+                      ) : (
+                        <span className="tabular-nums text-zinc-700 dark:text-zinc-200">{formatCurrency(monto)}</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!asesores.length && <tr><td colSpan={3} className="py-4 text-center text-xs text-zinc-400">Cargando asesores…</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AvanceObjetivos() {
+  const objetivos = useObjetivosStore((s) => s.objetivos);
+  const asesoresObj = useObjetivosStore((s) => s.asesores);
+  const isDark = useThemeStore((s) => s.theme) === 'dark';
+  const ink = chartInk(isDark);
+
+  const [periodo, setPeriodo] = useState<Periodo>('mes');
+  const [asesorSel, setAsesorSel] = useState('');
+  const [asesores, setAsesores] = useState<readonly string[]>([]);
+  const [real, setReal] = useState<Record<number, number> | null>(null);
+  const [tick, setTick] = useState(0);
+  const estadoWS = useLiveRefresh(() => setTick((t) => t + 1));
+
+  useEffect(() => { getAsesores().then(setAsesores).catch(() => {}); }, []);
+  useEffect(() => {
+    setReal(null);
+    getVentasPeriodo(periodo, { anio: ANIO, asesor: asesorSel || null })
+      .then((rows) => setReal(Object.fromEntries(rows.map((r) => [r.periodo, r.monto]))))
+      .catch(() => setReal({}));
+  }, [periodo, asesorSel, tick]);
+
+  const anual = objetivoAnual(objetivos, ANIO);
+  const factor = asesorSel && anual ? asesorObjetivoDe(asesoresObj, ANIO, asesorSel) / anual : 1;
+  const nPer = periodo === 'mes' ? 12 : periodo === 'catorcena' ? 26 : 52;
+  const objetivoPeriodo = (p: number) => (periodo === 'mes' ? objetivoDe(objetivos, ANIO, p) * factor : (anual * factor) / nPer);
+
+  const now = new Date();
+  const mesActual = now.getMonth() + 1;
+  const semActual = (() => {
+    const t = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+    const day = t.getUTCDay() || 7;
+    t.setUTCDate(t.getUTCDate() + 4 - day);
+    const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+    return Math.ceil(((t.getTime() - y0.getTime()) / 86400000 + 1) / 7);
+  })();
+  const esActual = (p: number) => (periodo === 'mes' ? p === mesActual : periodo === 'semana' ? p === semActual : false);
+
+  const filas = useMemo(() => {
+    if (!real) return [];
+    const claves = new Set<number>(Object.keys(real).map(Number));
+    if (periodo === 'mes') for (let m = 1; m <= 12; m++) claves.add(m);
+    return [...claves].sort((a, b) => a - b).map((p) => {
+      const objetivo = objetivoPeriodo(p);
+      const r = real[p] ?? 0;
+      return { p, etiqueta: periodo === 'mes' ? MESES[p - 1] : `${periodo === 'catorcena' ? 'C' : 'S'}${p}`, objetivo, real: r, falta: objetivo - r, cumpl: objetivo ? (r / objetivo) * 100 : 0, actual: esActual(p) };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [real, objetivos, asesoresObj, periodo, asesorSel]);
+
+  const totObj = filas.reduce((a, f) => a + f.objetivo, 0);
+  const totReal = filas.reduce((a, f) => a + f.real, 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 rounded-full bg-purple-500/10 p-0.5">
+          {(['mes', 'catorcena', 'semana'] as const).map((p) => (
+            <button key={p} onClick={() => setPeriodo(p)} className={cn('rounded-full px-3 py-0.5 text-xs font-medium', periodo === p ? 'bg-white text-purple-700 shadow dark:bg-[#241633] dark:text-purple-200' : 'text-zinc-500')}>
+              {p === 'mes' ? 'Mensual' : p === 'catorcena' ? 'Catorcenal' : 'Semanal'}
+            </button>
+          ))}
+        </div>
+        <select value={asesorSel} onChange={(e) => setAsesorSel(e.target.value)} className="rounded-full border border-purple-200/60 bg-white/70 px-3 py-1 text-xs outline-none dark:border-purple-900/40 dark:bg-[#1a1025]/70 dark:text-zinc-200">
+          <option value="">Todo el equipo</option>
+          {asesores.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <LiveBadge estado={estadoWS} className="ml-auto" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <MetricCard titulo="Meta del período" valor={formatCurrency(totObj)} sub={asesorSel || 'todo el equipo'} accent="purple" />
+        <MetricCard titulo="Cerrado (real)" valor={formatCurrency(totReal)} tono="up" accent="cyan" />
+        <MetricCard titulo="Falta para la meta" valor={formatCurrency(Math.max(0, totObj - totReal))} tono={totReal >= totObj ? 'up' : 'down'} sub={totObj && totReal >= totObj ? 'meta alcanzada' : ''} accent="orange" />
+        <MetricCard titulo="Cumplimiento" valor={totObj ? `${((totReal / totObj) * 100).toFixed(0)}%` : '—'} tono={totReal >= totObj ? 'up' : 'down'} accent="green" />
+      </div>
+
+      {!real ? (
+        <div className="flex h-48 items-center justify-center"><Spinner size="lg" /></div>
+      ) : (
+        <>
+          <div className={CARD}>
+            <CardTitle>Cerrado vs meta del período</CardTitle>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={filas} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={ink.grid} vertical={false} />
+                <XAxis dataKey="etiqueta" tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={12} />
+                <YAxis tickFormatter={fmtM} tick={{ fill: ink.axis, fontSize: 10 }} tickLine={false} axisLine={false} width={40} />
+                <Tooltip cursor={{ fill: ink.cursor }} content={<TooltipChart format={(v) => formatCurrency(v)} />} />
+                <Bar dataKey="objetivo" name="Meta" fill="#8b5cf6" opacity={0.3} radius={[4, 4, 0, 0]} maxBarSize={18} />
+                <Bar dataKey="real" name="Cerrado" radius={[4, 4, 0, 0]} maxBarSize={18}>
+                  {filas.map((f) => <Cell key={f.p} fill={f.objetivo > 0 && f.real >= f.objetivo ? '#10b981' : '#8b5cf6'} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className={CARD}>
+            <div className="max-h-96 overflow-auto">
+              <table className="w-full min-w-[560px] text-sm">
+                <thead className="sticky top-0 bg-white/90 dark:bg-[#1a1025]/90">
+                  <tr className="text-left text-xs text-zinc-400">
+                    <th className="py-1 pr-2">Período</th>
+                    <th className="py-1 pr-2">Meta</th>
+                    <th className="py-1 pr-2">Cerrado</th>
+                    <th className="py-1 pr-2">Falta</th>
+                    <th className="py-1">Cumpl.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map((f) => (
+                    <tr key={f.p} className={cn('border-t border-purple-100/40 dark:border-purple-900/20', f.actual && 'bg-purple-500/5')}>
+                      <td className="py-1.5 pr-2 font-medium text-zinc-600 dark:text-zinc-300">
+                        {f.etiqueta}
+                        {f.actual && <span className="ml-1 rounded bg-purple-500/20 px-1 text-[10px] text-purple-700 dark:text-purple-300">actual</span>}
+                      </td>
+                      <td className="py-1.5 pr-2 tabular-nums text-zinc-500">{f.objetivo ? formatCurrency(f.objetivo) : '—'}</td>
+                      <td className="py-1.5 pr-2 tabular-nums text-zinc-700 dark:text-zinc-200">{formatCurrency(f.real)}</td>
+                      <td className={cn('py-1.5 pr-2 tabular-nums', f.falta <= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>
+                        {f.objetivo ? (f.falta <= 0 ? `+${formatCurrency(-f.falta)}` : formatCurrency(f.falta)) : '—'}
+                      </td>
+                      <td className="py-1.5">
+                        {f.objetivo ? (
+                          <span className={cn('rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums', f.cumpl >= 100 ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-rose-500/15 text-rose-700 dark:text-rose-300')}>{f.cumpl.toFixed(0)}%</span>
+                        ) : (
+                          <span className="text-xs text-zinc-400">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+//  helpers compartidos
+// ============================================================
+function badgeStatus(s: string | null): string {
+  const x = (s ?? '').toLowerCase();
+  if (/final/.test(x)) return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
+  if (/rechaz|cancel/.test(x)) return 'bg-rose-500/15 text-rose-700 dark:text-rose-300';
+  if (/aprob|iniciar/.test(x)) return 'bg-purple-500/15 text-purple-700 dark:text-purple-300';
+  return 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400';
+}
+
+// Color del badge de "Tipo" de edición en el historial.
+function tipoBadge(t?: string): string {
+  const x = (t ?? '').toLowerCase();
+  if (/eliminar|rechazo/.test(x)) return 'bg-rose-500/15 text-rose-700 dark:text-rose-300';
+  if (/alza/.test(x)) return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300';
+  if (/baja/.test(x)) return 'bg-orange-500/15 text-orange-700 dark:text-orange-300';
+  if (/tarifa/.test(x)) return 'bg-amber-500/15 text-amber-700 dark:text-amber-300';
+  if (/periodo/.test(x)) return 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300';
+  if (/aps/.test(x)) return 'bg-slate-500/15 text-slate-600 dark:text-slate-300';
+  if (/autoriz|estado|creaci|sap/.test(x)) return 'bg-purple-500/15 text-purple-700 dark:text-purple-300';
+  return 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-400';
+}

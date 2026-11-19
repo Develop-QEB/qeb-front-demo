@@ -1,0 +1,220 @@
+import { useState } from 'react';
+import { ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { Select } from '../ui/select';
+import { useCloseOnRotate } from '../../hooks/useCloseOnRotate';
+import { cn } from '../../lib/utils';
+import { MESES } from '../../lib/periodos';
+import type { BaseDatos, FiltrosResumen } from '../../types/bi';
+
+const BASES_OPC: BaseDatos[] = ['CIMU', 'Trade', 'UDC'];
+const TIPOS_OPC: [string, string][] = [['RT', 'Renta'], ['BF', 'Bonificación'], ['IN', 'Intercambio'], ['IM', 'Impresión']];
+const MUEBLES_OPC: [string, string][] = [['PARABUS', 'Parabús'], ['COLUMNA', 'Columna'], ['MACRO', 'Gran Formato']];
+const DIGITAL_OPC: [string, string][] = [['Tradicional', 'Tradicional'], ['Digital', 'Digital']];
+const ANIOS = [2027, 2026, 2025];
+type MultiKey = 'bases' | 'tipos' | 'muebles' | 'digital';
+
+interface FiltersSidebarProps {
+  filtros: FiltrosResumen;
+  onChange: (filtros: FiltrosResumen) => void;
+  asesores: readonly string[];
+  clientes: readonly string[];
+  /** Meses seleccionados (1–12). Vacío = todo el año. */
+  mesesSel: number[];
+  /** Alterna un mes en la selección. */
+  onToggleMes: (mes: number) => void;
+  /** Limpia la selección (vuelve a año completo). */
+  onClearMeses: () => void;
+}
+
+export function FiltersSidebar({
+  filtros,
+  onChange,
+  asesores,
+  clientes,
+  mesesSel,
+  onToggleMes,
+  onClearMeses,
+}: FiltersSidebarProps) {
+  const set = <K extends keyof FiltrosResumen>(key: K, valor: FiltrosResumen[K]) =>
+    onChange({ ...filtros, [key]: valor });
+  const toggleArr = (key: MultiKey, val: string) => {
+    const cur = filtros[key] ?? [];
+    const next = cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val];
+    onChange({ ...filtros, [key]: next });
+  };
+  const [abierto, setAbierto] = useState(false);
+  useCloseOnRotate(abierto, () => setAbierto(false));
+  const nFiltros =
+    (filtros.bases?.length ? 1 : 0) + (filtros.tipos?.length ? 1 : 0) + (filtros.muebles?.length ? 1 : 0) +
+    (filtros.digital?.length ? 1 : 0) + [filtros.asesor, filtros.cliente].filter(Boolean).length + (mesesSel.length ? 1 : 0);
+
+  return (
+    <aside className="flex w-full shrink-0 flex-col gap-4 rounded-2xl border border-purple-200/50 bg-white/90 p-4 shadow-xl shadow-purple-100/20 backdrop-blur-xl dark:border-purple-900/30 dark:bg-[#1a1025]/90 dark:shadow-purple-900/10 sm:gap-5 sm:p-5 lg:w-64">
+      <div className="flex items-start gap-2">
+        <img
+          src="/logo-grupo-imu.png"
+          alt="Grupo IMU"
+          className="h-10 w-auto object-contain dark:brightness-0 dark:invert sm:h-12"
+        />
+      </div>
+
+      <h1 className="text-lg font-light leading-tight tracking-wide text-purple-700 dark:text-purple-200">
+        Resumen General de Ventas
+      </h1>
+
+      {/* En móvil los filtros se colapsan (el sidebar es alto); en lg+ siempre visibles. */}
+      <button
+        onClick={() => setAbierto((v) => !v)}
+        className="flex items-center justify-between rounded-lg bg-purple-500/10 px-3 py-2 text-sm font-medium text-purple-700 dark:text-purple-200 lg:hidden"
+      >
+        <span className="flex items-center gap-1.5"><SlidersHorizontal className="h-4 w-4" /> Filtros{nFiltros ? ` (${nFiltros})` : ''}</span>
+        <ChevronDown className={cn('h-4 w-4 transition-transform', abierto && 'rotate-180')} />
+      </button>
+
+      <div className={cn('flex flex-col gap-4 sm:gap-5', abierto ? 'flex' : 'hidden lg:flex')}>
+      <hr className="border-purple-200/60 dark:border-purple-900/40" />
+
+      <Filtro etiqueta="BASE">
+        <div className="grid grid-cols-3 gap-2">
+          {BASES_OPC.map((b) => (
+            <BotonFiltro key={b} activo={(filtros.bases ?? []).includes(b)} onClick={() => toggleArr('bases', b)}>{b}</BotonFiltro>
+          ))}
+        </div>
+        <p className="mt-1.5 text-[11px] leading-snug text-zinc-400 dark:text-zinc-500">{(filtros.bases ?? []).length ? '' : 'Vacío = todas las bases.'}</p>
+      </Filtro>
+
+      <Filtro etiqueta="Tipo de artículo">
+        <div className="grid grid-cols-2 gap-2">
+          {TIPOS_OPC.map(([v, l]) => (
+            <BotonFiltro key={v} activo={(filtros.tipos ?? []).includes(v)} onClick={() => toggleArr('tipos', v)}>{l}</BotonFiltro>
+          ))}
+        </div>
+      </Filtro>
+
+      <Filtro etiqueta="Formato">
+        <div className="grid grid-cols-3 gap-2">
+          {MUEBLES_OPC.map(([v, l]) => (
+            <BotonFiltro key={v} activo={(filtros.muebles ?? []).includes(v)} onClick={() => toggleArr('muebles', v)}>{l}</BotonFiltro>
+          ))}
+        </div>
+      </Filtro>
+
+      <Filtro etiqueta="Tradicional / Digital">
+        <div className="grid grid-cols-2 gap-2">
+          {DIGITAL_OPC.map(([v, l]) => (
+            <BotonFiltro key={v} activo={(filtros.digital ?? []).includes(v)} onClick={() => toggleArr('digital', v)}>{l}</BotonFiltro>
+          ))}
+        </div>
+      </Filtro>
+
+      <Filtro etiqueta="Asesor">
+        <Select
+          value={filtros.asesor ?? ''}
+          onChange={(e) => set('asesor', e.target.value || null)}
+          options={[
+            { value: '', label: 'Todos' },
+            ...asesores.map((a) => ({ value: a, label: a })),
+          ]}
+        />
+      </Filtro>
+
+      <Filtro etiqueta="Cliente">
+        <Select
+          value={filtros.cliente ?? ''}
+          onChange={(e) => set('cliente', e.target.value || null)}
+          options={[
+            { value: '', label: 'Todos' },
+            ...clientes.map((c) => ({ value: c, label: c })),
+          ]}
+        />
+      </Filtro>
+
+      <Filtro etiqueta="Año">
+        <div className="grid grid-cols-3 gap-2">
+          {ANIOS.map((anio) => (
+            <BotonFiltro
+              key={anio}
+              activo={filtros.anio === anio}
+              onClick={() => set('anio', anio)}
+            >
+              {anio}
+            </BotonFiltro>
+          ))}
+        </div>
+      </Filtro>
+
+      <Filtro etiqueta="Mes">
+        <div className="grid grid-cols-3 gap-2">
+          {MESES.map((mes, i) => {
+            const numero = i + 1;
+            return (
+              <BotonFiltro
+                key={mes}
+                activo={mesesSel.includes(numero)}
+                // Multi-selección: cada clic agrega o quita el mes (se suman).
+                onClick={() => onToggleMes(numero)}
+              >
+                {mes}
+              </BotonFiltro>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-[11px] leading-snug text-zinc-400 dark:text-zinc-500">
+          {mesesSel.length === 0
+            ? 'Todo el año. Elige uno o varios meses para sumarlos.'
+            : `${mesesSel.length} mes${mesesSel.length > 1 ? 'es' : ''} seleccionado${
+                mesesSel.length > 1 ? 's' : ''
+              } (se suman).`}
+        </p>
+        {mesesSel.length > 0 && (
+          <button
+            type="button"
+            onClick={onClearMeses}
+            className="mt-1 text-xs text-purple-600 underline-offset-2 hover:underline dark:text-purple-300"
+          >
+            Ver año completo
+          </button>
+        )}
+      </Filtro>
+      </div>
+    </aside>
+  );
+}
+
+function Filtro({ etiqueta, children }: { etiqueta: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+        {etiqueta}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function BotonFiltro({
+  activo,
+  onClick,
+  children,
+}: {
+  activo: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={activo}
+      className={cn(
+        'rounded-lg px-2 py-1.5 text-xs font-medium transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-500',
+        activo
+          ? 'bg-gradient-to-br from-purple-500 to-fuchsia-500 text-white shadow-md shadow-purple-500/20'
+          : 'bg-purple-500/10 text-purple-700 hover:bg-purple-500/20 dark:text-purple-200'
+      )}
+    >
+      {children}
+    </button>
+  );
+}

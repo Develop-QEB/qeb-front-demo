@@ -36,6 +36,8 @@ const RankingTicketsPage = lazy(() => import('./features/tickets/RankingTicketsP
 const ReportesEspecialesPage = lazy(() => import('./features/reportes-especiales/ReportesEspecialesPage').then(m => ({ default: m.ReportesEspecialesPage })));
 const HistorialAccionesPage = lazy(() => import('./features/historial/HistorialAccionesPage').then(m => ({ default: m.HistorialAccionesPage })));
 const MaintenancePage = lazy(() => import('./features/maintenance/MaintenancePage').then(m => ({ default: m.MaintenancePage })));
+// QEBI: vista de reportes copiada de QEBI (datos de demo, sin bi-back).
+const QebiPage = lazy(() => import('./qebi/QebiApp').then(m => ({ default: m.QebiApp })));
 
 // IDs de usuarios programadores con acceso a /dev/tickets
 const DEV_USERS_IDS = [1057460, 1057462]; // Mario, Jos
@@ -256,6 +258,7 @@ function App() {
             <Route path="/dev/tickets" element={<Suspense fallback={null}><DevTicketsRoute /></Suspense>} />
             <Route path="/reportes-especiales" element={<Suspense fallback={null}><ReportesEspecialesRoute /></Suspense>} />
             <Route path="/historial-acciones" element={<Suspense fallback={null}><HistorialAccionesRoute /></Suspense>} />
+            <Route path="/qebi" element={<Suspense fallback={null}><QebiPage /></Suspense>} />
           </Route>
 
           {/* Public route for clients - no auth required */}

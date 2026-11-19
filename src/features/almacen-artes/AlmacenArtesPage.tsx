@@ -44,14 +44,14 @@ export function AlmacenArtesPage() {
     };
   }, [listQuery.data]);
 
-  const bg = isDark ? 'bg-zinc-900' : 'bg-white';
-  const border = isDark ? 'border-zinc-800' : 'border-gray-200';
-  const text = isDark ? 'text-zinc-100' : 'text-gray-900';
+  const bg = isDark ? 'bg-[#1a1025]' : 'bg-white';
+  const border = isDark ? 'border-purple-900/30' : 'border-purple-200/50';
+  const text = isDark ? 'text-white' : 'text-gray-900';
   const subtext = isDark ? 'text-zinc-400' : 'text-gray-500';
-  const inputCls = `w-full rounded-lg border px-3 py-2 text-sm ${isDark ? 'bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-500' : 'bg-white border-gray-300 text-gray-900 placeholder:text-gray-400'}`;
+  const inputCls = `w-full rounded-lg border px-3 py-2 text-sm ${isDark ? 'bg-zinc-800/60 border-purple-900/40 text-white placeholder:text-zinc-500' : 'bg-white border-purple-200 text-gray-900 placeholder:text-gray-400'}`;
 
   return (
-    <div className={`min-h-screen ${isDark ? 'bg-zinc-950' : 'bg-gray-50'} p-6`}>
+    <div className="min-h-screen p-6">
       <div className="max-w-7xl mx-auto space-y-5">
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
@@ -107,7 +107,7 @@ export function AlmacenArtesPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className={`${isDark ? 'bg-zinc-800/40' : 'bg-gray-50'} ${subtext}`}>
+                <tr className={`${isDark ? 'bg-purple-900/10' : 'bg-purple-50/60'} ${subtext}`}>
                   <th className="text-left px-3 py-2 font-medium">Arte</th>
                   <th className="text-left px-3 py-2 font-medium">Campaña</th>
                   <th className="text-left px-3 py-2 font-medium">Cliente / Marca</th>

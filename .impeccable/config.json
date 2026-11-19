@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "ai-color-palette",
+        "value": "*",
+        "files": [
+          "src/qebi/QebiApp.tsx"
+        ],
+        "createdAt": "2026-11-19T03:58:00.833Z",
+        "reason": "model: QEB brand es morado/fuchsia (memoria morado #8B3FD9); Sidebar activo y todas las vistas usan estos gradientes y la app QEBI real tambien. QebiApp replica el sistema de diseno incumbente a proposito."
+      }
+    ]
+  }
+}

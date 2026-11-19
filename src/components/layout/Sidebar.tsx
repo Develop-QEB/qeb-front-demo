@@ -234,6 +234,29 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 </NavLink>
               </li>
             ))}
+            {/* QEBI: vista de reportes (demo). Visible para todos. */}
+            <li>
+              <NavLink
+                to="/qebi"
+                className={({ isActive }) =>
+                  cn(
+                    'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-light transition-all duration-200',
+                    isActive
+                      ? isDark
+                        ? 'bg-gradient-to-r from-purple-500/20 to-pink-500/10 text-purple-300 border border-purple-500/30'
+                        : 'bg-gradient-to-r from-purple-100 to-pink-50 text-purple-700 border border-purple-200'
+                      : isDark
+                        ? 'text-zinc-400 hover:bg-purple-900/30 hover:text-purple-300'
+                        : 'text-gray-500 hover:bg-purple-50 hover:text-purple-700',
+                    effectiveCollapsed && 'justify-center px-2'
+                  )
+                }
+                title={effectiveCollapsed ? 'QEBI' : undefined}
+              >
+                <BarChart3 className="h-5 w-5 flex-shrink-0" />
+                {!effectiveCollapsed && <span>QEBI</span>}
+              </NavLink>
+            </li>
           </ul>
         </nav>
 
