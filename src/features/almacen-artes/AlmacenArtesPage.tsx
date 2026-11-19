@@ -7,9 +7,10 @@
 
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Archive, Search, Plus, Minus, History, X, Loader2 } from 'lucide-react';
+import { Search, Plus, Minus, History, X, Loader2 } from 'lucide-react';
 import { useThemeStore } from '../../store/themeStore';
 import { almacenArtesService, AlmacenArteStock } from '../../services/almacenArtes.service';
+import { Header } from '../../components/layout/Header';
 
 export function AlmacenArtesPage() {
   const isDark = useThemeStore(s => s.theme) === 'dark';
@@ -51,21 +52,9 @@ export function AlmacenArtesPage() {
   const inputCls = `w-full rounded-lg border px-3 py-2 text-sm ${isDark ? 'bg-zinc-800/60 border-purple-900/40 text-white placeholder:text-zinc-500' : 'bg-white border-purple-200 text-gray-900 placeholder:text-gray-400'}`;
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="max-w-7xl mx-auto space-y-5">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className={`h-10 w-10 rounded-lg flex items-center justify-center ${isDark ? 'bg-amber-500/15' : 'bg-amber-50'}`}>
-              <Archive className={`h-5 w-5 ${isDark ? 'text-amber-300' : 'text-amber-600'}`} />
-            </div>
-            <div>
-              <h1 className={`text-xl font-semibold ${text}`}>Almacén Artes</h1>
-              <p className={`text-xs ${subtext}`}>Inventario físico de artes por campaña</p>
-            </div>
-          </div>
-        </div>
-
+    <div className="min-h-screen">
+      <Header title="Almacén Artes" />
+      <div className="max-w-7xl mx-auto space-y-5 p-6">
         {/* KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
